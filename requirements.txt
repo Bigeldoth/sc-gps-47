@@ -1,0 +1,6 @@
+mss
+numpy
+opencv-python
+pytesseract
+PyQt6
+Pillow
