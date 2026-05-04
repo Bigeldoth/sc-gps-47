@@ -170,9 +170,42 @@ class GPSOverlay(QMainWindow):
 
     def toggle_interaction(self):
         """Bascule entre le mode transparent et interactif"""
-        self.is_interactive = not self.is_interactive
-        self.init_window_properties()
-        self.interact_action.setText("Désactiver Interaction (Shift+F2)" if self.is_interactive else "Activer Interaction (Shift+F2)")
+        try:
+            logger.debug(f"Toggling interaction mode. Current state: {self.is_interactive}")
+            
+            # Afficher le menu contextuel au lieu de changer l'état interactif
+            self.show_interaction_menu()
+        except Exception as e:
+            logger.error(f"Erreur lors du basculement d'interaction : {e}")
+            self.tray_icon.showMessage("Erreur", f"Impossible de basculer : {e}", QSystemTrayIcon.MessageIcon.Warning)
+
+    def show_interaction_menu(self):
+        """Affiche un menu contextuel avec les options de gestion"""
+        menu = QMenu()
+        
+        # Enregistrer position
+        save_action = QAction("Enregistrer Position (Shift+F3)", self)
+        save_action.triggered.connect(self.prompt_save_point)
+        menu.addAction(save_action)
+        
+        # Choisir destination
+        select_poi_action = QAction("Choisir Destination", self)
+        select_poi_action.triggered.connect(self.show_poi_selector)
+        menu.addAction(select_poi_action)
+        
+        # Import/Export
+        data_menu = menu.addMenu("Gestion des Données")
+        
+        export_action = QAction("Exporter Points (JSON)", self)
+        export_action.triggered.connect(self.export_data)
+        data_menu.addAction(export_action)
+        
+        import_action = QAction("Importer Points (JSON)", self)
+        import_action.triggered.connect(self.import_data)
+        data_menu.addAction(import_action)
+        
+        # Afficher le menu à la position du curseur
+        menu.exec(self.mapToGlobal(self.rect().center()))
 
     def prompt_save_point(self):
         """Ouvre une fenêtre pour nommer et enregistrer le point actuel"""
