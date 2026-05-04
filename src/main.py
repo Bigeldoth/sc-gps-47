@@ -5,7 +5,7 @@ import configparser
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QLabel, QVBoxLayout, 
                              QWidget, QSystemTrayIcon, QMenu, QInputDialog, QFileDialog)
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QIcon, QAction, QColor
+from PyQt6.QtGui import QIcon, QAction, QColor, QCursor
 import keyboard
 from capture import ScreenCapture
 from ocr import OCRProcessor
@@ -209,7 +209,11 @@ class GPSOverlay(QMainWindow):
         data_menu.addAction(import_action)
         
         # Afficher le menu à la position du curseur
-        menu.exec(self.mapToGlobal(self.rect().center()))
+        try:
+            menu.exec(QCursor.pos())
+        except Exception as e:
+            logger.error(f"Erreur lors de l'affichage du menu : {e}")
+            self.tray_icon.showMessage("Erreur", f"Impossible d'afficher le menu : {e}", QSystemTrayIcon.MessageIcon.Warning)
 
     def prompt_save_point(self):
         """Ouvre une fenêtre pour nommer et enregistrer le point actuel"""

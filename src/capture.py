@@ -13,14 +13,23 @@ class ScreenCapture:
     def get_capture_zone(self):
         """Définit la zone de capture (haut droite de l'écran pour r_displayinfo 3)"""
         monitor = self.sct.monitors[self.monitor_index]
-        # Zone typique pour r_displayinfo 3 en haut à droite
-        # Augmenté pour capturer plus d'informations
-        width = 600
-        height = 250
+        
+        # Adaptation automatique selon la résolution
+        screen_width = monitor["width"]
+        screen_height = monitor["height"]
+        
+        # Calcul proportionnel basé sur 1920x1080 comme référence
+        # Pour 2560x1440: ratio = 1.33
+        width_ratio = screen_width / 1920
+        height_ratio = screen_height / 1080
+        
+        # Zone de capture adaptée à la résolution
+        width = int(600 * width_ratio)
+        height = int(250 * height_ratio)
         
         return {
-            "top": monitor["top"] + 10,
-            "left": monitor["left"] + monitor["width"] - width - 10,
+            "top": monitor["top"] + int(10 * height_ratio),
+            "left": monitor["left"] + monitor["width"] - width - int(10 * width_ratio),
             "width": width,
             "height": height
         }
@@ -40,19 +49,27 @@ class ScreenCapture:
         # Upscaling x2 pour améliorer la lisibilité du petit texte
         gray = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
         
-        # Débruitage avec filtre bilateral (préserve les bords)
-        denoised = cv2.bilateralFilter(gray, 9, 75, 75)
+        # Débruitage léger avec filtre bilateral (préserve les bords)
+        denoised = cv2.bilateralFilter(gray, 5, 50, 50)
         
         # Amélioration du contraste avec CLAHE
         clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
         enhanced = clahe.apply(denoised)
         
-        # Seuillage adaptatif pour isoler le texte blanc
-        # Utilise THRESH_BINARY car le texte est blanc (valeurs hautes)
-        thresh = cv2.adaptiveThreshold(
-            enhanced, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-            cv2.THRESH_BINARY, 11, 2
-        )
+        # Seuillage simple pour isoler le texte blanc sur fond sombre
+        # Utilise un seuil fixe car le texte est toujours blanc
+        _, thresh = cv2.threshold(enhanced, 180, 255, cv2.THRESH_BINARY)
+        
+        # Sauvegarde pour debug si activé dans config
+        try:
+            import configparser
+            config = configparser.ConfigParser()
+            config.read('config.ini')
+            if config.getboolean('Debug', 'save_ocr_images', fallback=False):
+                cv2.imwrite("debug_capture_processed.png", thresh)
+                cv2.imwrite("debug_capture_original.png", img)
+        except:
+            pass
         
         return thresh
 
