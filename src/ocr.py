@@ -103,10 +103,10 @@ class OCRProcessor:
             # Recherche des coordonnées (format Pos: 123.4km 567.8km 910.1km)
             elif "Pos:" in line or "pos:" in line.lower():
                 logger.debug(f"Ligne Pos détectée : {line}")
-                # Regex très tolérante pour gérer les erreurs OCR
-                # Accepte km, Km, kn, an, etc. et les points/espaces manquants
+                # Regex TRÈS tolérante pour gérer toutes les erreurs OCR
+                # Accepte : espaces, underscores, km/kn/k/an, pas d'espace après Pos:
                 coord_match = re.search(
-                    r'[Pp]os:?\s*(-?\d+\.?\d*)\s*[kKaA][mnMN]\s*(-?\d+\.?\d*)\s*[kKaA][mnMN]\s*(-?\d+\.?\d*)\s*[kKaA][mnMN]', 
+                    r'[Pp]os:?\s*(-?\d+\.?\d*)[_\s]*[kKaA][mnMN]?[_\s]*(-?\d+\.?\d*)[_\s]*[kKaA][mnMN]?[_\s-]*(-?\d+\.?\d*)[_\s]*[kKaA][mnMN]?', 
                     line, 
                     re.IGNORECASE
                 )
@@ -127,10 +127,13 @@ class OCRProcessor:
         """Corrige les erreurs courantes de reconnaissance OCR"""
         # Corrections courantes : O->0, l->1 dans les contextes numériques
         corrections = {
+            'Zore:': 'Zone:',  # Erreur courante Z->o
             'Pos:': 'Pos:',  # S'assurer que Pos: est correct
             'Zone:': 'Zone:',  # S'assurer que Zone: est correct
             'SolarSystern': 'SolarSystem',  # Erreur courante m->n
             'So1arSystem': 'SolarSystem',  # l->1
+            'SovarSysten': 'SolarSystem',  # Erreur courante l->v, m->n
+            'SolarSysten': 'SolarSystem',  # Erreur courante m->n
         }
         
         for wrong, correct in corrections.items():
