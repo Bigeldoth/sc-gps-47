@@ -1,5 +1,42 @@
 # Changelog - SpaceDrive GPS
 
+## Version 1.2.0 (2026-05-04)
+
+### 🐛 Corrections critiques
+
+#### Support résolution 2560x1440
+- **Problème** : La zone de capture était fixe pour 1920x1080, causant une mauvaise qualité OCR en 2560x1440
+- **Solution** : Calcul automatique de la zone de capture selon la résolution d'écran
+- **Fichiers modifiés** : `src/capture.py`
+
+#### Prétraitement OCR simplifié
+- **Problème** : Le filtre de netteté déformait le texte et rendait l'OCR inefficace
+- **Solution** : 
+  - Retrait du filtre de netteté agressif
+  - Seuillage simple et robuste (seuil fixe à 180)
+  - Débruitage léger pour préserver la qualité
+- **Résultat** : Meilleure reconnaissance du texte
+- **Fichiers modifiés** : `src/capture.py`
+
+#### Regex plus tolérant
+- **Problème** : Le regex ne matchait pas les erreurs OCR courantes (km → kn, Km, an)
+- **Solution** : Regex acceptant toutes les variations de "km" et casse flexible
+- **Fichiers modifiés** : `src/ocr.py`
+
+#### Logs Tesseract améliorés
+- **Problème** : Détection silencieuse de Tesseract (print au lieu de logger)
+- **Solution** : Logs détaillés pour chaque chemin testé et erreurs visibles
+- **Fichiers modifiés** : `src/ocr.py`
+
+### ✨ Améliorations
+
+#### Mode debug pour captures
+- Ajout d'une option `save_ocr_images` dans config.ini
+- Sauvegarde automatique des captures avant/après traitement
+- Facilite le diagnostic des problèmes OCR
+
+---
+
 ## Version 1.1.0 (2026-05-04)
 
 ### 🐛 Corrections de bugs

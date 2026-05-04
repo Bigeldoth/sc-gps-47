@@ -39,13 +39,16 @@ class OCRProcessor:
 
             found = False
             for path in possible_paths:
+                logger.debug(f"Recherche Tesseract dans : {path}")
                 if os.path.exists(path):
                     pytesseract.pytesseract.tesseract_cmd = path
+                    logger.info(f"Tesseract trouvé : {path}")
                     found = True
                     break
             
             if not found:
-                print("ATTENTION: Tesseract-OCR non trouvé dans les emplacements standards.")
+                logger.error("ERREUR: Tesseract-OCR non trouvé dans les emplacements standards!")
+                logger.error("Chemins testés: " + ", ".join(possible_paths))
         else:
             pytesseract.pytesseract.tesseract_cmd = tesseract_path
             
@@ -91,11 +94,12 @@ class OCRProcessor:
                     logger.warning("Zone SolarSystem détectée mais pas d'ID extrait")
             
             # Recherche des coordonnées (format Pos: 123.4km 567.8km 910.1km)
-            elif "Pos:" in line:
+            elif "Pos:" in line or "pos:" in line.lower():
                 logger.debug(f"Ligne Pos détectée : {line}")
-                # Regex plus tolérante pour gérer les espaces et variations
+                # Regex très tolérante pour gérer les erreurs OCR
+                # Accepte km, Km, kn, an, etc. et les points/espaces manquants
                 coord_match = re.search(
-                    r'Pos:\s*(-?\d+\.?\d*)\s*km\s*(-?\d+\.?\d*)\s*km\s*(-?\d+\.?\d*)\s*km', 
+                    r'[Pp]os:?\s*(-?\d+\.?\d*)\s*[kKaA][mnMN]\s*(-?\d+\.?\d*)\s*[kKaA][mnMN]\s*(-?\d+\.?\d*)\s*[kKaA][mnMN]', 
                     line, 
                     re.IGNORECASE
                 )
