@@ -3,8 +3,18 @@ import re
 import cv2
 import os
 import sys
+import logging
+
+logger = logging.getLogger(__name__)
 
 class OCRProcessor:
+    # Mapping des IDs système vers les noms de systèmes connus
+    SYSTEM_ID_MAP = {
+        "9948564368677": "Stanton",
+        "Stanton": "Stanton",
+        # Ajoutez d'autres mappings ici si nécessaire
+    }
+    
     def __init__(self, tesseract_path=None):
         # Pour le mode exécutable "clé en main"
         if not tesseract_path:
@@ -46,6 +56,8 @@ class OCRProcessor:
         custom_config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz:._- '
         text = pytesseract.image_to_string(image, config=custom_config)
         
+        logger.debug(f"Texte OCR brut : {text[:200]}...")  # Log les 200 premiers caractères
+        
         return self.parse_text(text)
 
     def parse_text(self, text):
@@ -64,16 +76,23 @@ class OCRProcessor:
         for line in lines:
             # Recherche de la ligne "Zone: SolarSystem_XXX"
             if "Zone:" in line and "SolarSystem" in line:
+                logger.debug(f"Ligne Zone détectée : {line}")
                 # Extraction du nom du système (ex: "Zone: SolarSystem_Stanton" -> "Stanton")
-                zone_match = re.search(r'Zone:\s*SolarSystem[_-]?(\w+)', line, re.IGNORECASE)
+                # Accepte maintenant les IDs numériques longs
+                zone_match = re.search(r'Zone:\s*SolarSystem[_-]?([\w]+)', line, re.IGNORECASE)
                 if zone_match:
-                    data["location"] = zone_match.group(1)
+                    system_id = zone_match.group(1)
+                    # Mapper l'ID vers le nom du système connu
+                    data["location"] = self.SYSTEM_ID_MAP.get(system_id, system_id)
+                    logger.info(f"Système détecté : ID={system_id}, Nom={data['location']}")
                 else:
                     # Si pas de nom spécifique, on prend "SolarSystem"
                     data["location"] = "SolarSystem"
+                    logger.warning("Zone SolarSystem détectée mais pas d'ID extrait")
             
             # Recherche des coordonnées (format Pos: 123.4km 567.8km 910.1km)
             elif "Pos:" in line:
+                logger.debug(f"Ligne Pos détectée : {line}")
                 # Regex plus tolérante pour gérer les espaces et variations
                 coord_match = re.search(
                     r'Pos:\s*(-?\d+\.?\d*)\s*km\s*(-?\d+\.?\d*)\s*km\s*(-?\d+\.?\d*)\s*km', 
@@ -85,8 +104,11 @@ class OCRProcessor:
                         data["x"] = float(coord_match.group(1))
                         data["y"] = float(coord_match.group(2))
                         data["z"] = float(coord_match.group(3))
-                    except ValueError:
-                        pass  # Ignore les erreurs de conversion
+                        logger.info(f"Coordonnées extraites : X={data['x']}, Y={data['y']}, Z={data['z']}")
+                    except ValueError as e:
+                        logger.error(f"Erreur conversion coordonnées : {e}")
+                else:
+                    logger.warning(f"Ligne Pos détectée mais regex non matchée : {line}")
                 
         return data
     

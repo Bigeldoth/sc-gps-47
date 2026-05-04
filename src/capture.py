@@ -43,18 +43,31 @@ class ScreenCapture:
         # Débruitage avec filtre bilateral (préserve les bords)
         denoised = cv2.bilateralFilter(gray, 9, 75, 75)
         
-        # Amélioration du contraste avec CLAHE
-        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+        # Amélioration du contraste avec CLAHE (augmenté pour meilleur contraste)
+        clahe = cv2.createCLAHE(clipLimit=5.0, tileGridSize=(8, 8))
         enhanced = clahe.apply(denoised)
         
+        # Ajout d'un filtre de netteté pour améliorer la lisibilité
+        kernel_sharpening = np.array([[-1,-1,-1],
+                                       [-1, 9,-1],
+                                       [-1,-1,-1]])
+        sharpened = cv2.filter2D(enhanced, -1, kernel_sharpening)
+        
         # Seuillage adaptatif pour isoler le texte blanc
-        # Utilise THRESH_BINARY car le texte est blanc (valeurs hautes)
+        # Paramètres optimisés pour texte blanc sur fond sombre
         thresh = cv2.adaptiveThreshold(
-            enhanced, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-            cv2.THRESH_BINARY, 11, 2
+            sharpened, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+            cv2.THRESH_BINARY, 15, -2
         )
         
-        return thresh
+        # Méthode alternative : seuillage Otsu comme backup
+        # Utile si le contraste est très variable
+        _, thresh_otsu = cv2.threshold(sharpened, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        
+        # Combiner les deux méthodes (OR logique) pour maximiser la détection
+        combined = cv2.bitwise_or(thresh, thresh_otsu)
+        
+        return combined
 
 if __name__ == "__main__":
     cap = ScreenCapture()
