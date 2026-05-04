@@ -1,5 +1,29 @@
 # Changelog - SpaceDrive GPS
 
+## Version 1.4.0 (2026-05-05)
+
+### 🐛 Corrections critiques
+
+#### Regex Pos ultra-tolérant
+- **Problème** : Les coordonnées n'étaient pas capturées à cause d'erreurs OCR multiples
+- **Exemples non capturés** : 
+  - `4133.5819km_-1964.0889kn-529.9201k` (underscore, kn, k)
+  - `214139636.4299km_-1964.0889kn-529.9201k` (pas d'espace après Pos:)
+- **Solution** : 
+  - Regex accepte underscore `_` comme séparateur
+  - Regex accepte `k` seul sans `m` (k, kn, km, an)
+  - Regex accepte pas d'espace après `Pos:`
+  - Regex accepte tiret `-` comme séparateur
+- **Fichiers modifiés** : `src/ocr.py`
+
+#### Corrections OCR étendues
+- **Ajout** : `Zore:` → `Zone:` (erreur courante)
+- **Ajout** : `SovarSysten` → `SolarSystem` (erreurs multiples)
+- **Ajout** : `SolarSysten` → `SolarSystem`
+- **Fichiers modifiés** : `src/ocr.py`
+
+---
+
 ## Version 1.3.0 (2026-05-04)
 
 ### 🐛 Corrections critiques
