@@ -1,119 +1,43 @@
-# 🚀 Instructions de Build - SpaceDrive GPS
+# SpaceDrive GPS - Build Instructions
 
 ## Prérequis
 
-1. **Python 3.8+** installé (vous l'avez déjà ✓)
-2. **Tesseract OCR** installé sur votre système
+- Python 3.9+
+- Tesseract OCR installé
+- Pip
+- PyInstaller
 
-### Installation de Tesseract OCR
+## Installation des Dépendances
 
-Téléchargez et installez Tesseract depuis :
-https://github.com/UB-Mannheim/tesseract/wiki
-
-**Important** : Notez le chemin d'installation (par défaut : `C:\Program Files\Tesseract-OCR\`)
-
----
-
-## 📦 Étapes de Build
-
-### 1. Installer les dépendances Python
-
-Ouvrez PowerShell ou CMD dans le dossier du projet et exécutez :
-
-```powershell
-python3 -m pip install --upgrade pip
-python3 -m pip install -r requirements.txt
+```bash
+pip install -r requirements.txt
 ```
 
-### 2. Builder l'exécutable
+## Configuration
 
-```powershell
-python3 -m PyInstaller --clean spaceDrive.spec
+1. Copiez `config.ini.example` vers `config.ini`
+2. Ajustez les paramètres selon votre configuration
+
+## Build Local
+
+### Méthode 1 : PyInstaller
+
+```bash
+pyinstaller spaceDrive.spec
 ```
 
-### 3. Localiser votre exécutable
+### Méthode 2 : GitHub Actions
 
-Votre exécutable se trouve ici :
-```
-c:\Users\patri\.cursor\projects\spaceDrive\dist\spaceDrive.exe
-```
+Les builds sont automatiquement générés via GitHub Actions :
+- Sur chaque push vers `main` et `develop`
+- Crée un executable pour Windows
 
----
+## Versioning
 
-## 🎮 Utilisation
+Le versioning suit la convention Semantic Versioning (MAJOR.MINOR.PATCH)
+- Incrémentation automatique via les commits conventionnels
+- Tags GitHub générés automatiquement
 
-### Lancer l'application
+## Débogage
 
-Double-cliquez sur `spaceDrive.exe` ou exécutez :
-```powershell
-.\dist\spaceDrive.exe
-```
-
-### Fonctionnalités
-
-- **Overlay GPS** : Affiche automatiquement vos coordonnées en jeu
-- **Hotkey Shift+F1** : Affiche/masque l'overlay
-- **System Tray** : Icône dans la barre des tâches
-  - Clic droit → Menu avec options
-  - Afficher/Masquer l'overlay
-  - Quitter l'application
-
-### Configuration Tesseract
-
-Si l'OCR ne fonctionne pas, vérifiez que Tesseract est installé :
-- Chemin par défaut : `C:\Program Files\Tesseract-OCR\tesseract.exe`
-- Le code détecte automatiquement ce chemin
-
----
-
-## 🐛 Dépannage
-
-### Erreur "pip not found"
-```powershell
-python3 -m ensurepip --upgrade
-```
-
-### Erreur PyInstaller
-```powershell
-python3 -m pip install --upgrade pyinstaller
-```
-
-### L'overlay ne s'affiche pas
-- Vérifiez que Star Citizen est lancé
-- Appuyez sur Shift+F1 pour afficher l'overlay
-- Vérifiez l'icône dans la system tray
-
-### OCR ne fonctionne pas
-- Installez Tesseract OCR
-- Vérifiez le chemin dans `src/ocr.py` ligne 18
-
----
-
-## 📁 Structure du projet
-
-```
-spaceDrive/
-├── dist/
-│   └── spaceDrive.exe          ← VOTRE EXÉCUTABLE
-├── src/
-│   ├── main.py                 ← Application principale
-│   ├── capture.py              ← Capture d'écran
-│   ├── ocr.py                  ← Reconnaissance de texte
-│   └── navigation.py           ← Calculs de navigation
-├── data/
-│   └── poi.json                ← Points d'intérêt
-├── spaceDrive.spec             ← Configuration PyInstaller
-└── requirements.txt            ← Dépendances Python
-```
-
----
-
-## ✨ Prochaines étapes
-
-Une fois l'exécutable créé, vous pouvez :
-1. Le copier n'importe où sur votre PC
-2. Créer un raccourci sur le bureau
-3. Le lancer avant de jouer à Star Citizen
-4. Utiliser Shift+F1 pour afficher/masquer l'overlay en jeu
-
-**Bon vol, Citizen ! o7**
+Consultez `spacedrive.log` pour les logs détaillés.

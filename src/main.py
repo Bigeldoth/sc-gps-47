@@ -1,5 +1,7 @@
 import sys
 import os
+import logging
+import configparser
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QLabel, QVBoxLayout, 
                              QWidget, QSystemTrayIcon, QMenu, QInputDialog, QFileDialog)
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
@@ -8,6 +10,17 @@ import keyboard
 from capture import ScreenCapture
 from ocr import OCRProcessor
 from navigation import NavigationEngine
+
+# Configuration et logging
+config = configparser.ConfigParser()
+config.read('config.ini')
+
+logging.basicConfig(
+    level=getattr(logging, config.get('Logging', 'level', fallback='INFO')),
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    filename=config.get('Logging', 'file', fallback='spacedrive.log')
+)
+logger = logging.getLogger(__name__)
 
 class GPSOverlay(QMainWindow):
     # Signal pour gérer les fenêtres de dialogue depuis le thread principal
