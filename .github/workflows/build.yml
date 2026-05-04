@@ -43,10 +43,11 @@ jobs:
         pyinstaller spaceDrive.spec
 
     - name: Upload artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: spacedrive-${{ matrix.python-version }}
         path: dist/spaceDrive.exe
+        retention-days: 7
 
   release:
     needs: build
