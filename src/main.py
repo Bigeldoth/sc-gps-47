@@ -283,8 +283,10 @@ class GPSOverlay(QMainWindow):
             else:
                 self.location_label.setText("SYSTÈME: Recherche...")
             
+            # Affichage des coordonnées (toujours afficher, même si None)
             if data["x"] is not None:
-                self.pos_label.setText(f"X: {data['x']:.3f}, Y: {data['y']:.3f}, Z: {data['z']:.3f}")
+                self.pos_label.setText(f"X: {data['x']:.3f} km | Y: {data['y']:.3f} km | Z: {data['z']:.3f} km")
+                self.pos_label.setStyleSheet("color: #00ff00; font-family: 'Consolas'; font-size: 14px; background-color: rgba(0, 0, 0, 100);")
                 
                 # 2. Calcul distance si une cible est définie
                 dist = self.nav.calculate_distance(data)
@@ -293,7 +295,8 @@ class GPSOverlay(QMainWindow):
                 else:
                     self.dist_label.setText("PAS DE CIBLE")
             else:
-                self.pos_label.setText("Scan UI en cours (r_displayinfo 3)...")
+                self.pos_label.setText(f"X: --- | Y: --- | Z: --- (Scan en cours...)")
+                self.pos_label.setStyleSheet("color: #ffaa00; font-family: 'Consolas'; font-size: 14px; background-color: rgba(0, 0, 0, 100);")
                 
         except Exception as e:
             self.pos_label.setText(f"Erreur: {str(e)}")

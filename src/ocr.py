@@ -81,12 +81,19 @@ class OCRProcessor:
             if "Zone:" in line and "SolarSystem" in line:
                 logger.debug(f"Ligne Zone détectée : {line}")
                 # Extraction du nom du système (ex: "Zone: SolarSystem_Stanton" -> "Stanton")
-                # Accepte maintenant les IDs numériques longs
-                zone_match = re.search(r'Zone:\s*SolarSystem[_-]?([\w]+)', line, re.IGNORECASE)
+                # S'arrête avant "Pos:" ou autres mots-clés
+                zone_match = re.search(r'Zone:\s*SolarSystem[_-]?([\d\w]+?)(?:Pos|Zone|$|\s)', line, re.IGNORECASE)
                 if zone_match:
-                    system_id = zone_match.group(1)
-                    # Mapper l'ID vers le nom du système connu
-                    data["location"] = self.SYSTEM_ID_MAP.get(system_id, system_id)
+                    system_id = zone_match.group(1).strip()
+                    
+                    # Matching intelligent : cherche si l'ID contient un ID connu
+                    matched_name = None
+                    for known_id, name in self.SYSTEM_ID_MAP.items():
+                        if known_id in system_id or system_id in known_id:
+                            matched_name = name
+                            break
+                    
+                    data["location"] = matched_name if matched_name else system_id
                     logger.info(f"Système détecté : ID={system_id}, Nom={data['location']}")
                 else:
                     # Si pas de nom spécifique, on prend "SolarSystem"

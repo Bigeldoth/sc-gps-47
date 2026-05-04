@@ -1,5 +1,32 @@
 # Changelog - SpaceDrive GPS
 
+## Version 1.3.0 (2026-05-04)
+
+### 🐛 Corrections critiques
+
+#### Regex Zone amélioré
+- **Problème** : Le regex capturait "Pos" à la fin de l'ID système (ex: "9948564368677Pos")
+- **Solution** : Regex s'arrête maintenant avant "Pos:", "Zone:" ou fin de ligne
+- **Fichiers modifiés** : `src/ocr.py`
+
+#### Matching intelligent des systèmes
+- **Problème** : Les IDs partiels ou avec erreurs OCR n'étaient pas reconnus
+- **Solution** : 
+  - Recherche partielle dans les IDs connus
+  - Si "9948564368677" est détecté (même partiellement) → affiche "Stanton"
+  - Matching flexible pour tolérer les erreurs OCR
+- **Fichiers modifiés** : `src/ocr.py`
+
+#### Affichage coordonnées amélioré
+- **Problème** : Les coordonnées n'étaient pas affichées si non détectées
+- **Solution** : 
+  - Affichage permanent : "X: --- | Y: --- | Z: ---" si non détecté
+  - Format amélioré avec unités : "X: 123.456 km"
+  - Couleur orange quand scan en cours, vert quand détecté
+- **Fichiers modifiés** : `src/main.py`
+
+---
+
 ## Version 1.2.0 (2026-05-04)
 
 ### 🐛 Corrections critiques
