@@ -4,10 +4,11 @@ block_cipher = None
 
 a = Analysis(
     ['src\\main.py'],
-    pathex=[],
+    pathex=['src'],
     binaries=[],
     datas=[
         ('data\\poi.json', 'data'),
+        ('config.ini', '.'),
     ],
     hiddenimports=[
         'keyboard',
@@ -19,6 +20,9 @@ a = Analysis(
         'PyQt6.QtCore',
         'PyQt6.QtGui',
         'PyQt6.QtWidgets',
+        'ocr',
+        'capture',
+        'navigation',
     ],
     hookspath=[],
     hooksconfig={},

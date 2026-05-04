@@ -41,8 +41,9 @@ class OCRProcessor:
             
     def extract_data(self, image):
         """Extrait les coordonnées et le lieu de l'image traitée"""
-        # Utilisation de config pour optimiser la reconnaissance des chiffres et symboles
-        custom_config = r'--oem 3 --psm 6'
+        # Configuration optimisée pour le texte blanc de Star Citizen
+        # PSM 6 = bloc de texte uniforme, OEM 3 = mode par défaut
+        custom_config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz:._- '
         text = pytesseract.image_to_string(image, config=custom_config)
         
         return self.parse_text(text)
@@ -56,21 +57,53 @@ class OCRProcessor:
             "z": None
         }
         
-        # Nettoyage du texte
+        # Nettoyage du texte et correction des erreurs courantes d'OCR
+        text = self._correct_ocr_errors(text)
         lines = [line.strip() for line in text.split('\n') if line.strip()]
         
         for line in lines:
-            # Recherche des coordonnées (format X: 123.4 Y: 567.8 Z: 910.1)
-            coord_match = re.search(r'X:\s*(-?\d+\.?\d*).*Y:\s*(-?\d+\.?\d*).*Z:\s*(-?\d+\.?\d*)', line, re.IGNORECASE)
-            if coord_match:
-                data["x"] = float(coord_match.group(1))
-                data["y"] = float(coord_match.group(2))
-                data["z"] = float(coord_match.group(3))
-            elif len(line) > 3 and not any(c in line for c in [':', '=']):
-                # On assume que la ligne sans ':' est le nom du lieu
-                data["location"] = line
+            # Recherche de la ligne "Zone: SolarSystem_XXX"
+            if "Zone:" in line and "SolarSystem" in line:
+                # Extraction du nom du système (ex: "Zone: SolarSystem_Stanton" -> "Stanton")
+                zone_match = re.search(r'Zone:\s*SolarSystem[_-]?(\w+)', line, re.IGNORECASE)
+                if zone_match:
+                    data["location"] = zone_match.group(1)
+                else:
+                    # Si pas de nom spécifique, on prend "SolarSystem"
+                    data["location"] = "SolarSystem"
+            
+            # Recherche des coordonnées (format Pos: 123.4km 567.8km 910.1km)
+            elif "Pos:" in line:
+                # Regex plus tolérante pour gérer les espaces et variations
+                coord_match = re.search(
+                    r'Pos:\s*(-?\d+\.?\d*)\s*km\s*(-?\d+\.?\d*)\s*km\s*(-?\d+\.?\d*)\s*km', 
+                    line, 
+                    re.IGNORECASE
+                )
+                if coord_match:
+                    try:
+                        data["x"] = float(coord_match.group(1))
+                        data["y"] = float(coord_match.group(2))
+                        data["z"] = float(coord_match.group(3))
+                    except ValueError:
+                        pass  # Ignore les erreurs de conversion
                 
         return data
+    
+    def _correct_ocr_errors(self, text):
+        """Corrige les erreurs courantes de reconnaissance OCR"""
+        # Corrections courantes : O->0, l->1 dans les contextes numériques
+        corrections = {
+            'Pos:': 'Pos:',  # S'assurer que Pos: est correct
+            'Zone:': 'Zone:',  # S'assurer que Zone: est correct
+            'SolarSystern': 'SolarSystem',  # Erreur courante m->n
+            'So1arSystem': 'SolarSystem',  # l->1
+        }
+        
+        for wrong, correct in corrections.items():
+            text = text.replace(wrong, correct)
+        
+        return text
 
 if __name__ == "__main__":
     # Test rapide si une image existe

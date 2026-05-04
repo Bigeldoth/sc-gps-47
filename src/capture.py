@@ -14,8 +14,9 @@ class ScreenCapture:
         """Définit la zone de capture (haut droite de l'écran pour r_displayinfo 3)"""
         monitor = self.sct.monitors[self.monitor_index]
         # Zone typique pour r_displayinfo 3 en haut à droite
-        width = 500
-        height = 200
+        # Augmenté pour capturer plus d'informations
+        width = 600
+        height = 250
         
         return {
             "top": monitor["top"] + 10,
@@ -33,10 +34,25 @@ class ScreenCapture:
         img = np.array(screenshot)
         img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
         
-        # Prétraitement pour l'OCR
+        # Prétraitement optimisé pour le petit texte blanc de Star Citizen
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        # Augmentation du contraste et seuillage pour isoler le texte blanc
-        _, thresh = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY_INV)
+        
+        # Upscaling x2 pour améliorer la lisibilité du petit texte
+        gray = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+        
+        # Débruitage avec filtre bilateral (préserve les bords)
+        denoised = cv2.bilateralFilter(gray, 9, 75, 75)
+        
+        # Amélioration du contraste avec CLAHE
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+        enhanced = clahe.apply(denoised)
+        
+        # Seuillage adaptatif pour isoler le texte blanc
+        # Utilise THRESH_BINARY car le texte est blanc (valeurs hautes)
+        thresh = cv2.adaptiveThreshold(
+            enhanced, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+            cv2.THRESH_BINARY, 11, 2
+        )
         
         return thresh
 
