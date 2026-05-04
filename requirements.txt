@@ -4,3 +4,5 @@ opencv-python
 pytesseract
 PyQt6
 Pillow
+keyboard
+pyinstaller

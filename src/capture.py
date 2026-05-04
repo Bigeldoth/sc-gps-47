@@ -11,15 +11,15 @@ class ScreenCapture:
         self.monitor_index = 1
         
     def get_capture_zone(self):
-        """Définit la zone de capture (bas droite de l'écran)"""
+        """Définit la zone de capture (haut droite de l'écran pour r_displayinfo 3)"""
         monitor = self.sct.monitors[self.monitor_index]
-        width = 450
-        height = 150
+        # Zone typique pour r_displayinfo 3 en haut à droite
+        width = 500
+        height = 200
         
-        # Positionnement dans le coin inférieur droit
         return {
-            "top": monitor["top"] + monitor["height"] - height - 50,
-            "left": monitor["left"] + monitor["width"] - width - 20,
+            "top": monitor["top"] + 10,
+            "left": monitor["left"] + monitor["width"] - width - 10,
             "width": width,
             "height": height
         }

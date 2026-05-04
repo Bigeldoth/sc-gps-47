@@ -1,10 +1,42 @@
 import pytesseract
 import re
 import cv2
+import os
+import sys
 
 class OCRProcessor:
     def __init__(self, tesseract_path=None):
-        if tesseract_path:
+        # Pour le mode exécutable "clé en main"
+        if not tesseract_path:
+            # On cherche tesseract dans un dossier 'tesseract' à côté de l'exécutable
+            base_path = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+            # Liste des chemins possibles pour Tesseract
+            possible_paths = []
+            
+            # 1. Dossier local 'tesseract' (pour l'exécutable portable)
+            if getattr(sys, 'frozen', False):
+                possible_paths.append(os.path.join(os.path.dirname(sys.executable), "tesseract", "tesseract.exe"))
+            else:
+                possible_paths.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tesseract", "tesseract.exe"))
+            
+            # 2. Installation standard Program Files
+            possible_paths.append(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
+            possible_paths.append(r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe")
+            
+            # 3. Chemin utilisateur local
+            user_local = os.path.join(os.environ.get('LOCALAPPDATA', ''), 'Tesseract-OCR', 'tesseract.exe')
+            possible_paths.append(user_local)
+
+            found = False
+            for path in possible_paths:
+                if os.path.exists(path):
+                    pytesseract.pytesseract.tesseract_cmd = path
+                    found = True
+                    break
+            
+            if not found:
+                print("ATTENTION: Tesseract-OCR non trouvé dans les emplacements standards.")
+        else:
             pytesseract.pytesseract.tesseract_cmd = tesseract_path
             
     def extract_data(self, image):
