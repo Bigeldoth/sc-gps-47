@@ -95,8 +95,8 @@ class OCRProcessor:
                 elif "Pos:" in line or "pos:" in line.lower():
                     logger.debug(f"[{pass_name}] Ligne Pos détectée : {line}")
                     coord_match = re.search(
-                        r'[Pp]os:?\s*(-?\d+\.?\d*)[_\s]*[kKaA][mnMN]?[_\s]*(-?\d+\.?\d*)[_\s]*[kKaA][mnMN]?[_\s-]*(-?\d+\.?\d*)[_\s]*[kKaA][mnMN]?', 
-                        line, re.IGNORECASE)
+                     r'[Pp]os:?\s*(-?\d+\.?\d*)[_\s]*[kKaA][mnMN]?[_\s]*(-?\d+\.?\d*)[_\s]*[kKaA][mnMN]?[_\s]*(-?\d+\.?\d*)[_\s]*[kKaA][mnMN]?', 
+                     line, re.IGNORECASE)
                     if coord_match:
                         try:
                             data["x"] = float(coord_match.group(1))
