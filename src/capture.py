@@ -35,7 +35,7 @@ class ScreenCapture:
         }
 
     def capture(self):
-        """Capture la zone définie et retourne une image OpenCV traitée"""
+        """Capture la zone définie et retourne plusieurs images prétraitées"""
         region = self.get_capture_zone()
         screenshot = self.sct.grab(region)
         
@@ -56,9 +56,26 @@ class ScreenCapture:
         clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
         enhanced = clahe.apply(denoised)
         
-        # Seuillage simple pour isoler le texte blanc sur fond sombre
-        # Utilise un seuil fixe car le texte est toujours blanc
-        _, thresh = cv2.threshold(enhanced, 180, 255, cv2.THRESH_BINARY)
+        # Création de plusieurs versions prétraitées pour le scoring
+        images = {}
+        
+        # Pass 1 : Seuil fixe 180 (actuel)
+        _, thresh1 = cv2.threshold(enhanced, 180, 255, cv2.THRESH_BINARY)
+        images['pass1'] = thresh1
+        
+        # Pass 2 : Inversion + seuil (texte noir sur blanc)
+        inverted = cv2.bitwise_not(enhanced)
+        _, thresh2 = cv2.threshold(inverted, 80, 255, cv2.THRESH_BINARY)
+        images['pass2'] = thresh2
+        
+        # Pass 3 : Otsu automatique
+        _, thresh3 = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        images['pass3'] = thresh3
+        
+        # Pass 4 : Gamma correction + seuil adaptatif
+        gamma = np.power(enhanced/255.0, 0.5) * 255  # Éclaircit les zones sombres
+        thresh4 = cv2.adaptiveThreshold(gamma.astype(np.uint8), 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, 21, 5)
+        images['pass4'] = thresh4
         
         # Sauvegarde pour debug si activé dans config
         try:
@@ -66,12 +83,12 @@ class ScreenCapture:
             config = configparser.ConfigParser()
             config.read('config.ini')
             if config.getboolean('Debug', 'save_ocr_images', fallback=False):
-                cv2.imwrite("debug_capture_processed.png", thresh)
+                cv2.imwrite("debug_capture_processed.png", thresh1)  # Sauvegarde du premier pass
                 cv2.imwrite("debug_capture_original.png", img)
         except:
             pass
         
-        return thresh
+        return images
 
 if __name__ == "__main__":
     cap = ScreenCapture()

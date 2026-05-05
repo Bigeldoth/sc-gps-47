@@ -67,7 +67,7 @@ class GPSOverlay(QMainWindow):
         # Timer pour la mise à jour (toutes les secondes)
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_gps)
-        self.timer.start(1000)
+        self.timer.start(2000)
         
         # Hotkeys globaux
         self.setup_hotkeys()
@@ -272,9 +272,9 @@ class GPSOverlay(QMainWindow):
 
     def update_gps(self):
         try:
-            # 1. Capture & OCR
-            screenshot = self.capture.capture()
-            data = self.ocr.extract_data(screenshot)
+            # 1. Capture & OCR (multi‑pass)
+            images = self.capture.capture()
+            data = self.ocr.extract_data(images)
             self.current_data = data
             
             # Mise à jour du nom du système
