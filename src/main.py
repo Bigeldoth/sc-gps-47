@@ -64,10 +64,15 @@ class GPSOverlay(QMainWindow):
         # System Tray Icon
         self.setup_tray_icon()
 
-        # Timer pour la mise à jour (toutes les secondes)
+        # Timer pour la mise à jour (intervalle configurable)
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_gps)
-        self.timer.start(2000)
+        # Load refresh interval from config (default 2000 ms)
+        try:
+            interval = config.getint('Settings', 'refresh_interval_ms', fallback=2000)
+        except Exception:
+            interval = 2000
+        self.timer.start(interval)
         
         # Hotkeys globaux
         self.setup_hotkeys()
@@ -173,18 +178,16 @@ class GPSOverlay(QMainWindow):
             self.toggle_action.setText("Masquer l'overlay (Shift+F1)")
 
     def toggle_interaction(self):
-        """Bascule entre le mode transparent et interactif"""
+        """Ouvre la fenêtre d'options au lieu du mode interactif"""
         try:
-            logger.debug(f"Toggling interaction mode. Current state: {self.is_interactive}")
-            
-            # Afficher le menu contextuel au lieu de changer l'état interactif
-            self.show_interaction_menu()
+            logger.debug("Opening Options window via Shift+F2")
+            self.show_options_window()
         except Exception as e:
-            logger.error(f"Erreur lors du basculement d'interaction : {e}")
-            self.tray_icon.showMessage("Erreur", f"Impossible de basculer : {e}", QSystemTrayIcon.MessageIcon.Warning)
+            logger.error(f"Erreur lors de l'ouverture des options : {e}")
+            self.tray_icon.showMessage("Erreur", f"Impossible d'ouvrir les options : {e}", QSystemTrayIcon.MessageIcon.Warning)
 
     def show_interaction_menu(self):
-        """Affiche un menu contextuel avec les options de gestion"""
+        """Affiche un menu contextuel avec les options de gestion (déprécié)"""
         menu = QMenu()
         
         # Enregistrer position
