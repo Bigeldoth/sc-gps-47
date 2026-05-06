@@ -1,5 +1,56 @@
 # Changelog - SpaceDrive GPS
 
+## Version 1.4.0 (2026-05-05)
+
+### 🐛 Corrections critiques
+
+#### Regex Pos ultra-tolérant
+- **Problème** : Les coordonnées n'étaient pas capturées à cause d'erreurs OCR multiples
+- **Exemples non capturés** : 
+  - `4133.5819km_-1964.0889kn-529.9201k` (underscore, kn, k)
+  - `214139636.4299km_-1964.0889kn-529.9201k` (pas d'espace après Pos:)
+- **Solution** : 
+  - Regex accepte underscore `_` comme séparateur
+  - Regex accepte `k` seul sans `m` (k, kn, km, an)
+  - Regex accepte pas d'espace après `Pos:`
+  - Regex accepte tiret `-` comme séparateur
+- **Fichiers modifiés** : `src/ocr.py`
+
+#### Corrections OCR étendues
+- **Ajout** : `Zore:` → `Zone:` (erreur courante)
+- **Ajout** : `SovarSysten` → `SolarSystem` (erreurs multiples)
+- **Ajout** : `SolarSysten` → `SolarSystem`
+- **Fichiers modifiés** : `src/ocr.py`
+
+---
+
+## Version 1.3.0 (2026-05-04)
+
+### 🐛 Corrections critiques
+
+#### Regex Zone amélioré
+- **Problème** : Le regex capturait "Pos" à la fin de l'ID système (ex: "9948564368677Pos")
+- **Solution** : Regex s'arrête maintenant avant "Pos:", "Zone:" ou fin de ligne
+- **Fichiers modifiés** : `src/ocr.py`
+
+#### Matching intelligent des systèmes
+- **Problème** : Les IDs partiels ou avec erreurs OCR n'étaient pas reconnus
+- **Solution** : 
+  - Recherche partielle dans les IDs connus
+  - Si "9948564368677" est détecté (même partiellement) → affiche "Stanton"
+  - Matching flexible pour tolérer les erreurs OCR
+- **Fichiers modifiés** : `src/ocr.py`
+
+#### Affichage coordonnées amélioré
+- **Problème** : Les coordonnées n'étaient pas affichées si non détectées
+- **Solution** : 
+  - Affichage permanent : "X: --- | Y: --- | Z: ---" si non détecté
+  - Format amélioré avec unités : "X: 123.456 km"
+  - Couleur orange quand scan en cours, vert quand détecté
+- **Fichiers modifiés** : `src/main.py`
+
+---
+
 ## Version 1.2.0 (2026-05-04)
 
 ### 🐛 Corrections critiques
