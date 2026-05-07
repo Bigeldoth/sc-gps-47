@@ -26,29 +26,16 @@ _OCR_CORRECTIONS = {
 
 
 class OCRProcessor:
-    """
-    Processeur OCR avec support de plusieurs moteurs (Tesseract, PaddleOCR).
-    Utilise un système de scoring pour choisir la meilleure passe d'image.
-    """
-    
-    # Mapping des IDs système vers les noms de systèmes connus
     SYSTEM_ID_MAP = {
         "9948564368677": "Stanton",
         "Stanton": "Stanton",
     }
-    
+
     def __init__(self, tesseract_path=None, engine="tesseract"):
-        """
-        Initialise le processeur OCR.
-        
-        Args:
-            tesseract_path: Chemin vers l'exécutable Tesseract (optionnel)
-            engine: Moteur OCR à utiliser ("tesseract" ou "paddle")
-        """
         self.engine = engine.lower()
         self.paddle_ocr = None
         self.tesseract_config = _TESSERACT_CONFIG
-        
+
         if self.engine == "tesseract":
             self._init_tesseract(tesseract_path)
         elif self.engine == "paddle":
@@ -57,11 +44,10 @@ class OCRProcessor:
             logger.warning(f"Moteur OCR inconnu '{engine}', fallback vers Tesseract")
             self.engine = "tesseract"
             self._init_tesseract(tesseract_path)
-        
+
         self._pool = ThreadPoolExecutor(max_workers=4)
-    
+
     def _init_tesseract(self, tesseract_path=None):
-        """Initialise Tesseract OCR"""
         if not tesseract_path:
             base_path = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
             possible_paths = []
@@ -71,11 +57,15 @@ class OCRProcessor:
             else:
                 possible_paths.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tesseract", "tesseract.exe"))
 
-            possible_paths.append(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
-            possible_paths.append(r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe")
-
-            user_local = os.path.join(os.environ.get('LOCALAPPDATA', ''), 'Tesseract-OCR', 'tesseract.exe')
-            possible_paths.append(user_local)
+            if sys.platform == "win32":
+                possible_paths.append(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
+                possible_paths.append(r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe")
+                user_local = os.path.join(os.environ.get('LOCALAPPDATA', ''), 'Tesseract-OCR', 'tesseract.exe')
+                possible_paths.append(user_local)
+            else:
+                possible_paths.append("/opt/homebrew/bin/tesseract")
+                possible_paths.append("/usr/local/bin/tesseract")
+                possible_paths.append("/usr/bin/tesseract")
 
             found = False
             for path in possible_paths:
@@ -91,22 +81,18 @@ class OCRProcessor:
                 logger.error("Chemins testés: " + ", ".join(possible_paths))
         else:
             pytesseract.pytesseract.tesseract_cmd = tesseract_path
-        
+
         logger.info("Tesseract OCR initialisé")
-    
+
     def _init_paddle(self):
-        """Initialise PaddleOCR"""
         try:
             from paddleocr import PaddleOCR
-            
-            # Initialiser PaddleOCR avec le modèle léger
-            # use_angle_cls=True pour la détection d'orientation
-            # lang='en' pour l'anglais (meilleur pour les chiffres)
+
             self.paddle_ocr = PaddleOCR(
                 use_angle_cls=True,
                 lang='en',
                 show_log=False,
-                use_gpu=False  # Mettre True si GPU disponible
+                use_gpu=False
             )
             logger.info("PaddleOCR initialisé avec succès")
         except ImportError:
@@ -119,39 +105,24 @@ class OCRProcessor:
             logger.warning("Fallback vers Tesseract")
             self.engine = "tesseract"
             self._init_tesseract(None)
-    
+
     def _ocr_image_to_text(self, img):
-        """
-        Convertit une image en texte selon le moteur OCR configuré.
-        
-        Args:
-            img: Image OpenCV (numpy array)
-        
-        Returns:
-            str: Texte extrait
-        """
         if self.engine == "paddle" and self.paddle_ocr is not None:
             try:
-                # PaddleOCR retourne une liste de résultats
                 result = self.paddle_ocr.ocr(img, cls=True)
-                
-                # Extraire le texte de tous les résultats
                 text_lines = []
                 if result and result[0]:
                     for line in result[0]:
                         if line and len(line) >= 2:
-                            text_lines.append(line[1][0])  # line[1][0] contient le texte
-                
+                            text_lines.append(line[1][0])
                 return '\n'.join(text_lines)
             except Exception as e:
                 logger.error(f"Erreur PaddleOCR : {e}, fallback vers Tesseract pour cette image")
                 return pytesseract.image_to_string(img, config=self.tesseract_config)
         else:
-            # Utiliser Tesseract
             return pytesseract.image_to_string(img, config=self.tesseract_config)
 
     def extract_data(self, images):
-        """Extrait les coordonnées et le lieu à partir d'un dictionnaire d'images pré-traitées"""
         logger.debug(f"Extraction OCR à partir de {len(images)} passes avec moteur {self.engine}")
         return self._parse_images_parallel(images)
 

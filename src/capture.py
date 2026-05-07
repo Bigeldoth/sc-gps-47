@@ -3,58 +3,67 @@ import numpy as np
 import cv2
 import configparser
 import logging
+import threading
+import time
 
 logger = logging.getLogger(__name__)
+
+CAPTURE_WIDTH = 400
+CAPTURE_HEIGHT = 200
 
 
 class ScreenCapture:
     def __init__(self):
-        self.sct = mss.mss()
         self.monitor_index = 1
 
         self._clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
 
-        self._cached_zone = None
-        self._cached_monitor_key = None
-
         config = configparser.ConfigParser()
         config.read('config.ini')
         self._save_debug = config.getboolean('Debug', 'save_ocr_images', fallback=False)
+        test_path = config.get('Debug', 'test_screenshot', fallback='').strip()
+        self._test_screenshot = test_path if test_path else None
 
-    def _monitor_key(self, monitor):
-        return (monitor["top"], monitor["left"], monitor["width"], monitor["height"])
+        self._frame = None
+        self._frame_lock = threading.Lock()
+        self._running = True
 
-    def get_capture_zone(self):
-        monitor = self.sct.monitors[self.monitor_index]
-        key = self._monitor_key(monitor)
-        if self._cached_zone is not None and self._cached_monitor_key == key:
-            return self._cached_zone
+        if self._test_screenshot:
+            logger.info(f"Mode test : lecture depuis {self._test_screenshot}")
+            img = cv2.imread(self._test_screenshot)
+            if img is None:
+                raise FileNotFoundError(f"Screenshot introuvable : {self._test_screenshot}")
+            with self._frame_lock:
+                self._frame = img
+        else:
+            self._capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
+            self._capture_thread.start()
 
-        screen_width = monitor["width"]
-        screen_height = monitor["height"]
-
-        width_ratio = screen_width / 1920
-        height_ratio = screen_height / 1080
-
-        width = int(600 * width_ratio)
-        height = int(250 * height_ratio)
-
-        zone = {
-            "top": monitor["top"] + int(10 * height_ratio),
-            "left": monitor["left"] + monitor["width"] - width - int(10 * width_ratio),
-            "width": width,
-            "height": height,
+    def _capture_loop(self):
+        sct = mss.mss()
+        monitor = sct.monitors[self.monitor_index]
+        region = {
+            "top": monitor["top"] + 10,
+            "left": monitor["left"] + monitor["width"] - CAPTURE_WIDTH - 10,
+            "width": CAPTURE_WIDTH,
+            "height": CAPTURE_HEIGHT,
         }
-        self._cached_zone = zone
-        self._cached_monitor_key = key
-        return zone
+        logger.info(f"Capture continue : {CAPTURE_WIDTH}x{CAPTURE_HEIGHT} top-right, region={region}")
+
+        while self._running:
+            raw = sct.grab(region)
+            img = np.array(raw, dtype=np.uint8)
+            img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+            with self._frame_lock:
+                self._frame = img
+            time.sleep(0.016)
 
     def capture(self):
-        region = self.get_capture_zone()
-        screenshot = self.sct.grab(region)
+        with self._frame_lock:
+            img = self._frame
 
-        img = np.array(screenshot)
-        img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+        if img is None:
+            return {}
 
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         gray = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
@@ -87,9 +96,17 @@ class ScreenCapture:
 
         return images
 
+    def stop(self):
+        self._running = False
+
 
 if __name__ == "__main__":
     cap = ScreenCapture()
-    img = cap.capture()
-    cv2.imwrite("test_capture.png", img)
-    print("Capture de test effectuée : test_capture.png")
+    time.sleep(0.1)
+    images = cap.capture()
+    if images:
+        cv2.imwrite("test_capture.png", images.get('pass1'))
+        print("Capture de test effectuée : test_capture.png")
+    else:
+        print("Pas de frame capturée.")
+    cap.stop()
