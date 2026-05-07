@@ -3,7 +3,8 @@ Fenêtre d'options pour SpaceDrive GPS.
 Permet de configurer la fréquence OCR et les hotkeys.
 """
 import logging
-from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
+import sys
+from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                              QSlider, QPushButton, QTableWidget, QTableWidgetItem,
                              QHeaderView, QMessageBox, QKeySequenceEdit, QWidget)
 from PyQt6.QtCore import Qt, pyqtSignal
@@ -368,16 +369,27 @@ class HotkeyEditDialog(QDialog):
         self.setStyleSheet(parent.styleSheet())
     
     def get_hotkey(self):
-        """Retourne le hotkey saisi (format keyboard compatible)"""
+        """Retourne le hotkey saisi au format pynput (ex: 'cmd+shift+p')"""
         sequence = self.key_edit.keySequence()
         if sequence.isEmpty():
             return ""
-        
-        # Convertir QKeySequence en format keyboard (ex: "Ctrl+Shift+P")
+
         key_string = sequence.toString().lower()
-        # Remplacer les noms Qt par les noms keyboard
-        key_string = key_string.replace("ctrl", "ctrl")
-        key_string = key_string.replace("shift", "shift")
-        key_string = key_string.replace("alt", "alt")
-        
-        return key_string
+        parts = [p.strip() for p in key_string.split('+') if p.strip()]
+
+        converted = []
+        for p in parts:
+            if sys.platform == 'darwin':
+                if p == 'ctrl':
+                    converted.append('cmd')
+                elif p == 'meta':
+                    converted.append('ctrl')
+                else:
+                    converted.append(p)
+            else:
+                if p == 'meta':
+                    converted.append('cmd')
+                else:
+                    converted.append(p)
+
+        return '+'.join(converted)
