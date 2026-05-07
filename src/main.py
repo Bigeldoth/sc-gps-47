@@ -53,6 +53,9 @@ class GPSWorker(QObject):
 class GPSOverlay(QMainWindow):
     save_point_signal = pyqtSignal()
     trigger_worker = pyqtSignal()
+    toggle_overlay_signal = pyqtSignal()
+    show_menu_signal = pyqtSignal()
+    show_poi_signal = pyqtSignal()
 
     def __init__(self):
         super().__init__()
@@ -97,8 +100,11 @@ class GPSOverlay(QMainWindow):
         self.timer.timeout.connect(self._request_update)
         self.timer.start(interval)
 
-        self.setup_hotkeys()
         self.save_point_signal.connect(self.prompt_save_point)
+        self.toggle_overlay_signal.connect(self.toggle_overlay)
+        self.show_menu_signal.connect(self.show_interaction_menu)
+        self.show_poi_signal.connect(self.show_poi_selector)
+        self.setup_hotkeys()
 
     def _setup_worker_thread(self):
         self._worker_thread = QThread()
@@ -241,10 +247,10 @@ class GPSOverlay(QMainWindow):
 
         bindings = {}
         hotkey_actions = {
-            'toggle_overlay': self.toggle_overlay,
-            'open_options': self.show_interaction_menu,
-            'save_position': lambda: self.save_point_signal.emit(),
-            'open_poi_manager': self.show_poi_selector,
+            'toggle_overlay': self.toggle_overlay_signal.emit,
+            'open_options': self.show_menu_signal.emit,
+            'save_position': self.save_point_signal.emit,
+            'open_poi_manager': self.show_poi_signal.emit,
         }
         for action_name, callback in hotkey_actions.items():
             hotkey_str = config.get('Hotkeys', action_name, fallback=None)
