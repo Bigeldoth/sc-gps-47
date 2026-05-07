@@ -56,7 +56,7 @@ class ScreenCapture:
             img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
             with self._frame_lock:
                 self._frame = img
-            time.sleep(0.016)
+            time.sleep(0.2)
 
     def capture(self):
         with self._frame_lock:

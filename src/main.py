@@ -214,19 +214,65 @@ class GPSOverlay(QMainWindow):
             2000
         )
 
+    def _parse_hotkey(self, hotkey_str):
+        parts = [p.strip().lower() for p in hotkey_str.split('+')]
+        modifiers = set()
+        key = None
+        for p in parts:
+            if p in ('shift', 'ctrl', 'alt', 'cmd'):
+                if p == 'shift':
+                    modifiers.add('shift')
+                elif p == 'ctrl':
+                    modifiers.add('ctrl')
+                elif p == 'alt':
+                    modifiers.add('alt')
+                elif p == 'cmd':
+                    modifiers.add('cmd')
+            else:
+                try:
+                    key = getattr(pynput_keyboard.Key, p)
+                except AttributeError:
+                    key = pynput_keyboard.KeyCode.from_char(p)
+        return frozenset(modifiers), key
+
     def setup_hotkeys(self):
         self._pressed_keys = set()
+        self._active_modifiers = set()
+
+        bindings = {}
+        hotkey_actions = {
+            'toggle_overlay': self.toggle_overlay,
+            'open_options': self.show_interaction_menu,
+            'save_position': lambda: self.save_point_signal.emit(),
+            'open_poi_manager': self.show_poi_selector,
+        }
+        for action_name, callback in hotkey_actions.items():
+            hotkey_str = config.get('Hotkeys', action_name, fallback=None)
+            if hotkey_str:
+                modifiers, key = self._parse_hotkey(hotkey_str)
+                bindings[action_name] = (modifiers, key, callback)
+                logger.info(f"Hotkey '{action_name}' = {hotkey_str}")
+
+        self._hotkey_bindings = bindings
+
+        def _check_modifiers():
+            mods = set()
+            if pynput_keyboard.Key.shift in self._pressed_keys or pynput_keyboard.Key.shift_l in self._pressed_keys or pynput_keyboard.Key.shift_r in self._pressed_keys:
+                mods.add('shift')
+            if pynput_keyboard.Key.ctrl in self._pressed_keys or pynput_keyboard.Key.ctrl_l in self._pressed_keys or pynput_keyboard.Key.ctrl_r in self._pressed_keys:
+                mods.add('ctrl')
+            if pynput_keyboard.Key.alt in self._pressed_keys or pynput_keyboard.Key.alt_l in self._pressed_keys or pynput_keyboard.Key.alt_r in self._pressed_keys:
+                mods.add('alt')
+            if pynput_keyboard.Key.cmd in self._pressed_keys or pynput_keyboard.Key.cmd_l in self._pressed_keys or pynput_keyboard.Key.cmd_r in self._pressed_keys:
+                mods.add('cmd')
+            return mods
 
         def on_press(key):
             self._pressed_keys.add(key)
-            combo = self._pressed_keys
-            shift = pynput_keyboard.Key.shift in combo or pynput_keyboard.Key.shift_l in combo or pynput_keyboard.Key.shift_r in combo
-            if shift and pynput_keyboard.Key.f1 in combo:
-                self.toggle_overlay()
-            elif shift and pynput_keyboard.Key.f2 in combo:
-                self.save_point_signal.emit()  # show_interaction_menu needs main thread
-            elif shift and pynput_keyboard.Key.f3 in combo:
-                self.save_point_signal.emit()
+            active_mods = _check_modifiers()
+            for _, (required_mods, target_key, callback) in self._hotkey_bindings.items():
+                if target_key == key and required_mods == active_mods:
+                    callback()
 
         def on_release(key):
             self._pressed_keys.discard(key)
