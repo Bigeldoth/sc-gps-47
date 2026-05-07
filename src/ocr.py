@@ -45,7 +45,7 @@ class OCRProcessor:
             self.engine = "tesseract"
             self._init_tesseract(tesseract_path)
 
-        self._pool = ThreadPoolExecutor(max_workers=4)
+        self._pool = ThreadPoolExecutor(max_workers=2)
 
     def _init_tesseract(self, tesseract_path=None):
         if not tesseract_path:
