@@ -7,3 +7,8 @@ Pillow
 keyboard
 pyinstaller
 easyocr
+# PaddleOCR (optionnel, pour de meilleures performances OCR)
+# Décommentez les lignes suivantes pour utiliser PaddleOCR :
+# paddleocr>=2.7.0
+# paddlepaddle>=2.5.0  # Pour CPU uniquement
+# paddlepaddle-gpu>=2.5.0  # Pour GPU (nécessite CUDA)
