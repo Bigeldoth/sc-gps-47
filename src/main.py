@@ -6,14 +6,10 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QLabel, QVBoxLayout,
                              QWidget, QSystemTrayIcon, QMenu, QInputDialog, QFileDialog)
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QObject
 from PyQt6.QtGui import QIcon, QAction, QColor, QCursor
-import keyboard
+from pynput import keyboard as pynput_keyboard
 from capture import ScreenCapture
 from ocr import OCRProcessor
 from navigation import NavigationEngine
-from config_manager import ConfigManager
-from hotkey_listener import HotkeyListener
-from ui.options import OptionsWindow
-from ui.poi_manager import POIManagerWindow
 
 config = configparser.ConfigParser()
 config.read('config.ini')
@@ -31,12 +27,8 @@ class GPSWorker(QObject):
 
     def __init__(self):
         super().__init__()
-        
-        # Initialiser les gestionnaires
-        self.config_manager = ConfigManager()
         self.capture = ScreenCapture()
-        # Initialise l'OCR avec le moteur configuré via ConfigManager
-        ocr_engine = self.config_manager.get_ocr_engine()
+        ocr_engine = config.get('OCR', 'engine', fallback='tesseract')
         self.ocr = OCRProcessor(engine=ocr_engine)
         logger.info(f"Moteur OCR initialisé : {ocr_engine}")
         self._running = True
@@ -54,6 +46,7 @@ class GPSWorker(QObject):
 
     def stop(self):
         self._running = False
+        self.capture.stop()
         self.ocr.shutdown()
 
 
@@ -67,11 +60,7 @@ class GPSOverlay(QMainWindow):
         self.is_visible = True
         self.is_interactive = False
         self.current_data = {"x": None, "y": None, "z": None, "location": "Unknown"}
-        # Gestion de l'état du worker
         self._worker_busy = False
-        # Fenêtres UI (initialisées à None, créées à la demande)
-        self.options_window = None
-        self.poi_manager_window = None
 
         # UI
         self.central_widget = QWidget()
@@ -81,13 +70,13 @@ class GPSOverlay(QMainWindow):
         self.status_label.setStyleSheet("color: #ffffff; font-size: 10px; background-color: rgba(50, 50, 50, 150);")
 
         self.location_label = QLabel("SYSTÈME: Recherche...")
-        self.location_label.setStyleSheet("color: #ffaa00; font-family: 'Consolas'; font-size: 12px; font-weight: bold; background-color: rgba(0, 0, 0, 100);")
+        self.location_label.setStyleSheet("color: #ffaa00; font-family: 'Menlo', 'Consolas', monospace; font-size: 12px; font-weight: bold; background-color: rgba(0, 0, 0, 100);")
 
         self.pos_label = QLabel("Recherche de coordonnées...")
-        self.pos_label.setStyleSheet("color: #00ff00; font-family: 'Consolas'; font-size: 14px; background-color: rgba(0, 0, 0, 100);")
+        self.pos_label.setStyleSheet("color: #00ff00; font-family: 'Menlo', 'Consolas', monospace; font-size: 14px; background-color: rgba(0, 0, 0, 100);")
 
         self.dist_label = QLabel("")
-        self.dist_label.setStyleSheet("color: #00ffff; font-family: 'Consolas'; font-size: 18px; font-weight: bold;")
+        self.dist_label.setStyleSheet("color: #00ffff; font-family: 'Menlo', 'Consolas', monospace; font-size: 18px; font-weight: bold;")
 
         self.layout.addWidget(self.status_label)
         self.layout.addWidget(self.location_label)
@@ -97,17 +86,18 @@ class GPSOverlay(QMainWindow):
         self.setCentralWidget(self.central_widget)
 
         self.init_window_properties()
+        self.setup_tray_icon()
         self._setup_worker_thread()
-        # Timer pour la mise à jour (intervalle depuis ConfigManager)
+
+        try:
+            interval = config.getint('Settings', 'refresh_interval_ms', fallback=2000)
+        except Exception:
+            interval = 2000
         self.timer = QTimer()
         self.timer.timeout.connect(self._request_update)
-        # Démarrer le timer avec l'intervalle configuré
-        scan_interval = self.config_manager.get_scan_interval()
-        self.timer.start(scan_interval)
-        # Initialise le gestionnaire de hotkeys global
-        self.hotkey_listener = HotkeyListener(self.config_manager)
-        self.setup_hotkey_connections()
-        # Connexion du signal de sauvegarde
+        self.timer.start(interval)
+
+        self.setup_hotkeys()
         self.save_point_signal.connect(self.prompt_save_point)
 
     def _setup_worker_thread(self):
@@ -142,7 +132,7 @@ class GPSOverlay(QMainWindow):
 
         if data["x"] is not None:
             self.pos_label.setText(f"X: {data['x']:.3f} km | Y: {data['y']:.3f} km | Z: {data['z']:.3f} km")
-            self.pos_label.setStyleSheet("color: #00ff00; font-family: 'Consolas'; font-size: 14px; background-color: rgba(0, 0, 0, 100);")
+            self.pos_label.setStyleSheet("color: #00ff00; font-family: 'Menlo', 'Consolas', monospace; font-size: 14px; background-color: rgba(0, 0, 0, 100);")
 
             dist = self.nav.calculate_distance(data)
             if dist:
@@ -151,7 +141,7 @@ class GPSOverlay(QMainWindow):
                 self.dist_label.setText("PAS DE CIBLE")
         else:
             self.pos_label.setText("X: --- | Y: --- | Z: --- (Scan en cours...)")
-            self.pos_label.setStyleSheet("color: #ffaa00; font-family: 'Consolas'; font-size: 14px; background-color: rgba(0, 0, 0, 100);")
+            self.pos_label.setStyleSheet("color: #ffaa00; font-family: 'Menlo', 'Consolas', monospace; font-size: 14px; background-color: rgba(0, 0, 0, 100);")
 
     def init_window_properties(self):
         flags = Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.FramelessWindowHint
@@ -181,9 +171,9 @@ class GPSOverlay(QMainWindow):
         self.toggle_action = QAction("Masquer l'overlay (Shift+F1)", self)
         self.toggle_action.triggered.connect(self.toggle_overlay)
         tray_menu.addAction(self.toggle_action)
-        # Action pour ouvrir la fenêtre d'options (Shift+F2)
-        self.interact_action = QAction("Ouvrir Options (Shift+F2)", self)
-        self.interact_action.triggered.connect(self.show_options_window)
+
+        self.interact_action = QAction("Menu interaction (Shift+F2)", self)
+        self.interact_action.triggered.connect(self.show_interaction_menu)
         tray_menu.addAction(self.interact_action)
 
         tray_menu.addSeparator()
@@ -221,18 +211,32 @@ class GPSOverlay(QMainWindow):
             "SpaceDrive GPS",
             "Overlay GPS actif ! Utilisez Shift+F1 pour afficher/masquer.",
             QSystemTrayIcon.MessageIcon.Information,
+            2000
         )
 
-    def setup_hotkey_connections(self):
-        """Connecte les signaux du HotkeyListener aux méthodes appropriées"""
+    def setup_hotkeys(self):
+        self._pressed_keys = set()
+
+        def on_press(key):
+            self._pressed_keys.add(key)
+            combo = self._pressed_keys
+            shift = pynput_keyboard.Key.shift in combo or pynput_keyboard.Key.shift_l in combo or pynput_keyboard.Key.shift_r in combo
+            if shift and pynput_keyboard.Key.f1 in combo:
+                self.toggle_overlay()
+            elif shift and pynput_keyboard.Key.f2 in combo:
+                self.save_point_signal.emit()  # show_interaction_menu needs main thread
+            elif shift and pynput_keyboard.Key.f3 in combo:
+                self.save_point_signal.emit()
+
+        def on_release(key):
+            self._pressed_keys.discard(key)
+
         try:
-            self.hotkey_listener.toggle_overlay_triggered.connect(self.toggle_overlay)
-            self.hotkey_listener.open_options_triggered.connect(self.show_options_window)
-            self.hotkey_listener.save_position_triggered.connect(lambda: self.save_point_signal.emit())
-            self.hotkey_listener.open_poi_manager_triggered.connect(self.show_poi_manager_window)
-            logger.info("Connexions hotkeys établies")
+            self._hotkey_listener = pynput_keyboard.Listener(on_press=on_press, on_release=on_release)
+            self._hotkey_listener.start()
         except Exception as e:
-            logger.error(f"Erreur configuration hotkeys: {e}")
+            print(f"Erreur configuration hotkeys: {e}")
+
     def toggle_overlay(self):
         if self.is_visible:
             self.hide()
@@ -242,68 +246,6 @@ class GPSOverlay(QMainWindow):
             self.show()
             self.is_visible = True
             self.toggle_action.setText("Masquer l'overlay (Shift+F1)")
-
-    def show_options_window(self):
-        """Ouvre la fenêtre d'options"""
-        try:
-            logger.debug("Opening Options window")
-            # Créer la fenêtre si elle n'existe pas ou si elle a été fermée
-            if self.options_window is None or not self.options_window.isVisible():
-                self.options_window = OptionsWindow(self.config_manager, self.hotkey_listener, self)
-                self.options_window.options_saved.connect(self.on_options_saved)
-            self.options_window.show()
-            self.options_window.raise_()
-            self.options_window.activateWindow()
-        except Exception as e:
-            logger.error(f"Erreur lors de l'ouverture des options : {e}")
-            self.tray_icon.showMessage("Erreur", f"Impossible d'ouvrir les options : {e}", QSystemTrayIcon.MessageIcon.Warning)
-    
-    def show_poi_manager_window(self):
-        """Ouvre la fenêtre de gestion des POI"""
-        try:
-            logger.debug("Opening POI Manager window")
-            
-            # Créer la fenêtre si elle n'existe pas ou si elle a été fermée
-            if self.poi_manager_window is None or not self.poi_manager_window.isVisible():
-                self.poi_manager_window = POIManagerWindow(self.nav, self)
-                self.poi_manager_window.destination_changed.connect(self.on_destination_changed)
-                self.poi_manager_window.goto_requested.connect(self.on_goto_requested)
-            
-            self.poi_manager_window.show()
-            self.poi_manager_window.raise_()
-            self.poi_manager_window.activateWindow()
-        except Exception as e:
-            logger.error(f"Erreur lors de l'ouverture du gestionnaire POI : {e}")
-            self.tray_icon.showMessage("Erreur", f"Impossible d'ouvrir le gestionnaire POI : {e}", QSystemTrayIcon.MessageIcon.Warning)
-    
-    def on_options_saved(self):
-        """Appelé quand les options sont sauvegardées"""
-        try:
-            # Mettre à jour l'intervalle du timer
-            scan_interval = self.config_manager.get_scan_interval()
-            self.timer.setInterval(scan_interval)
-            logger.info(f"Intervalle de scan mis à jour : {scan_interval} ms")
-        except Exception as e:
-            logger.error(f"Erreur lors de la mise à jour des options : {e}")
-    
-    def on_destination_changed(self, poi):
-        """Appelé quand une nouvelle destination est définie"""
-        try:
-            self.nav.set_target(poi["x"], poi["y"], poi["z"], poi["name"])
-            logger.info(f"Destination définie : {poi['name']}")
-        except Exception as e:
-            logger.error(f"Erreur lors de la définition de la destination : {e}")
-    
-    def on_goto_requested(self, poi):
-        """Appelé quand l'utilisateur demande à naviguer vers un POI"""
-        try:
-            self.nav.set_target(poi["x"], poi["y"], poi["z"], poi["name"])
-            logger.info(f"Navigation vers : {poi['name']}")
-            # Afficher l'overlay s'il est masqué
-            if not self.is_visible:
-                self.toggle_overlay()
-        except Exception as e:
-            logger.error(f"Erreur lors de la navigation : {e}")
 
     def show_interaction_menu(self):
         menu = QMenu()
@@ -375,18 +317,11 @@ class GPSOverlay(QMainWindow):
                 self.tray_icon.showMessage("Succès", "Points importés avec succès.", QSystemTrayIcon.MessageIcon.Information)
 
     def quit_application(self):
-        """Quitte proprement l'application"""
-        try:
-            # Nettoyer le hotkey listener
-            self.hotkey_listener.cleanup()
-            keyboard.unhook_all()
-            # Arrêter le worker proprement
-            if hasattr(self, '_worker'):
-                self._worker.stop()
-                self._worker_thread.quit()
-                self._worker_thread.wait(2000)
-        except Exception as e:
-            logger.error(f"Erreur lors du quit_application: {e}")
+        if hasattr(self, '_hotkey_listener'):
+            self._hotkey_listener.stop()
+        self._worker.stop()
+        self._worker_thread.quit()
+        self._worker_thread.wait(2000)
         self.tray_icon.hide()
         QApplication.quit()
 

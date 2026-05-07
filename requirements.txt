@@ -4,7 +4,7 @@ opencv-python
 pytesseract
 PyQt6
 Pillow
-keyboard
+pynput
 pyinstaller
 easyocr
 # PaddleOCR (optionnel, pour de meilleures performances OCR)
