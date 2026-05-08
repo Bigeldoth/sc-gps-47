@@ -102,10 +102,23 @@ class GPSOverlay(QMainWindow):
         self.save_point_signal.connect(self.prompt_save_point)
 
         self.hotkey_listener = HotkeyListener(self.config_manager)
-        self.hotkey_listener.toggle_overlay_triggered.connect(self.toggle_overlay)
-        self.hotkey_listener.open_options_triggered.connect(self.show_options_window)
-        self.hotkey_listener.save_position_triggered.connect(lambda: self.save_point_signal.emit())
-        self.hotkey_listener.open_poi_manager_triggered.connect(self.show_poi_manager_window)
+        # Hotkeys émis depuis le thread pynput → QueuedConnection pour traiter sur le thread Qt
+        self.hotkey_listener.toggle_overlay_triggered.connect(
+            self.toggle_overlay, Qt.ConnectionType.QueuedConnection
+        )
+        self.hotkey_listener.open_options_triggered.connect(
+            self.show_options_window, Qt.ConnectionType.QueuedConnection
+        )
+        self.hotkey_listener.save_position_triggered.connect(
+            self._on_hotkey_save_position, Qt.ConnectionType.QueuedConnection
+        )
+        self.hotkey_listener.open_poi_manager_triggered.connect(
+            self.show_poi_manager_window, Qt.ConnectionType.QueuedConnection
+        )
+
+    def _on_hotkey_save_position(self):
+        logger.debug("Hotkey 'save_position' détecté")
+        self.save_point_signal.emit()
 
     def _setup_worker_thread(self):
         self._worker_thread = QThread()
@@ -224,33 +237,51 @@ class GPSOverlay(QMainWindow):
             self.is_visible = True
             self.toggle_action.setText("Masquer l'overlay")
 
+    def _bring_dialog_to_front(self, dialog):
+        """Force le dialogue au premier plan malgré l'overlay always-on-top."""
+        dialog.show()
+        # Activation différée pour que Qt traite l'événement de show() avant
+        QTimer.singleShot(0, dialog.raise_)
+        QTimer.singleShot(0, dialog.activateWindow)
+
     def show_options_window(self):
         try:
             if self.options_window is None or not self.options_window.isVisible():
                 self.options_window = OptionsWindow(self.config_manager, self.hotkey_listener, self)
                 self.options_window.options_saved.connect(self._on_options_saved)
-            self.options_window.show()
-            self.options_window.raise_()
-            self.options_window.activateWindow()
-        except Exception as e:
-            logger.error(f"Erreur ouverture options : {e}")
+            self._bring_dialog_to_front(self.options_window)
+        except Exception:
+            logger.exception("Erreur ouverture options")
+            self.tray_icon.showMessage(
+                "Erreur",
+                "Impossible d'ouvrir la fenêtre d'options. Voir spacedrive.log.",
+                QSystemTrayIcon.MessageIcon.Critical,
+                3000,
+            )
 
     def show_poi_manager_window(self):
+        logger.debug("Ouverture de la fenêtre POI manager demandée")
         try:
             if self.poi_manager_window is None or not self.poi_manager_window.isVisible():
                 self.poi_manager_window = POIManagerWindow(self.nav, self)
                 self.poi_manager_window.destination_changed.connect(self._on_destination_changed)
                 self.poi_manager_window.goto_requested.connect(self._on_goto_requested)
-            self.poi_manager_window.show()
-            self.poi_manager_window.raise_()
-            self.poi_manager_window.activateWindow()
-        except Exception as e:
-            logger.error(f"Erreur ouverture POI manager : {e}")
+            self._bring_dialog_to_front(self.poi_manager_window)
+        except Exception:
+            logger.exception("Erreur ouverture POI manager")
+            self.tray_icon.showMessage(
+                "Erreur",
+                "Impossible d'ouvrir la gestion des POI. Voir spacedrive.log.",
+                QSystemTrayIcon.MessageIcon.Critical,
+                3000,
+            )
 
     def _on_options_saved(self):
         scan_interval = self.config_manager.get_scan_interval()
         self.timer.setInterval(scan_interval)
         logger.info(f"Intervalle de scan mis à jour : {scan_interval} ms")
+        # Rafraîchir les hotkeys au cas où ils ont été modifiés
+        self.hotkey_listener.reload_hotkeys()
 
     def _on_destination_changed(self, poi):
         self.nav.set_target(poi["x"], poi["y"], poi["z"], poi["name"])

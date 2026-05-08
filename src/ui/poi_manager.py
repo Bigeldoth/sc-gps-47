@@ -221,27 +221,38 @@ class POIManagerWindow(QDialog):
             self.all_pois = []
             
             # Charger les POI du système (depuis poi.json)
-            for system in self.nav.poi_data:
-                for body in system.get("bodies", []):
-                    for poi in body.get("poi", []):
-                        poi_entry = {
-                            "name": poi["name"],
-                            "x": poi["x"],
-                            "y": poi["y"],
-                            "z": poi["z"],
-                            "description": poi.get("description", ""),
-                            "location": body["name"],
-                            "source": "system"
-                        }
-                        self.all_pois.append(poi_entry)
+            if isinstance(self.nav.poi_data, list):
+                for system in self.nav.poi_data:
+                    if not isinstance(system, dict):
+                        continue
+                    for body in system.get("bodies", []):
+                        if not isinstance(body, dict):
+                            continue
+                        for poi in body.get("poi", []):
+                            if not isinstance(poi, dict):
+                                continue
+                            poi_entry = {
+                                "name": poi.get("name", "Unknown"),
+                                "x": poi.get("x", 0.0),
+                                "y": poi.get("y", 0.0),
+                                "z": poi.get("z", 0.0),
+                                "description": poi.get("description", ""),
+                                "location": body.get("name", "Unknown System"),
+                                "source": "system"
+                            }
+                            self.all_pois.append(poi_entry)
+            else:
+                logger.warning("Structure de poi_data invalide (attendu: liste)")
             
             # Charger les POI utilisateur
-            for poi in self.nav.user_poi:
+            for poi in self.nav.user_poi or []:
+                if not isinstance(poi, dict):
+                    continue
                 poi_entry = {
-                    "name": poi["name"],
-                    "x": poi["x"],
-                    "y": poi["y"],
-                    "z": poi["z"],
+                    "name": poi.get("name", "Unknown"),
+                    "x": poi.get("x", 0.0),
+                    "y": poi.get("y", 0.0),
+                    "z": poi.get("z", 0.0),
                     "description": poi.get("description", ""),
                     "location": poi.get("location", "Unknown"),
                     "source": "user"
@@ -254,7 +265,7 @@ class POIManagerWindow(QDialog):
             
             logger.info(f"{len(self.all_pois)} POI chargés")
         except Exception as e:
-            logger.error(f"Erreur lors du chargement des POI : {e}")
+            logger.exception(f"Erreur lors du chargement des POI : {e}")
             QMessageBox.critical(self, "Erreur", f"Impossible de charger les POI : {str(e)}")
     
     def _update_table(self):
@@ -262,27 +273,33 @@ class POIManagerWindow(QDialog):
         self.poi_table.setSortingEnabled(False)  # Désactiver le tri pendant la mise à jour
         self.poi_table.setRowCount(len(self.filtered_pois))
         
+        def fmt(value):
+            try:
+                return f"{float(value):.2f}"
+            except (TypeError, ValueError):
+                return "?"
+
         for row, poi in enumerate(self.filtered_pois):
             # Nom
-            name_item = QTableWidgetItem(poi["name"])
+            name_item = QTableWidgetItem(str(poi.get("name", "")))
             name_item.setData(Qt.ItemDataRole.UserRole, poi)  # Stocker le POI complet
             self.poi_table.setItem(row, 0, name_item)
-            
+
             # Coordonnées
-            x_item = QTableWidgetItem(f"{poi['x']:.2f}")
+            x_item = QTableWidgetItem(fmt(poi.get("x")))
             x_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             self.poi_table.setItem(row, 1, x_item)
-            
-            y_item = QTableWidgetItem(f"{poi['y']:.2f}")
+
+            y_item = QTableWidgetItem(fmt(poi.get("y")))
             y_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             self.poi_table.setItem(row, 2, y_item)
-            
-            z_item = QTableWidgetItem(f"{poi['z']:.2f}")
+
+            z_item = QTableWidgetItem(fmt(poi.get("z")))
             z_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             self.poi_table.setItem(row, 3, z_item)
-            
+
             # Description
-            desc_item = QTableWidgetItem(poi["description"])
+            desc_item = QTableWidgetItem(str(poi.get("description", "")))
             self.poi_table.setItem(row, 4, desc_item)
         
         self.poi_table.setSortingEnabled(True)  # Réactiver le tri
