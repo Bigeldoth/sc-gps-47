@@ -9,9 +9,16 @@ from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QObject
 from PyQt6.QtGui import QIcon, QAction, QColor, QCursor
 from capture import ScreenCapture
 from ocr import OCRProcessor
-from navigation import NavigationEngine, format_distance
+from navigation import (
+    NavigationEngine,
+    format_distance,
+    calculate_relative_bearing,
+    ema_angle,
+    normalize_angle_signed,
+)
 from config_manager import ConfigManager
 from hotkey_listener import HotkeyListener
+from calibration import YawCalibrator
 from ui.options import OptionsWindow
 from ui.poi_manager import POIManagerWindow
 
@@ -75,6 +82,15 @@ class GPSOverlay(QMainWindow):
         self._ema_alpha = 0.4
         self._stale_threshold_s = 2.0
 
+        # Guidage directionnel (CamDir)
+        self._calibrator = YawCalibrator(self.config_manager)
+        self._current_cam_dir = None
+        self._smoothed_yaw_off = None
+        self._smoothed_pitch_off = None
+        self._last_raw_yaw_off = None
+        self._last_raw_pitch_off = None
+        self._last_pos_for_calib = None  # {"pos": data, "t": monotonic_ts}
+
         # UI
         self.central_widget = QWidget()
         self.layout = QVBoxLayout()
@@ -91,10 +107,14 @@ class GPSOverlay(QMainWindow):
         self.dist_label = QLabel("")
         self.dist_label.setStyleSheet("color: #00ffff; font-family: 'Menlo', 'Consolas', monospace; font-size: 18px; font-weight: bold;")
 
+        self.bearing_label = QLabel("")
+        self.bearing_label.setStyleSheet("color: #00ffff; font-family: 'Menlo', 'Consolas', monospace; font-size: 16px; font-weight: bold;")
+
         self.layout.addWidget(self.status_label)
         self.layout.addWidget(self.location_label)
         self.layout.addWidget(self.pos_label)
         self.layout.addWidget(self.dist_label)
+        self.layout.addWidget(self.bearing_label)
         self.central_widget.setLayout(self.layout)
         self.setCentralWidget(self.central_widget)
 
@@ -180,7 +200,124 @@ class GPSOverlay(QMainWindow):
             self.pos_label.setText("X: --- | Y: --- | Z: --- (Scan en cours...)")
             self.pos_label.setStyleSheet("color: #ffaa00; font-family: 'Menlo', 'Consolas', monospace; font-size: 14px; background-color: rgba(0, 0, 0, 100);")
 
+        self._update_bearing_state(data)
         self._refresh_distance_label()
+        self._refresh_bearing_label()
+
+    def _update_bearing_state(self, data):
+        """Met à jour calibrateur et offsets bearing depuis les données OCR."""
+        cam_yaw = data.get("cam_yaw")
+        cam_pitch = data.get("cam_pitch")
+        cam_dir = None
+        if cam_yaw is not None and cam_pitch is not None:
+            cam_dir = {
+                "pitch": cam_pitch,
+                "roll": data.get("cam_roll"),
+                "yaw": cam_yaw,
+            }
+        self._current_cam_dir = cam_dir
+
+        # Alimentation du calibrateur (ne tourne que si pas encore calibré)
+        if cam_dir is not None and data.get("x") is not None and self._last_pos_for_calib is not None:
+            prev = self._last_pos_for_calib
+            dt = time.monotonic() - prev["t"]
+            self._calibrator.add_sample(prev["pos"], data, dt, cam_yaw)
+            self._calibrator.try_solve()
+        if data.get("x") is not None:
+            self._last_pos_for_calib = {"pos": data, "t": time.monotonic()}
+
+        calib = self._calibrator.result
+        if cam_dir is None or self.nav.target is None or calib is None:
+            self._smoothed_yaw_off = None
+            self._smoothed_pitch_off = None
+            self._last_raw_yaw_off = None
+            self._last_raw_pitch_off = None
+            return
+
+        bearing = calculate_relative_bearing(data, cam_dir, self.nav.target, calib)
+        if bearing is None:
+            return
+        yaw_off, pitch_off = bearing
+
+        # Skip-on-stable + EMA avec wrap-around
+        if (
+            self._last_raw_yaw_off == yaw_off
+            and self._last_raw_pitch_off == pitch_off
+        ):
+            self._smoothed_yaw_off = yaw_off
+            self._smoothed_pitch_off = pitch_off
+        elif self._smoothed_yaw_off is None:
+            self._smoothed_yaw_off = yaw_off
+            self._smoothed_pitch_off = pitch_off
+        else:
+            a = self._ema_alpha
+            self._smoothed_yaw_off = ema_angle(self._smoothed_yaw_off, yaw_off, a)
+            self._smoothed_pitch_off = ema_angle(self._smoothed_pitch_off, pitch_off, a)
+        self._last_raw_yaw_off = yaw_off
+        self._last_raw_pitch_off = pitch_off
+
+    def _refresh_bearing_label(self):
+        """Met à jour bearing_label selon l'état (cible, cam_dir, calibration)."""
+        # Pas de cible → vide
+        if self.nav.target is None:
+            self.bearing_label.setText("")
+            return
+
+        # CamDir absent (jeu sans r_DisplayInfo 3) → message + couleur orange
+        if self._current_cam_dir is None:
+            stale = (
+                self._last_coord_ts is None
+                or (time.monotonic() - self._last_coord_ts) > self._stale_threshold_s
+            )
+            self.bearing_label.setText("CAP: --- (active r_DisplayInfo 3)")
+            color = "#ffaa00" if stale else "#888888"
+            self.bearing_label.setStyleSheet(
+                f"color: {color}; font-family: 'Menlo', 'Consolas', monospace; "
+                "font-size: 14px;"
+            )
+            return
+
+        # Calibration en cours
+        if self._calibrator.result is None:
+            self.bearing_label.setText("ÉTALONNAGE\nAvancez tout droit ~5 s")
+            self.bearing_label.setStyleSheet(
+                "color: #00ffff; font-family: 'Menlo', 'Consolas', monospace; "
+                "font-size: 14px;"
+            )
+            return
+
+        # Bearing pas encore calculé (premier tick après set_target)
+        if self._smoothed_yaw_off is None or self._smoothed_pitch_off is None:
+            self.bearing_label.setText("CAP: …")
+            return
+
+        yaw = self._smoothed_yaw_off
+        pitch = self._smoothed_pitch_off
+        max_off = max(abs(yaw), abs(pitch))
+
+        if max_off < 5.0:
+            self.bearing_label.setText("ALIGNÉ ✓")
+            self.bearing_label.setStyleSheet(
+                "color: #40ff40; font-family: 'Menlo', 'Consolas', monospace; "
+                "font-size: 18px; font-weight: bold;"
+            )
+            return
+
+        yaw_arrow = "→" if yaw > 0 else "←"
+        pitch_arrow = "↑" if pitch > 0 else "↓"
+        if max_off > 60.0:
+            color = "#ff4040"
+        elif max_off > 20.0:
+            color = "#ffaa00"
+        else:
+            color = "#ffff40"
+        self.bearing_label.setText(
+            f"CAP: {yaw_arrow}{abs(yaw):.0f}° {pitch_arrow}{abs(pitch):.0f}°"
+        )
+        self.bearing_label.setStyleSheet(
+            f"color: {color}; font-family: 'Menlo', 'Consolas', monospace; "
+            "font-size: 16px; font-weight: bold;"
+        )
 
     def _refresh_distance_label(self):
         """Met à jour dist_label depuis l'état lissé + indicateur stale."""
@@ -234,6 +371,10 @@ class GPSOverlay(QMainWindow):
         poi_action = QAction("Gestion des POI...", self)
         poi_action.triggered.connect(self.show_poi_manager_window)
         tray_menu.addAction(poi_action)
+
+        recalibrate_action = QAction("Recalibrer le cap", self)
+        recalibrate_action.triggered.connect(self.recalibrate_yaw)
+        tray_menu.addAction(recalibrate_action)
 
         tray_menu.addSeparator()
 
@@ -333,16 +474,42 @@ class GPSOverlay(QMainWindow):
         self.nav.set_target(poi["x"], poi["y"], poi["z"], poi["name"])
         self._smoothed_distance_km = None
         self._last_raw_distance_km = None
+        self._smoothed_yaw_off = None
+        self._smoothed_pitch_off = None
+        self._last_raw_yaw_off = None
+        self._last_raw_pitch_off = None
         self._refresh_distance_label()
+        self._refresh_bearing_label()
         logger.info(f"Destination définie : {poi['name']}")
 
     def _on_goto_requested(self, poi):
         self.nav.set_target(poi["x"], poi["y"], poi["z"], poi["name"])
         self._smoothed_distance_km = None
         self._last_raw_distance_km = None
+        self._smoothed_yaw_off = None
+        self._smoothed_pitch_off = None
+        self._last_raw_yaw_off = None
+        self._last_raw_pitch_off = None
         self._refresh_distance_label()
+        self._refresh_bearing_label()
         if not self.is_visible:
             self.toggle_overlay()
+
+    def recalibrate_yaw(self):
+        """Force une nouvelle calibration de la convention yaw."""
+        self._calibrator.reset()
+        self._smoothed_yaw_off = None
+        self._smoothed_pitch_off = None
+        self._last_raw_yaw_off = None
+        self._last_raw_pitch_off = None
+        self._refresh_bearing_label()
+        self.tray_icon.showMessage(
+            "Recalibrer le cap",
+            "Avancez tout droit ~5 s en variant le cap pour recalibrer.",
+            QSystemTrayIcon.MessageIcon.Information,
+            3000,
+        )
+        logger.info("Recalibration yaw demandée")
 
     def prompt_save_point(self):
         logger.debug("prompt_save_point déclenché")

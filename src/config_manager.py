@@ -173,6 +173,37 @@ class ConfigManager:
             self.config.add_section('Overlay')
         self.config.set('Overlay', 'show_status_bar', str(show))
     
+    def get_yaw_calibration(self):
+        """Retourne (sign, offset) ou None si pas calibré.
+
+        sign ∈ {-1, +1}, offset en degrés ]-180, +180].
+        """
+        if not self.config.has_section('Calibration'):
+            return None
+        try:
+            sign = self.config.getint('Calibration', 'yaw_sign')
+            offset = self.config.getfloat('Calibration', 'yaw_offset')
+            if sign not in (-1, 1):
+                return None
+            return (sign, offset)
+        except Exception:
+            return None
+
+    def set_yaw_calibration(self, sign, offset):
+        """Persiste la calibration yaw."""
+        if not self.config.has_section('Calibration'):
+            self.config.add_section('Calibration')
+        self.config.set('Calibration', 'yaw_sign', str(int(sign)))
+        self.config.set('Calibration', 'yaw_offset', f"{offset:.3f}")
+        self.save()
+
+    def clear_yaw_calibration(self):
+        """Supprime la calibration yaw pour forcer une recalibration."""
+        if self.config.has_section('Calibration'):
+            self.config.remove_option('Calibration', 'yaw_sign')
+            self.config.remove_option('Calibration', 'yaw_offset')
+            self.save()
+
     def get(self, section, option, fallback=None):
         """Méthode générique pour récupérer une valeur"""
         return self.config.get(section, option, fallback=fallback)

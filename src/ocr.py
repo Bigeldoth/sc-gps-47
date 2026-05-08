@@ -13,6 +13,7 @@ _RE_POS = re.compile(
     r'[Pp]os:?\s*(-?\d+\.?\d*)[_\s]*[kKaA][mnMN]?[_\s]*(-?\d+\.?\d*)[_\s]*[kKaA][mnMN]?[_\s]*(-?\d+\.?\d*)[_\s]*[kKaA][mnMN]?',
     re.IGNORECASE,
 )
+_RE_CAMDIR = re.compile(r'CamDir:\s*(-?\d+)\s+(-?\d+)\s+(-?\d+)', re.IGNORECASE)
 
 _TESSERACT_CONFIG = r'--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz:._- '
 
@@ -131,11 +132,29 @@ class OCRProcessor:
         ocr_text = self._correct_ocr_errors(ocr_text)
         lines = [line.strip() for line in ocr_text.split('\n') if line.strip()]
 
-        data = {"location": "Unknown", "x": None, "y": None, "z": None}
+        data = {
+            "location": "Unknown",
+            "x": None, "y": None, "z": None,
+            "cam_pitch": None, "cam_roll": None, "cam_yaw": None,
+        }
         score = 0
 
         for line in lines:
-            if "Zone:" in line and "SolarSystem" in line:
+            if "CamDir" in line:
+                cam_match = _RE_CAMDIR.search(line)
+                if cam_match:
+                    try:
+                        data["cam_pitch"] = float(cam_match.group(1))
+                        data["cam_roll"] = float(cam_match.group(2))
+                        data["cam_yaw"] = float(cam_match.group(3))
+                        logger.debug(
+                            f"[{pass_name}] CamDir extrait : pitch={data['cam_pitch']} "
+                            f"roll={data['cam_roll']} yaw={data['cam_yaw']}"
+                        )
+                        score += 5
+                    except ValueError as e:
+                        logger.error(f"[{pass_name}] Erreur conversion CamDir : {e}")
+            elif "Zone:" in line and "SolarSystem" in line:
                 logger.debug(f"[{pass_name}] Ligne Zone détectée : {line}")
                 zone_match = _RE_ZONE.search(line)
                 if zone_match:
@@ -186,7 +205,11 @@ class OCRProcessor:
                 best_data = data
 
         if best_data is None:
-            best_data = {"location": "Unknown", "x": None, "y": None, "z": None}
+            best_data = {
+                "location": "Unknown",
+                "x": None, "y": None, "z": None,
+                "cam_pitch": None, "cam_roll": None, "cam_yaw": None,
+            }
         return best_data
 
     def _correct_ocr_errors(self, text):

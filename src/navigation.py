@@ -18,6 +18,62 @@ def format_distance(distance_km):
     return f"{distance_km:.2f} km"
 
 
+def normalize_angle_signed(deg):
+    """Ramène un angle (degrés) dans l'intervalle ]-180, +180]."""
+    if deg is None:
+        return None
+    return ((deg + 180.0) % 360.0) - 180.0
+
+
+def ema_angle(prev, new, alpha):
+    """EMA sur des angles avec gestion correcte du wrap-around ±180°."""
+    if prev is None:
+        return new
+    diff = normalize_angle_signed(new - prev)
+    return normalize_angle_signed(prev + alpha * diff)
+
+
+def calculate_relative_bearing(current_pos, cam_dir, target, yaw_calib):
+    """Offsets (yaw, pitch) en degrés signés vers la cible, dans le repère caméra.
+
+    Args:
+        current_pos: dict avec 'x', 'y', 'z' en km (sortie OCR).
+        cam_dir: dict avec 'pitch', 'yaw' en degrés (sortie OCR CamDir).
+        target: dict avec 'x', 'y', 'z' en km.
+        yaw_calib: tuple ``(sign, offset)`` issu de la calibration. Convertit
+            le yaw monde en yaw caméra : ``cam_yaw = sign * world_yaw + offset``.
+
+    Returns:
+        ``(yaw_off, pitch_off)`` dans ]-180, +180], ou ``None`` si une donnée
+        manque. ``0,0`` signifie « cible droit devant ». Le yaw_off positif =
+        cible à droite du cap, négatif = cible à gauche.
+    """
+    if not target or not cam_dir or not yaw_calib:
+        return None
+    if current_pos is None or current_pos.get("x") is None:
+        return None
+    if cam_dir.get("yaw") is None or cam_dir.get("pitch") is None:
+        return None
+
+    dx = target["x"] - current_pos["x"]
+    dy = target["y"] - current_pos["y"]
+    dz = target["z"] - current_pos["z"]
+
+    horiz = math.hypot(dx, dy)
+    if horiz == 0 and dz == 0:
+        return 0.0, 0.0
+
+    target_world_yaw = math.degrees(math.atan2(dx, dy)) if horiz > 0 else 0.0
+    target_world_pitch = math.degrees(math.atan2(dz, horiz))
+
+    sign, offset = yaw_calib
+    target_cam_yaw = sign * target_world_yaw + offset
+
+    yaw_off = normalize_angle_signed(target_cam_yaw - cam_dir["yaw"])
+    pitch_off = normalize_angle_signed(target_world_pitch - cam_dir["pitch"])
+    return yaw_off, pitch_off
+
+
 class NavigationEngine:
     def __init__(self, poi_file=None):
         if getattr(sys, 'frozen', False):
