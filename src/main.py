@@ -293,20 +293,55 @@ class GPSOverlay(QMainWindow):
             self.toggle_overlay()
 
     def prompt_save_point(self):
-        if self.current_data["x"] is None:
-            self.tray_icon.showMessage("Erreur", "Coordonnées non détectées.", QSystemTrayIcon.MessageIcon.Warning)
+        logger.debug("prompt_save_point déclenché")
+        if self.current_data.get("x") is None:
+            self.tray_icon.showMessage(
+                "Aucune position",
+                "Les coordonnées ne sont pas encore détectées par l'OCR.",
+                QSystemTrayIcon.MessageIcon.Warning,
+                3000,
+            )
             return
 
-        name, ok = QInputDialog.getText(self, "Enregistrer Point", "Nom du point d'intérêt :")
-        if ok and name:
+        try:
+            # QInputDialog en instance pour pouvoir forcer l'always-on-top
+            # (l'overlay parent a WindowTransparentForInput, le dialogue par
+            # défaut peut apparaître sans focus derrière l'overlay)
+            dialog = QInputDialog(self)
+            dialog.setWindowTitle("Enregistrer Point")
+            dialog.setLabelText("Nom du point d'intérêt :")
+            dialog.setInputMode(QInputDialog.InputMode.TextInput)
+            dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+            dialog.setModal(True)
+            QTimer.singleShot(0, dialog.raise_)
+            QTimer.singleShot(0, dialog.activateWindow)
+            if dialog.exec() != QInputDialog.DialogCode.Accepted:
+                return
+            name = dialog.textValue().strip()
+            if not name:
+                return
+
             self.nav.add_user_point(
                 name,
                 self.current_data["x"],
                 self.current_data["y"],
                 self.current_data["z"],
-                self.current_data["location"]
+                self.current_data.get("location", "Unknown"),
             )
-            self.tray_icon.showMessage("Succès", f"Point '{name}' enregistré !", QSystemTrayIcon.MessageIcon.Information)
+            self.tray_icon.showMessage(
+                "Succès",
+                f"Point '{name}' enregistré !",
+                QSystemTrayIcon.MessageIcon.Information,
+                2000,
+            )
+        except Exception:
+            logger.exception("Erreur enregistrement position")
+            self.tray_icon.showMessage(
+                "Erreur",
+                "Impossible d'enregistrer la position. Voir spacedrive.log.",
+                QSystemTrayIcon.MessageIcon.Critical,
+                3000,
+            )
 
     def show_poi_selector(self):
         pois = self.nav.get_all_poi_for_location("All")
