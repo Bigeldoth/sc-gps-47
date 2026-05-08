@@ -1,5 +1,6 @@
 import sys
 import os
+import time
 import logging
 import configparser
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QLabel, QVBoxLayout,
@@ -8,7 +9,7 @@ from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QObject
 from PyQt6.QtGui import QIcon, QAction, QColor, QCursor
 from capture import ScreenCapture
 from ocr import OCRProcessor
-from navigation import NavigationEngine
+from navigation import NavigationEngine, format_distance
 from config_manager import ConfigManager
 from hotkey_listener import HotkeyListener
 from ui.options import OptionsWindow
@@ -66,6 +67,12 @@ class GPSOverlay(QMainWindow):
         self._worker_busy = False
         self.options_window = None
         self.poi_manager_window = None
+
+        # Lissage EMA + détection d'OCR périmé pour la distance vers la cible
+        self._smoothed_distance_km = None
+        self._last_coord_ts = None
+        self._ema_alpha = 0.4
+        self._stale_threshold_s = 2.0
 
         # UI
         self.central_widget = QWidget()
@@ -152,14 +159,45 @@ class GPSOverlay(QMainWindow):
             self.pos_label.setText(f"X: {data['x']:.3f} km | Y: {data['y']:.3f} km | Z: {data['z']:.3f} km")
             self.pos_label.setStyleSheet("color: #00ff00; font-family: 'Menlo', 'Consolas', monospace; font-size: 14px; background-color: rgba(0, 0, 0, 100);")
 
-            dist = self.nav.calculate_distance(data)
-            if dist:
-                self.dist_label.setText(f"CIBLE: {self.nav.target['name']}\nDIST: {dist/1000:.2f} km")
+            self._last_coord_ts = time.monotonic()
+            dist_km = self.nav.calculate_distance(data)
+            if dist_km is None:
+                self._smoothed_distance_km = None
+            elif self._smoothed_distance_km is None:
+                self._smoothed_distance_km = dist_km
             else:
-                self.dist_label.setText("PAS DE CIBLE")
+                a = self._ema_alpha
+                self._smoothed_distance_km = a * dist_km + (1 - a) * self._smoothed_distance_km
         else:
             self.pos_label.setText("X: --- | Y: --- | Z: --- (Scan en cours...)")
             self.pos_label.setStyleSheet("color: #ffaa00; font-family: 'Menlo', 'Consolas', monospace; font-size: 14px; background-color: rgba(0, 0, 0, 100);")
+
+        self._refresh_distance_label()
+
+    def _refresh_distance_label(self):
+        """Met à jour dist_label depuis l'état lissé + indicateur stale."""
+        if self._smoothed_distance_km is None or not self.nav.target:
+            self.dist_label.setText("PAS DE CIBLE")
+            self.dist_label.setStyleSheet(
+                "color: #00ffff; font-family: 'Menlo', 'Consolas', monospace; "
+                "font-size: 18px; font-weight: bold;"
+            )
+            return
+
+        is_stale = (
+            self._last_coord_ts is None
+            or (time.monotonic() - self._last_coord_ts) > self._stale_threshold_s
+        )
+        suffix = "  (?)" if is_stale else ""
+        color = "#ffaa00" if is_stale else "#00ffff"
+        self.dist_label.setText(
+            f"CIBLE: {self.nav.target['name']}\n"
+            f"DIST: {format_distance(self._smoothed_distance_km)}{suffix}"
+        )
+        self.dist_label.setStyleSheet(
+            f"color: {color}; font-family: 'Menlo', 'Consolas', monospace; "
+            "font-size: 18px; font-weight: bold;"
+        )
 
     def init_window_properties(self):
         flags = Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowTransparentForInput
@@ -285,10 +323,14 @@ class GPSOverlay(QMainWindow):
 
     def _on_destination_changed(self, poi):
         self.nav.set_target(poi["x"], poi["y"], poi["z"], poi["name"])
+        self._smoothed_distance_km = None
+        self._refresh_distance_label()
         logger.info(f"Destination définie : {poi['name']}")
 
     def _on_goto_requested(self, poi):
         self.nav.set_target(poi["x"], poi["y"], poi["z"], poi["name"])
+        self._smoothed_distance_km = None
+        self._refresh_distance_label()
         if not self.is_visible:
             self.toggle_overlay()
 
@@ -352,7 +394,7 @@ class GPSOverlay(QMainWindow):
         menu = QMenu()
         for poi in pois:
             action = QAction(f"{poi['name']} ({poi.get('location', 'Unknown')})", self)
-            action.triggered.connect(lambda checked, p=poi: self.nav.set_target(p['x'], p['y'], p['z'], p['name']))
+            action.triggered.connect(lambda checked, p=poi: self._on_destination_changed(p))
             menu.addAction(action)
 
         menu.exec(self.tray_icon.geometry().center())
