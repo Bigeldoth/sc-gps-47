@@ -4,6 +4,20 @@ import json
 import os
 import sys
 
+
+def format_distance(distance_km):
+    """Formate une distance (en km) pour l'affichage.
+
+    Retourne une chaîne en mètres sous 1 km (sans décimale), en kilomètres
+    au-delà (deux décimales). ``None`` devient ``"---"``.
+    """
+    if distance_km is None:
+        return "---"
+    if distance_km < 1.0:
+        return f"{distance_km * 1000:.0f} m"
+    return f"{distance_km:.2f} km"
+
+
 class NavigationEngine:
     def __init__(self, poi_file=None):
         if getattr(sys, 'frozen', False):
@@ -93,15 +107,20 @@ class NavigationEngine:
         self.target = {"x": x, "y": y, "z": z, "name": name}
 
     def calculate_distance(self, current_pos):
-        if not self.target or current_pos["x"] is None:
+        """Distance euclidienne entre la position courante et la cible.
+
+        Les coordonnées (OCR + POI stockés) sont en kilomètres ; cette
+        fonction retourne donc une distance en **kilomètres**, ou ``None``
+        si la cible ou la position courante ne sont pas définies.
+        """
+        if not self.target or current_pos.get("x") is None:
             return None
-        
+
         dx = self.target["x"] - current_pos["x"]
         dy = self.target["y"] - current_pos["y"]
         dz = self.target["z"] - current_pos["z"]
-        
-        distance = math.sqrt(dx**2 + dy**2 + dz**2)
-        return distance
+
+        return math.sqrt(dx * dx + dy * dy + dz * dz)
 
     def calculate_bearing(self, current_pos):
         """Calcul simple du vecteur de direction (Pitch/Yaw)"""
