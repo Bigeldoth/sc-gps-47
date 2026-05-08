@@ -70,6 +70,7 @@ class GPSOverlay(QMainWindow):
 
         # Lissage EMA + détection d'OCR périmé pour la distance vers la cible
         self._smoothed_distance_km = None
+        self._last_raw_distance_km = None
         self._last_coord_ts = None
         self._ema_alpha = 0.4
         self._stale_threshold_s = 2.0
@@ -163,11 +164,18 @@ class GPSOverlay(QMainWindow):
             dist_km = self.nav.calculate_distance(data)
             if dist_km is None:
                 self._smoothed_distance_km = None
-            elif self._smoothed_distance_km is None:
+            elif (
+                self._smoothed_distance_km is None
+                or self._last_raw_distance_km is not None
+                and dist_km == self._last_raw_distance_km
+            ):
+                # Première mesure OU coords OCR strictement identiques au tick
+                # précédent → pas de bruit à lisser, on prend la valeur brute.
                 self._smoothed_distance_km = dist_km
             else:
                 a = self._ema_alpha
                 self._smoothed_distance_km = a * dist_km + (1 - a) * self._smoothed_distance_km
+            self._last_raw_distance_km = dist_km
         else:
             self.pos_label.setText("X: --- | Y: --- | Z: --- (Scan en cours...)")
             self.pos_label.setStyleSheet("color: #ffaa00; font-family: 'Menlo', 'Consolas', monospace; font-size: 14px; background-color: rgba(0, 0, 0, 100);")
@@ -324,12 +332,14 @@ class GPSOverlay(QMainWindow):
     def _on_destination_changed(self, poi):
         self.nav.set_target(poi["x"], poi["y"], poi["z"], poi["name"])
         self._smoothed_distance_km = None
+        self._last_raw_distance_km = None
         self._refresh_distance_label()
         logger.info(f"Destination définie : {poi['name']}")
 
     def _on_goto_requested(self, poi):
         self.nav.set_target(poi["x"], poi["y"], poi["z"], poi["name"])
         self._smoothed_distance_km = None
+        self._last_raw_distance_km = None
         self._refresh_distance_label()
         if not self.is_visible:
             self.toggle_overlay()
