@@ -13,7 +13,10 @@ _RE_POS = re.compile(
     r'[Pp]os:?\s*(-?\d+\.?\d*)[_\s]*[kKaA][mnMN]?[_\s]*(-?\d+\.?\d*)[_\s]*[kKaA][mnMN]?[_\s]*(-?\d+\.?\d*)[_\s]*[kKaA][mnMN]?',
     re.IGNORECASE,
 )
-_RE_CAMDIR = re.compile(r'CamDir:\s*(-?\d+)\s+(-?\d+)\s+(-?\d+)', re.IGNORECASE)
+# Identifie une ligne CamDir même si l'OCR rate le ':' ou le 'C' initial.
+_RE_CAMDIR_TAG = re.compile(r'amdir', re.IGNORECASE)
+# Extrait les 3 premiers entiers signés d'une ligne (pour cam_pitch/roll/yaw).
+_RE_THREE_INTS = re.compile(r'(-?\d+)\s+(-?\d+)\s+(-?\d+)')
 
 _TESSERACT_CONFIG = r'--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz:._- '
 
@@ -23,6 +26,12 @@ _OCR_CORRECTIONS = {
     'So1arSystem': 'SolarSystem',
     'SovarSysten': 'SolarSystem',
     'SolarSysten': 'SolarSystem',
+    # Variations courantes de "CamDir" causées par l'OCR
+    'Camdir': 'CamDir',
+    'CarmDir': 'CamDir',
+    'CarnDir': 'CamDir',
+    'Cam0ir': 'CamDir',
+    'CarnOir': 'CamDir',
 }
 
 
@@ -140,8 +149,10 @@ class OCRProcessor:
         score = 0
 
         for line in lines:
-            if "CamDir" in line:
-                cam_match = _RE_CAMDIR.search(line)
+            if _RE_CAMDIR_TAG.search(line):
+                # Ligne CamDir détectée (tolère erreurs OCR sur le 'C' ou ':').
+                # On prend les 3 premiers entiers signés de la ligne.
+                cam_match = _RE_THREE_INTS.search(line)
                 if cam_match:
                     try:
                         data["cam_pitch"] = float(cam_match.group(1))
@@ -153,7 +164,9 @@ class OCRProcessor:
                         )
                         score += 5
                     except ValueError as e:
-                        logger.error(f"[{pass_name}] Erreur conversion CamDir : {e}")
+                        logger.error(f"[{pass_name}] Erreur conversion CamDir : {e} | ligne={line!r}")
+                else:
+                    logger.warning(f"[{pass_name}] Ligne CamDir détectée mais regex 3-int échouée : {line!r}")
             elif "Zone:" in line and "SolarSystem" in line:
                 logger.debug(f"[{pass_name}] Ligne Zone détectée : {line}")
                 zone_match = _RE_ZONE.search(line)

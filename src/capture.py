@@ -6,8 +6,8 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-CAPTURE_WIDTH = 400
-CAPTURE_HEIGHT = 200
+CAPTURE_WIDTH = 600
+CAPTURE_HEIGHT = 250
 
 
 class ScreenCapture:
