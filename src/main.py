@@ -184,26 +184,36 @@ class GPSOverlay(QMainWindow):
             self.pos_label.setStyleSheet("color: #00ff00; font-family: 'Menlo', 'Consolas', monospace; font-size: 14px; background-color: rgba(0, 0, 0, 100);")
 
             self._last_coord_ts = time.monotonic()
-            dist_km = self.nav.calculate_distance(data)
-            if dist_km is None:
-                self._smoothed_distance_km = None
-            elif (
-                self._smoothed_distance_km is None
-                or self._last_raw_distance_km is not None
-                and dist_km == self._last_raw_distance_km
-            ):
-                # Première mesure OU coords OCR strictement identiques au tick
-                # précédent → pas de bruit à lisser, on prend la valeur brute.
-                self._smoothed_distance_km = dist_km
-            else:
-                a = self._ema_alpha
-                self._smoothed_distance_km = a * dist_km + (1 - a) * self._smoothed_distance_km
-            self._last_raw_distance_km = dist_km
         else:
             self.pos_label.setText("X: --- | Y: --- | Z: --- (Scan en cours...)")
             self.pos_label.setStyleSheet("color: #ffaa00; font-family: 'Menlo', 'Consolas', monospace; font-size: 14px; background-color: rgba(0, 0, 0, 100);")
 
+        # Mettre à jour l'état du bearing AVANT le smoothing distance, car
+        # _update_bearing_state peuple _velocity_tracker.is_moving qui décide
+        # si on doit appliquer EMA ou snap à la valeur brute au repos.
         self._update_bearing_state(data)
+
+        # Smoothing de distance : au repos, valeur brute = position OCR courante (pas EMA).
+        if data["x"] is not None:
+            dist_km = self.nav.calculate_distance(data)
+            if dist_km is None:
+                self._smoothed_distance_km = None
+            elif not self._velocity_tracker.is_moving:
+                # À l'arrêt : afficher la distance extrinsèquement calculée depuis la
+                # position OCR courante, sans lissage. Cela évite que l'EMA accumule
+                # des oscillations quand on reste immobile.
+                self._smoothed_distance_km = dist_km
+            elif self._smoothed_distance_km is None:
+                # Première mesure en mouvement → init
+                self._smoothed_distance_km = dist_km
+            else:
+                # En mouvement : lissage EMA normal
+                a = self._ema_alpha
+                self._smoothed_distance_km = a * dist_km + (1 - a) * self._smoothed_distance_km
+            self._last_raw_distance_km = dist_km
+        else:
+            # Pas de position → pas de distance
+            self._smoothed_distance_km = None
         self._refresh_distance_label()
         self._refresh_bearing_label()
 
