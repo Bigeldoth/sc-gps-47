@@ -19,6 +19,13 @@ _RE_CAMDIR_TAG = re.compile(r'amdir', re.IGNORECASE)
 # 'R[o0e]+t' tolère les variantes OCR : Root, Roet, R00t, Rcot, etc.
 _RE_POS_SYSTEM_FRAME = re.compile(r'(r[o0e]{1,3}t|solar\s*system)', re.IGNORECASE)
 
+# Ligne Zone:OOC_xxx Pos: ax km ay km az km — repère planet-relative.
+# Exemples réels :
+#   Zone: OOC_Stanton_1_Hurston Pos: 130.9362km 52.8723km 990.0499km
+#   Zone:OOC_Stanton1_L2 Pos:4133.5634km -1964.1276km -529.7565km
+# Tolère 00C / OQC / 0OC (mangages OCR).
+_RE_OOC_TAG = re.compile(r'O[O0Q]C[_\s]+([\w]+(?:[_\s]+[\w]+)*?)\s*Pos', re.IGNORECASE)
+
 _TESSERACT_CONFIG = (
     r'--oem 3 --psm 6 '
     r'-c preserve_interword_spaces=1 '
@@ -221,6 +228,7 @@ class OCRProcessor:
         data = {
             "location": "Unknown",
             "x": None, "y": None, "z": None,
+            "ooc": None,  # nom de l'ObjectContainer planet-relative (ex: Stanton_1_Hurston)
             "cam_pitch": None, "cam_roll": None, "cam_yaw": None,
         }
         score = 0
@@ -254,26 +262,32 @@ class OCRProcessor:
                     logger.info(f"[{pass_name}] Système détecté : ID={system_id}, Nom={data['location']}")
                     score += 10
             elif "Pos:" in line or "pos:" in line.lower():
-                # Filtre : on ne veut QUE le repère système (Zone:Root ou
-                # Zone:SolarSystem). Rejette ObjectContainer, OOC_Stanton,
-                # Habs etc. qui sont des sous-conteneurs en frame locale et
-                # provoquent des sauts de distance énormes (4133 km vs 14M km).
-                if not _RE_POS_SYSTEM_FRAME.search(line):
-                    logger.debug(f"[{pass_name}] Pos ignoré (frame locale) : {line[:80]}")
+                # PRIORITÉ : ligne OOC_xxx Pos (repère planet-relative stable
+                # pour tout objet fixé à la planète/station). Les coords du
+                # repère système Root/SolarSystem évoluent avec l'orbite des
+                # planètes — inutilisables pour des POIs planet-bound.
+                ooc_match = _RE_OOC_TAG.search(line)
+                if not ooc_match:
+                    logger.debug(f"[{pass_name}] Pos ignoré (pas une ligne OOC) : {line[:80]}")
                     continue
-                logger.debug(f"[{pass_name}] Ligne Pos détectée : {line}")
+                ooc_name = ooc_match.group(1).strip().replace(" ", "_")
+                logger.debug(f"[{pass_name}] Ligne OOC détectée : ooc={ooc_name} | {line[:120]}")
                 coord_match = _RE_POS.search(line)
                 if coord_match:
                     try:
                         data["x"] = float(coord_match.group(1))
                         data["y"] = float(coord_match.group(2))
                         data["z"] = float(coord_match.group(3))
-                        logger.info(f"[{pass_name}] Coordonnées extraites : X={data['x']}, Y={data['y']}, Z={data['z']}")
+                        data["ooc"] = ooc_name
+                        logger.info(
+                            f"[{pass_name}] Position extraite : ooc={ooc_name} "
+                            f"X={data['x']} Y={data['y']} Z={data['z']}"
+                        )
                         score += 10
                     except ValueError as e:
                         logger.error(f"[{pass_name}] Erreur conversion coordonnées : {e}")
                 else:
-                    logger.warning(f"[{pass_name}] Ligne Pos détectée mais regex non matchée : {line}")
+                    logger.warning(f"[{pass_name}] Ligne OOC détectée mais regex Pos non matchée : {line}")
 
         if any(v is not None for v in (data["x"], data["y"], data["z"])):
             score += 5
@@ -301,6 +315,7 @@ class OCRProcessor:
             best_data = {
                 "location": "Unknown",
                 "x": None, "y": None, "z": None,
+                "ooc": None,
                 "cam_pitch": None, "cam_roll": None, "cam_yaw": None,
             }
         return best_data

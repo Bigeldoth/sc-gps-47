@@ -159,16 +159,17 @@ class POIManagerWindow(QDialog):
         
         # Tableau des POI
         self.poi_table = QTableWidget()
-        self.poi_table.setColumnCount(5)
-        self.poi_table.setHorizontalHeaderLabels(["Nom", "X", "Y", "Z", "Description"])
-        
+        self.poi_table.setColumnCount(6)
+        self.poi_table.setHorizontalHeaderLabels(["Nom", "Zone (OOC)", "X", "Y", "Z", "Description"])
+
         # Configurer les colonnes
         header = self.poi_table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
         
         # Activer le tri
         self.poi_table.setSortingEnabled(True)
@@ -238,7 +239,8 @@ class POIManagerWindow(QDialog):
                                 "z": poi.get("z", 0.0),
                                 "description": poi.get("description", ""),
                                 "location": body.get("name", "Unknown System"),
-                                "source": "system"
+                                "ooc": poi.get("ooc"),
+                                "source": "system",
                             }
                             self.all_pois.append(poi_entry)
             else:
@@ -255,7 +257,8 @@ class POIManagerWindow(QDialog):
                     "z": poi.get("z", 0.0),
                     "description": poi.get("description", ""),
                     "location": poi.get("location", "Unknown"),
-                    "source": "user"
+                    "ooc": poi.get("ooc"),
+                    "source": "user",
                 }
                 self.all_pois.append(poi_entry)
             
@@ -285,23 +288,28 @@ class POIManagerWindow(QDialog):
             name_item.setData(Qt.ItemDataRole.UserRole, poi)  # Stocker le POI complet
             self.poi_table.setItem(row, 0, name_item)
 
+            # Zone OOC ('legacy' si absent — POI sauvegardé avant le refactor)
+            ooc_str = poi.get("ooc") or "(legacy)"
+            ooc_item = QTableWidgetItem(ooc_str)
+            self.poi_table.setItem(row, 1, ooc_item)
+
             # Coordonnées
             x_item = QTableWidgetItem(fmt(poi.get("x")))
             x_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            self.poi_table.setItem(row, 1, x_item)
+            self.poi_table.setItem(row, 2, x_item)
 
             y_item = QTableWidgetItem(fmt(poi.get("y")))
             y_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            self.poi_table.setItem(row, 2, y_item)
+            self.poi_table.setItem(row, 3, y_item)
 
             z_item = QTableWidgetItem(fmt(poi.get("z")))
             z_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            self.poi_table.setItem(row, 3, z_item)
+            self.poi_table.setItem(row, 4, z_item)
 
             # Description
             desc_item = QTableWidgetItem(str(poi.get("description", "")))
-            self.poi_table.setItem(row, 4, desc_item)
-        
+            self.poi_table.setItem(row, 5, desc_item)
+
         self.poi_table.setSortingEnabled(True)  # Réactiver le tri
     
     def _filter_pois(self, search_text):

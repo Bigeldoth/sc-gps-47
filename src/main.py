@@ -72,7 +72,7 @@ class GPSOverlay(QMainWindow):
         self.config_manager = ConfigManager()
         self.nav = NavigationEngine()
         self.is_visible = True
-        self.current_data = {"x": None, "y": None, "z": None, "location": "Unknown"}
+        self.current_data = {"x": None, "y": None, "z": None, "ooc": None, "location": "Unknown"}
         self._worker_busy = False
         self.options_window = None
         self.poi_manager_window = None
@@ -88,6 +88,7 @@ class GPSOverlay(QMainWindow):
         # On échantillonne la position et on dérive la direction de
         # déplacement, plutôt que de lire l'orientation caméra (CamDir).
         self._velocity_tracker = VelocityTracker()
+        self._last_known_ooc = None  # pour détecter un changement de repère
         self._smoothed_yaw_off = None
         self._smoothed_pitch_off = None
         self._last_raw_yaw_off = None
@@ -208,6 +209,18 @@ class GPSOverlay(QMainWindow):
 
     def _update_bearing_state(self, data):
         """Met à jour la vélocité et les offsets bearing depuis les coords OCR."""
+        # Si l'OOC a changé, les coords sont dans un repère différent → reset
+        # du tracker pour éviter une vélocité aberrante.
+        current_ooc = data.get("ooc")
+        if current_ooc is not None and current_ooc != self._last_known_ooc:
+            if self._last_known_ooc is not None:
+                logger.info(
+                    f"Changement de zone OOC : {self._last_known_ooc} → {current_ooc}, "
+                    f"reset du VelocityTracker"
+                )
+                self._velocity_tracker.reset()
+            self._last_known_ooc = current_ooc
+
         if data.get("x") is not None:
             self._velocity_tracker.add_sample(
                 data["x"], data["y"], data["z"], time.monotonic()
@@ -248,6 +261,14 @@ class GPSOverlay(QMainWindow):
         """Met à jour bearing_label : Δ axes toujours, bearing relatif si bouge."""
         # Pas de cible → vide
         if self.nav.target is None:
+            self.bearing_label.setText("")
+            return
+
+        # OOC mismatch : pas de bearing significatif (le repère est différent).
+        # Le label de distance affiche déjà l'info "ZONE: ...".
+        target_ooc = self.nav.target.get("ooc")
+        current_ooc = self.current_data.get("ooc")
+        if target_ooc is None or (current_ooc is not None and target_ooc != current_ooc):
             self.bearing_label.setText("")
             return
 
@@ -314,11 +335,45 @@ class GPSOverlay(QMainWindow):
 
     def _refresh_distance_label(self):
         """Met à jour dist_label depuis l'état lissé + indicateur stale."""
-        if self._smoothed_distance_km is None or not self.nav.target:
+        if not self.nav.target:
             self.dist_label.setText("PAS DE CIBLE")
             self.dist_label.setStyleSheet(
                 "color: #00ffff; font-family: 'Menlo', 'Consolas', monospace; "
                 "font-size: 18px; font-weight: bold;"
+            )
+            return
+
+        # Cible et joueur dans des OOC différents : la distance n'a pas de sens.
+        target_ooc = self.nav.target.get("ooc")
+        current_ooc = self.current_data.get("ooc")
+        if target_ooc and current_ooc and target_ooc != current_ooc:
+            self.dist_label.setText(
+                f"CIBLE: {self.nav.target['name']}\n"
+                f"ZONE: {target_ooc}\n(actuel : {current_ooc})"
+            )
+            self.dist_label.setStyleSheet(
+                "color: #ffaa00; font-family: 'Menlo', 'Consolas', monospace; "
+                "font-size: 14px; font-weight: bold;"
+            )
+            return
+
+        # POI legacy sans OOC : distance ininterpretable.
+        if target_ooc is None:
+            self.dist_label.setText(
+                f"CIBLE: {self.nav.target['name']}\n"
+                f"POI legacy (sans zone) — recréer SVP"
+            )
+            self.dist_label.setStyleSheet(
+                "color: #ffaa00; font-family: 'Menlo', 'Consolas', monospace; "
+                "font-size: 13px;"
+            )
+            return
+
+        if self._smoothed_distance_km is None:
+            self.dist_label.setText(f"CIBLE: {self.nav.target['name']}\nDIST: ---")
+            self.dist_label.setStyleSheet(
+                "color: #888888; font-family: 'Menlo', 'Consolas', monospace; "
+                "font-size: 16px;"
             )
             return
 
@@ -464,7 +519,7 @@ class GPSOverlay(QMainWindow):
         self.hotkey_listener.reload_hotkeys()
 
     def _on_destination_changed(self, poi):
-        self.nav.set_target(poi["x"], poi["y"], poi["z"], poi["name"])
+        self.nav.set_target(poi["x"], poi["y"], poi["z"], poi["name"], ooc=poi.get("ooc"))
         self._smoothed_distance_km = None
         self._last_raw_distance_km = None
         self._smoothed_yaw_off = None
@@ -476,7 +531,7 @@ class GPSOverlay(QMainWindow):
         logger.info(f"Destination définie : {poi['name']}")
 
     def _on_goto_requested(self, poi):
-        self.nav.set_target(poi["x"], poi["y"], poi["z"], poi["name"])
+        self.nav.set_target(poi["x"], poi["y"], poi["z"], poi["name"], ooc=poi.get("ooc"))
         self._smoothed_distance_km = None
         self._last_raw_distance_km = None
         self._smoothed_yaw_off = None
@@ -533,18 +588,21 @@ class GPSOverlay(QMainWindow):
             if not name:
                 return
 
+            ooc = self.current_data.get("ooc")
             self.nav.add_user_point(
                 name,
                 self.current_data["x"],
                 self.current_data["y"],
                 self.current_data["z"],
                 self.current_data.get("location", "Unknown"),
+                ooc=ooc,
             )
+            ooc_str = f" ({ooc})" if ooc else " (zone inconnue)"
             self.tray_icon.showMessage(
                 "Succès",
-                f"Point '{name}' enregistré !",
+                f"Point '{name}' enregistré{ooc_str}.",
                 QSystemTrayIcon.MessageIcon.Information,
-                2000,
+                2500,
             )
         except Exception:
             logger.exception("Erreur enregistrement position")

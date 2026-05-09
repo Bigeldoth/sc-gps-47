@@ -214,14 +214,20 @@ class NavigationEngine:
         except:
             return False
 
-    def add_user_point(self, name, x, y, z, location="Unknown"):
-        """Ajoute un nouveau point personnalisé"""
+    def add_user_point(self, name, x, y, z, location="Unknown", ooc=None):
+        """Ajoute un nouveau point personnalisé.
+
+        ``ooc`` (ObjectContainer name, ex: ``Stanton_1_Hurston``) identifie
+        le repère planet-relative. Indispensable pour la navigation : la
+        distance et le bearing ne sont calculables qu'au sein du même OOC.
+        """
         point = {
             "name": name,
             "x": x,
             "y": y,
             "z": z,
-            "location": location
+            "location": location,
+            "ooc": ooc,
         }
         self.user_poi.append(point)
         self.save_user_poi()
@@ -260,17 +266,32 @@ class NavigationEngine:
             print(f"Erreur chargement POI : {e}")
             return []
 
-    def set_target(self, x, y, z, name="Destination"):
-        self.target = {"x": x, "y": y, "z": z, "name": name}
+    def set_target(self, x, y, z, name="Destination", ooc=None):
+        """Définit la destination. ``ooc`` est requis pour la navigation
+        (distance et bearing ne sont valides que dans le même OOC)."""
+        self.target = {"x": x, "y": y, "z": z, "name": name, "ooc": ooc}
+
+    def is_target_in_same_ooc(self, current_pos):
+        """True si la cible et la position courante partagent le même OOC."""
+        if not self.target or current_pos is None:
+            return False
+        cur_ooc = current_pos.get("ooc")
+        tgt_ooc = self.target.get("ooc")
+        if cur_ooc is None or tgt_ooc is None:
+            return False
+        return cur_ooc == tgt_ooc
 
     def calculate_distance(self, current_pos):
         """Distance euclidienne entre la position courante et la cible.
 
-        Les coordonnées (OCR + POI stockés) sont en kilomètres ; cette
-        fonction retourne donc une distance en **kilomètres**, ou ``None``
-        si la cible ou la position courante ne sont pas définies.
+        Coordonnées en km dans le repère **planet-relative** (OOC). Renvoie
+        ``None`` si la cible n'est pas définie, si la position courante est
+        manquante, OU si le joueur et la cible sont dans des OOC différents
+        (la distance n'a alors pas de sens sans transformation cross-zone).
         """
         if not self.target or current_pos.get("x") is None:
+            return None
+        if not self.is_target_in_same_ooc(current_pos):
             return None
 
         dx = self.target["x"] - current_pos["x"]
