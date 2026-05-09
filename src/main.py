@@ -9,9 +9,18 @@ from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QObject
 from PyQt6.QtGui import QIcon, QAction, QColor, QCursor
 from capture import ScreenCapture
 from ocr import OCRProcessor
-from navigation import NavigationEngine, format_distance
+from navigation import (
+    NavigationEngine,
+    format_distance,
+    calculate_velocity_bearing,
+    calculate_absolute_bearing,
+    format_axis_delta,
+    ema_angle,
+    normalize_angle_signed,
+)
 from config_manager import ConfigManager
 from hotkey_listener import HotkeyListener
+from velocity_tracker import VelocityTracker
 from ui.options import OptionsWindow
 from ui.poi_manager import POIManagerWindow
 
@@ -63,7 +72,7 @@ class GPSOverlay(QMainWindow):
         self.config_manager = ConfigManager()
         self.nav = NavigationEngine()
         self.is_visible = True
-        self.current_data = {"x": None, "y": None, "z": None, "location": "Unknown"}
+        self.current_data = {"x": None, "y": None, "z": None, "ooc": None, "location": "Unknown"}
         self._worker_busy = False
         self.options_window = None
         self.poi_manager_window = None
@@ -74,6 +83,16 @@ class GPSOverlay(QMainWindow):
         self._last_coord_ts = None
         self._ema_alpha = 0.4
         self._stale_threshold_s = 2.0
+
+        # Guidage directionnel basé sur la vélocité (style GPS voiture).
+        # On échantillonne la position et on dérive la direction de
+        # déplacement, plutôt que de lire l'orientation caméra (CamDir).
+        self._velocity_tracker = VelocityTracker()
+        self._last_known_ooc = None  # pour détecter un changement de repère
+        self._smoothed_yaw_off = None
+        self._smoothed_pitch_off = None
+        self._last_raw_yaw_off = None
+        self._last_raw_pitch_off = None
 
         # UI
         self.central_widget = QWidget()
@@ -91,10 +110,14 @@ class GPSOverlay(QMainWindow):
         self.dist_label = QLabel("")
         self.dist_label.setStyleSheet("color: #00ffff; font-family: 'Menlo', 'Consolas', monospace; font-size: 18px; font-weight: bold;")
 
+        self.bearing_label = QLabel("")
+        self.bearing_label.setStyleSheet("color: #00ffff; font-family: 'Menlo', 'Consolas', monospace; font-size: 16px; font-weight: bold;")
+
         self.layout.addWidget(self.status_label)
         self.layout.addWidget(self.location_label)
         self.layout.addWidget(self.pos_label)
         self.layout.addWidget(self.dist_label)
+        self.layout.addWidget(self.bearing_label)
         self.central_widget.setLayout(self.layout)
         self.setCentralWidget(self.central_widget)
 
@@ -161,34 +184,206 @@ class GPSOverlay(QMainWindow):
             self.pos_label.setStyleSheet("color: #00ff00; font-family: 'Menlo', 'Consolas', monospace; font-size: 14px; background-color: rgba(0, 0, 0, 100);")
 
             self._last_coord_ts = time.monotonic()
-            dist_km = self.nav.calculate_distance(data)
-            if dist_km is None:
-                self._smoothed_distance_km = None
-            elif (
-                self._smoothed_distance_km is None
-                or self._last_raw_distance_km is not None
-                and dist_km == self._last_raw_distance_km
-            ):
-                # Première mesure OU coords OCR strictement identiques au tick
-                # précédent → pas de bruit à lisser, on prend la valeur brute.
-                self._smoothed_distance_km = dist_km
-            else:
-                a = self._ema_alpha
-                self._smoothed_distance_km = a * dist_km + (1 - a) * self._smoothed_distance_km
-            self._last_raw_distance_km = dist_km
         else:
             self.pos_label.setText("X: --- | Y: --- | Z: --- (Scan en cours...)")
             self.pos_label.setStyleSheet("color: #ffaa00; font-family: 'Menlo', 'Consolas', monospace; font-size: 14px; background-color: rgba(0, 0, 0, 100);")
 
+        # Mettre à jour l'état du bearing AVANT le smoothing distance, car
+        # _update_bearing_state peuple _velocity_tracker.is_moving qui décide
+        # si on doit appliquer EMA ou snap à la valeur brute au repos.
+        self._update_bearing_state(data)
+
+        # Smoothing de distance : au repos, valeur brute = position OCR courante (pas EMA).
+        if data["x"] is not None:
+            dist_km = self.nav.calculate_distance(data)
+            if dist_km is None:
+                self._smoothed_distance_km = None
+            elif not self._velocity_tracker.is_moving:
+                # À l'arrêt : afficher la distance extrinsèquement calculée depuis la
+                # position OCR courante, sans lissage. Cela évite que l'EMA accumule
+                # des oscillations quand on reste immobile.
+                self._smoothed_distance_km = dist_km
+            elif self._smoothed_distance_km is None:
+                # Première mesure en mouvement → init
+                self._smoothed_distance_km = dist_km
+            else:
+                # En mouvement : lissage EMA normal
+                a = self._ema_alpha
+                self._smoothed_distance_km = a * dist_km + (1 - a) * self._smoothed_distance_km
+            self._last_raw_distance_km = dist_km
+        else:
+            # Pas de position → pas de distance
+            self._smoothed_distance_km = None
         self._refresh_distance_label()
+        self._refresh_bearing_label()
+
+    def _update_bearing_state(self, data):
+        """Met à jour la vélocité et les offsets bearing depuis les coords OCR."""
+        # Si l'OOC a changé, les coords sont dans un repère différent → reset
+        # du tracker pour éviter une vélocité aberrante.
+        current_ooc = data.get("ooc")
+        if current_ooc is not None and current_ooc != self._last_known_ooc:
+            if self._last_known_ooc is not None:
+                logger.info(
+                    f"Changement de zone OOC : {self._last_known_ooc} → {current_ooc}, "
+                    f"reset du VelocityTracker"
+                )
+                self._velocity_tracker.reset()
+            self._last_known_ooc = current_ooc
+
+        if data.get("x") is not None:
+            self._velocity_tracker.add_sample(
+                data["x"], data["y"], data["z"], time.monotonic()
+            )
+
+        velocity = self._velocity_tracker.velocity if self._velocity_tracker.is_moving else None
+
+        if velocity is None or self.nav.target is None:
+            self._smoothed_yaw_off = None
+            self._smoothed_pitch_off = None
+            self._last_raw_yaw_off = None
+            self._last_raw_pitch_off = None
+            return
+
+        bearing = calculate_velocity_bearing(velocity, data, self.nav.target)
+        if bearing is None:
+            return
+        yaw_off, pitch_off = bearing
+
+        # Skip-on-stable + EMA avec wrap-around
+        if (
+            self._last_raw_yaw_off == yaw_off
+            and self._last_raw_pitch_off == pitch_off
+        ):
+            self._smoothed_yaw_off = yaw_off
+            self._smoothed_pitch_off = pitch_off
+        elif self._smoothed_yaw_off is None:
+            self._smoothed_yaw_off = yaw_off
+            self._smoothed_pitch_off = pitch_off
+        else:
+            a = self._ema_alpha
+            self._smoothed_yaw_off = ema_angle(self._smoothed_yaw_off, yaw_off, a)
+            self._smoothed_pitch_off = ema_angle(self._smoothed_pitch_off, pitch_off, a)
+        self._last_raw_yaw_off = yaw_off
+        self._last_raw_pitch_off = pitch_off
+
+    def _refresh_bearing_label(self):
+        """Met à jour bearing_label : Δ axes toujours, bearing relatif si bouge."""
+        # Pas de cible → vide
+        if self.nav.target is None:
+            self.bearing_label.setText("")
+            return
+
+        # OOC mismatch : pas de bearing significatif (le repère est différent).
+        # Le label de distance affiche déjà l'info "ZONE: ...".
+        target_ooc = self.nav.target.get("ooc")
+        current_ooc = self.current_data.get("ooc")
+        if target_ooc is None or (current_ooc is not None and target_ooc != current_ooc):
+            self.bearing_label.setText("")
+            return
+
+        # Pas encore de coords courantes → message d'attente
+        abs_bearing = calculate_absolute_bearing(self.current_data, self.nav.target)
+        if abs_bearing is None:
+            self.bearing_label.setText("EN ATTENTE DE COORDONNÉES")
+            self.bearing_label.setStyleSheet(
+                "color: #888888; font-family: 'Menlo', 'Consolas', monospace; "
+                "font-size: 14px;"
+            )
+            return
+
+        # Décomposition par axe — toujours utile (le joueur peut viser
+        # +X / -Y / +Z en lisant la HUD du jeu).
+        delta_str = (
+            f"Δ X{format_axis_delta(abs_bearing['dx'])}  "
+            f"Y{format_axis_delta(abs_bearing['dy'])}  "
+            f"Z{format_axis_delta(abs_bearing['dz'])}"
+        )
+
+        # Joueur stationnaire : on ne peut pas calculer le bearing relatif,
+        # mais on affiche les Δ axes.
+        if not self._velocity_tracker.is_moving:
+            self.bearing_label.setText(f"VERS LA CIBLE :\n{delta_str}")
+            self.bearing_label.setStyleSheet(
+                "color: #aaaaaa; font-family: 'Menlo', 'Consolas', monospace; "
+                "font-size: 13px;"
+            )
+            return
+
+        # Bearing relatif pas encore calculé (premier tick après mouvement)
+        if self._smoothed_yaw_off is None or self._smoothed_pitch_off is None:
+            self.bearing_label.setText(f"CAP: …\n{delta_str}")
+            return
+
+        yaw = self._smoothed_yaw_off
+        pitch = self._smoothed_pitch_off
+        max_off = max(abs(yaw), abs(pitch))
+
+        if max_off < 5.0:
+            self.bearing_label.setText(f"ALIGNÉ ✓\n{delta_str}")
+            self.bearing_label.setStyleSheet(
+                "color: #40ff40; font-family: 'Menlo', 'Consolas', monospace; "
+                "font-size: 16px; font-weight: bold;"
+            )
+            return
+
+        yaw_arrow = "→" if yaw > 0 else "←"
+        pitch_arrow = "↑" if pitch > 0 else "↓"
+        if max_off > 60.0:
+            color = "#ff4040"
+        elif max_off > 20.0:
+            color = "#ffaa00"
+        else:
+            color = "#ffff40"
+        self.bearing_label.setText(
+            f"CAP: {yaw_arrow}{abs(yaw):.0f}° {pitch_arrow}{abs(pitch):.0f}°\n{delta_str}"
+        )
+        self.bearing_label.setStyleSheet(
+            f"color: {color}; font-family: 'Menlo', 'Consolas', monospace; "
+            "font-size: 14px; font-weight: bold;"
+        )
 
     def _refresh_distance_label(self):
         """Met à jour dist_label depuis l'état lissé + indicateur stale."""
-        if self._smoothed_distance_km is None or not self.nav.target:
+        if not self.nav.target:
             self.dist_label.setText("PAS DE CIBLE")
             self.dist_label.setStyleSheet(
                 "color: #00ffff; font-family: 'Menlo', 'Consolas', monospace; "
                 "font-size: 18px; font-weight: bold;"
+            )
+            return
+
+        # Cible et joueur dans des OOC différents : la distance n'a pas de sens.
+        target_ooc = self.nav.target.get("ooc")
+        current_ooc = self.current_data.get("ooc")
+        if target_ooc and current_ooc and target_ooc != current_ooc:
+            self.dist_label.setText(
+                f"CIBLE: {self.nav.target['name']}\n"
+                f"ZONE: {target_ooc}\n(actuel : {current_ooc})"
+            )
+            self.dist_label.setStyleSheet(
+                "color: #ffaa00; font-family: 'Menlo', 'Consolas', monospace; "
+                "font-size: 14px; font-weight: bold;"
+            )
+            return
+
+        # POI legacy sans OOC : distance ininterpretable.
+        if target_ooc is None:
+            self.dist_label.setText(
+                f"CIBLE: {self.nav.target['name']}\n"
+                f"POI legacy (sans zone) — recréer SVP"
+            )
+            self.dist_label.setStyleSheet(
+                "color: #ffaa00; font-family: 'Menlo', 'Consolas', monospace; "
+                "font-size: 13px;"
+            )
+            return
+
+        if self._smoothed_distance_km is None:
+            self.dist_label.setText(f"CIBLE: {self.nav.target['name']}\nDIST: ---")
+            self.dist_label.setStyleSheet(
+                "color: #888888; font-family: 'Menlo', 'Consolas', monospace; "
+                "font-size: 16px;"
             )
             return
 
@@ -234,6 +429,10 @@ class GPSOverlay(QMainWindow):
         poi_action = QAction("Gestion des POI...", self)
         poi_action.triggered.connect(self.show_poi_manager_window)
         tray_menu.addAction(poi_action)
+
+        reset_gps_action = QAction("Réinitialiser le GPS", self)
+        reset_gps_action.triggered.connect(self.reset_velocity_tracker)
+        tray_menu.addAction(reset_gps_action)
 
         tray_menu.addSeparator()
 
@@ -330,19 +529,45 @@ class GPSOverlay(QMainWindow):
         self.hotkey_listener.reload_hotkeys()
 
     def _on_destination_changed(self, poi):
-        self.nav.set_target(poi["x"], poi["y"], poi["z"], poi["name"])
+        self.nav.set_target(poi["x"], poi["y"], poi["z"], poi["name"], ooc=poi.get("ooc"))
         self._smoothed_distance_km = None
         self._last_raw_distance_km = None
+        self._smoothed_yaw_off = None
+        self._smoothed_pitch_off = None
+        self._last_raw_yaw_off = None
+        self._last_raw_pitch_off = None
         self._refresh_distance_label()
+        self._refresh_bearing_label()
         logger.info(f"Destination définie : {poi['name']}")
 
     def _on_goto_requested(self, poi):
-        self.nav.set_target(poi["x"], poi["y"], poi["z"], poi["name"])
+        self.nav.set_target(poi["x"], poi["y"], poi["z"], poi["name"], ooc=poi.get("ooc"))
         self._smoothed_distance_km = None
         self._last_raw_distance_km = None
+        self._smoothed_yaw_off = None
+        self._smoothed_pitch_off = None
+        self._last_raw_yaw_off = None
+        self._last_raw_pitch_off = None
         self._refresh_distance_label()
+        self._refresh_bearing_label()
         if not self.is_visible:
             self.toggle_overlay()
+
+    def reset_velocity_tracker(self):
+        """Oublie l'historique de positions (utile après un saut quantique)."""
+        self._velocity_tracker.reset()
+        self._smoothed_yaw_off = None
+        self._smoothed_pitch_off = None
+        self._last_raw_yaw_off = None
+        self._last_raw_pitch_off = None
+        self._refresh_bearing_label()
+        self.tray_icon.showMessage(
+            "GPS réinitialisé",
+            "Historique de mouvement effacé. Bouge pour recalculer la direction.",
+            QSystemTrayIcon.MessageIcon.Information,
+            2500,
+        )
+        logger.info("VelocityTracker réinitialisé")
 
     def prompt_save_point(self):
         logger.debug("prompt_save_point déclenché")
@@ -373,18 +598,21 @@ class GPSOverlay(QMainWindow):
             if not name:
                 return
 
+            ooc = self.current_data.get("ooc")
             self.nav.add_user_point(
                 name,
                 self.current_data["x"],
                 self.current_data["y"],
                 self.current_data["z"],
                 self.current_data.get("location", "Unknown"),
+                ooc=ooc,
             )
+            ooc_str = f" ({ooc})" if ooc else " (zone inconnue)"
             self.tray_icon.showMessage(
                 "Succès",
-                f"Point '{name}' enregistré !",
+                f"Point '{name}' enregistré{ooc_str}.",
                 QSystemTrayIcon.MessageIcon.Information,
-                2000,
+                2500,
             )
         except Exception:
             logger.exception("Erreur enregistrement position")

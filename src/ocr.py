@@ -13,8 +13,91 @@ _RE_POS = re.compile(
     r'[Pp]os:?\s*(-?\d+\.?\d*)[_\s]*[kKaA][mnMN]?[_\s]*(-?\d+\.?\d*)[_\s]*[kKaA][mnMN]?[_\s]*(-?\d+\.?\d*)[_\s]*[kKaA][mnMN]?',
     re.IGNORECASE,
 )
+# Identifie une ligne CamDir même si l'OCR rate le ':' ou le 'C' initial.
+_RE_CAMDIR_TAG = re.compile(r'amdir', re.IGNORECASE)
+# Lignes Pos: que l'on accepte (frame système). Rejette ObjectContainer, OOC, Habs.
+# 'R[o0e]+t' tolère les variantes OCR : Root, Roet, R00t, Rcot, etc.
+_RE_POS_SYSTEM_FRAME = re.compile(r'(r[o0e]{1,3}t|solar\s*system)', re.IGNORECASE)
 
-_TESSERACT_CONFIG = r'--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz:._- '
+# Ligne Zone:OOC_xxx Pos: ax km ay km az km — repère planet-relative.
+# Exemples réels :
+#   Zone: OOC_Stanton_1_Hurston Pos: 130.9362km 52.8723km 990.0499km
+#   Zone:OOC_Stanton1_L2 Pos:4133.5634km -1964.1276km -529.7565km
+# Tolère 00C / OQC / 0OC (mangages OCR).
+_RE_OOC_TAG = re.compile(r'O[O0Q]C[_\s]+([\w]+(?:[_\s]+[\w]+)*?)\s*Pos', re.IGNORECASE)
+
+_TESSERACT_CONFIG = (
+    r'--oem 3 --psm 6 '
+    r'-c preserve_interword_spaces=1 '
+    r'-c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz:._- '
+)
+
+
+def _parse_camdir_values(line, max_abs=180):
+    """Extrait (pitch, roll, yaw) d'une ligne CamDir, gère la perte d'espaces.
+
+    Stratégie :
+      1. Isole le payload après 'amdir' jusqu'à 'FOV' (ou fin de ligne).
+      2. Insère un espace avant tout '-' qui suit un chiffre, pour séparer
+         les valeurs négatives consécutives ('25-5177' → '25 -5177').
+      3. Extrait les tokens via re.findall(r'-?\\d+').
+      4. Pour chaque token dont |valeur| > max_abs, scinde gourmandement
+         depuis la gauche : on coupe au préfixe le plus court qui reste
+         dans [-max_abs, +max_abs] et dont le reste l'est aussi.
+         Ex: '-5177' → ['-5', '177'].
+      5. Retourne la liste des 3 premiers ints valides ou None.
+    """
+    if not line:
+        return None
+    m = _RE_CAMDIR_TAG.search(line)
+    if not m:
+        return None
+    payload = line[m.end():]
+    # Coupe à FOV si présent
+    fov_idx = re.search(r'FOV', payload, re.IGNORECASE)
+    if fov_idx:
+        payload = payload[:fov_idx.start()]
+    # Étape 2 : sépare un '-' qui colle à un chiffre précédent
+    payload = re.sub(r'(\d)-', r'\1 -', payload)
+    # Étape 3 : tokens signés
+    tokens = re.findall(r'-?\d+', payload)
+    # Étape 4 : split des tokens hors plage
+    out = []
+    for tok in tokens:
+        if len(out) >= 3:
+            break
+        try:
+            n = int(tok)
+        except ValueError:
+            continue
+        if -max_abs <= n <= max_abs:
+            out.append(n)
+            continue
+        # Hors plage : tente un split par la gauche
+        sign = -1 if tok.startswith('-') else 1
+        digits = tok.lstrip('-')
+        split_found = False
+        for i in range(1, len(digits)):
+            head = sign * int(digits[:i])
+            tail = digits[i:]
+            if not tail:
+                continue
+            try:
+                tail_n = int(tail)
+            except ValueError:
+                continue
+            if -max_abs <= head <= max_abs and -max_abs <= tail_n <= max_abs:
+                out.append(head)
+                if len(out) < 3:
+                    out.append(tail_n)
+                split_found = True
+                break
+        if not split_found:
+            # Token irrécupérable, on abandonne ce parse
+            return None
+    if len(out) >= 3:
+        return out[:3]
+    return None
 
 _OCR_CORRECTIONS = {
     'Zore:': 'Zone:',
@@ -22,6 +105,17 @@ _OCR_CORRECTIONS = {
     'So1arSystem': 'SolarSystem',
     'SovarSysten': 'SolarSystem',
     'SolarSysten': 'SolarSystem',
+    # Variations courantes de "CamDir" causées par l'OCR
+    'Camdir': 'CamDir',
+    'CarmDir': 'CamDir',
+    'CarnDir': 'CamDir',
+    'Cam0ir': 'CamDir',
+    'CarnOir': 'CamDir',
+    # Variantes "Root" pour le filtre frame système
+    'RoetPos': 'RootPos',
+    'Roet_Pos': 'Root_Pos',
+    'R0ot': 'Root',
+    'Rcot': 'Root',
 }
 
 
@@ -131,11 +225,30 @@ class OCRProcessor:
         ocr_text = self._correct_ocr_errors(ocr_text)
         lines = [line.strip() for line in ocr_text.split('\n') if line.strip()]
 
-        data = {"location": "Unknown", "x": None, "y": None, "z": None}
+        data = {
+            "location": "Unknown",
+            "x": None, "y": None, "z": None,
+            "ooc": None,  # nom de l'ObjectContainer planet-relative (ex: Stanton_1_Hurston)
+            "cam_pitch": None, "cam_roll": None, "cam_yaw": None,
+        }
         score = 0
 
         for line in lines:
-            if "Zone:" in line and "SolarSystem" in line:
+            if _RE_CAMDIR_TAG.search(line):
+                # Parser dédié qui gère la perte d'espaces entre valeurs.
+                values = _parse_camdir_values(line)
+                if values is not None:
+                    pitch, roll, yaw = values
+                    data["cam_pitch"] = float(pitch)
+                    data["cam_roll"] = float(roll)
+                    data["cam_yaw"] = float(yaw)
+                    logger.debug(
+                        f"[{pass_name}] CamDir extrait : pitch={pitch} roll={roll} yaw={yaw}"
+                    )
+                    score += 5
+                else:
+                    logger.warning(f"[{pass_name}] Ligne CamDir non parsable : {line!r}")
+            elif "Zone:" in line and "SolarSystem" in line:
                 logger.debug(f"[{pass_name}] Ligne Zone détectée : {line}")
                 zone_match = _RE_ZONE.search(line)
                 if zone_match:
@@ -149,19 +262,32 @@ class OCRProcessor:
                     logger.info(f"[{pass_name}] Système détecté : ID={system_id}, Nom={data['location']}")
                     score += 10
             elif "Pos:" in line or "pos:" in line.lower():
-                logger.debug(f"[{pass_name}] Ligne Pos détectée : {line}")
+                # PRIORITÉ : ligne OOC_xxx Pos (repère planet-relative stable
+                # pour tout objet fixé à la planète/station). Les coords du
+                # repère système Root/SolarSystem évoluent avec l'orbite des
+                # planètes — inutilisables pour des POIs planet-bound.
+                ooc_match = _RE_OOC_TAG.search(line)
+                if not ooc_match:
+                    logger.debug(f"[{pass_name}] Pos ignoré (pas une ligne OOC) : {line[:80]}")
+                    continue
+                ooc_name = ooc_match.group(1).strip().replace(" ", "_")
+                logger.debug(f"[{pass_name}] Ligne OOC détectée : ooc={ooc_name} | {line[:120]}")
                 coord_match = _RE_POS.search(line)
                 if coord_match:
                     try:
                         data["x"] = float(coord_match.group(1))
                         data["y"] = float(coord_match.group(2))
                         data["z"] = float(coord_match.group(3))
-                        logger.info(f"[{pass_name}] Coordonnées extraites : X={data['x']}, Y={data['y']}, Z={data['z']}")
+                        data["ooc"] = ooc_name
+                        logger.info(
+                            f"[{pass_name}] Position extraite : ooc={ooc_name} "
+                            f"X={data['x']} Y={data['y']} Z={data['z']}"
+                        )
                         score += 10
                     except ValueError as e:
                         logger.error(f"[{pass_name}] Erreur conversion coordonnées : {e}")
                 else:
-                    logger.warning(f"[{pass_name}] Ligne Pos détectée mais regex non matchée : {line}")
+                    logger.warning(f"[{pass_name}] Ligne OOC détectée mais regex Pos non matchée : {line}")
 
         if any(v is not None for v in (data["x"], data["y"], data["z"])):
             score += 5
@@ -186,7 +312,12 @@ class OCRProcessor:
                 best_data = data
 
         if best_data is None:
-            best_data = {"location": "Unknown", "x": None, "y": None, "z": None}
+            best_data = {
+                "location": "Unknown",
+                "x": None, "y": None, "z": None,
+                "ooc": None,
+                "cam_pitch": None, "cam_roll": None, "cam_yaw": None,
+            }
         return best_data
 
     def _correct_ocr_errors(self, text):
