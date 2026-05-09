@@ -15,10 +15,81 @@ _RE_POS = re.compile(
 )
 # Identifie une ligne CamDir même si l'OCR rate le ':' ou le 'C' initial.
 _RE_CAMDIR_TAG = re.compile(r'amdir', re.IGNORECASE)
-# Extrait les 3 premiers entiers signés d'une ligne (pour cam_pitch/roll/yaw).
-_RE_THREE_INTS = re.compile(r'(-?\d+)\s+(-?\d+)\s+(-?\d+)')
+# Lignes Pos: que l'on accepte (frame système). Rejette ObjectContainer, OOC, Habs.
+_RE_POS_SYSTEM_FRAME = re.compile(r'(root|solar\s*system)', re.IGNORECASE)
 
-_TESSERACT_CONFIG = r'--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz:._- '
+_TESSERACT_CONFIG = (
+    r'--oem 3 --psm 6 '
+    r'-c preserve_interword_spaces=1 '
+    r'-c tessedit_char_whitelist=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz:._- '
+)
+
+
+def _parse_camdir_values(line, max_abs=180):
+    """Extrait (pitch, roll, yaw) d'une ligne CamDir, gère la perte d'espaces.
+
+    Stratégie :
+      1. Isole le payload après 'amdir' jusqu'à 'FOV' (ou fin de ligne).
+      2. Insère un espace avant tout '-' qui suit un chiffre, pour séparer
+         les valeurs négatives consécutives ('25-5177' → '25 -5177').
+      3. Extrait les tokens via re.findall(r'-?\\d+').
+      4. Pour chaque token dont |valeur| > max_abs, scinde gourmandement
+         depuis la gauche : on coupe au préfixe le plus court qui reste
+         dans [-max_abs, +max_abs] et dont le reste l'est aussi.
+         Ex: '-5177' → ['-5', '177'].
+      5. Retourne la liste des 3 premiers ints valides ou None.
+    """
+    if not line:
+        return None
+    m = _RE_CAMDIR_TAG.search(line)
+    if not m:
+        return None
+    payload = line[m.end():]
+    # Coupe à FOV si présent
+    fov_idx = re.search(r'FOV', payload, re.IGNORECASE)
+    if fov_idx:
+        payload = payload[:fov_idx.start()]
+    # Étape 2 : sépare un '-' qui colle à un chiffre précédent
+    payload = re.sub(r'(\d)-', r'\1 -', payload)
+    # Étape 3 : tokens signés
+    tokens = re.findall(r'-?\d+', payload)
+    # Étape 4 : split des tokens hors plage
+    out = []
+    for tok in tokens:
+        if len(out) >= 3:
+            break
+        try:
+            n = int(tok)
+        except ValueError:
+            continue
+        if -max_abs <= n <= max_abs:
+            out.append(n)
+            continue
+        # Hors plage : tente un split par la gauche
+        sign = -1 if tok.startswith('-') else 1
+        digits = tok.lstrip('-')
+        split_found = False
+        for i in range(1, len(digits)):
+            head = sign * int(digits[:i])
+            tail = digits[i:]
+            if not tail:
+                continue
+            try:
+                tail_n = int(tail)
+            except ValueError:
+                continue
+            if -max_abs <= head <= max_abs and -max_abs <= tail_n <= max_abs:
+                out.append(head)
+                if len(out) < 3:
+                    out.append(tail_n)
+                split_found = True
+                break
+        if not split_found:
+            # Token irrécupérable, on abandonne ce parse
+            return None
+    if len(out) >= 3:
+        return out[:3]
+    return None
 
 _OCR_CORRECTIONS = {
     'Zore:': 'Zone:',
@@ -150,23 +221,19 @@ class OCRProcessor:
 
         for line in lines:
             if _RE_CAMDIR_TAG.search(line):
-                # Ligne CamDir détectée (tolère erreurs OCR sur le 'C' ou ':').
-                # On prend les 3 premiers entiers signés de la ligne.
-                cam_match = _RE_THREE_INTS.search(line)
-                if cam_match:
-                    try:
-                        data["cam_pitch"] = float(cam_match.group(1))
-                        data["cam_roll"] = float(cam_match.group(2))
-                        data["cam_yaw"] = float(cam_match.group(3))
-                        logger.debug(
-                            f"[{pass_name}] CamDir extrait : pitch={data['cam_pitch']} "
-                            f"roll={data['cam_roll']} yaw={data['cam_yaw']}"
-                        )
-                        score += 5
-                    except ValueError as e:
-                        logger.error(f"[{pass_name}] Erreur conversion CamDir : {e} | ligne={line!r}")
+                # Parser dédié qui gère la perte d'espaces entre valeurs.
+                values = _parse_camdir_values(line)
+                if values is not None:
+                    pitch, roll, yaw = values
+                    data["cam_pitch"] = float(pitch)
+                    data["cam_roll"] = float(roll)
+                    data["cam_yaw"] = float(yaw)
+                    logger.debug(
+                        f"[{pass_name}] CamDir extrait : pitch={pitch} roll={roll} yaw={yaw}"
+                    )
+                    score += 5
                 else:
-                    logger.warning(f"[{pass_name}] Ligne CamDir détectée mais regex 3-int échouée : {line!r}")
+                    logger.warning(f"[{pass_name}] Ligne CamDir non parsable : {line!r}")
             elif "Zone:" in line and "SolarSystem" in line:
                 logger.debug(f"[{pass_name}] Ligne Zone détectée : {line}")
                 zone_match = _RE_ZONE.search(line)
@@ -181,6 +248,13 @@ class OCRProcessor:
                     logger.info(f"[{pass_name}] Système détecté : ID={system_id}, Nom={data['location']}")
                     score += 10
             elif "Pos:" in line or "pos:" in line.lower():
+                # Filtre : on ne veut QUE le repère système (Zone:Root ou
+                # Zone:SolarSystem). Rejette ObjectContainer, OOC_Stanton,
+                # Habs etc. qui sont des sous-conteneurs en frame locale et
+                # provoquent des sauts de distance énormes (4133 km vs 14M km).
+                if not _RE_POS_SYSTEM_FRAME.search(line):
+                    logger.debug(f"[{pass_name}] Pos ignoré (frame locale) : {line[:80]}")
+                    continue
                 logger.debug(f"[{pass_name}] Ligne Pos détectée : {line}")
                 coord_match = _RE_POS.search(line)
                 if coord_match:
