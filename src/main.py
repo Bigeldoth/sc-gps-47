@@ -13,6 +13,8 @@ from navigation import (
     NavigationEngine,
     format_distance,
     calculate_velocity_bearing,
+    calculate_absolute_bearing,
+    format_axis_delta,
     ema_angle,
     normalize_angle_signed,
 )
@@ -243,25 +245,43 @@ class GPSOverlay(QMainWindow):
         self._last_raw_pitch_off = pitch_off
 
     def _refresh_bearing_label(self):
-        """Met à jour bearing_label selon l'état (cible, mouvement, bearing)."""
+        """Met à jour bearing_label : Δ axes toujours, bearing relatif si bouge."""
         # Pas de cible → vide
         if self.nav.target is None:
             self.bearing_label.setText("")
             return
 
-        # Joueur stationnaire : impossible de déduire une direction depuis
-        # les positions. Affiche un message d'attente.
-        if not self._velocity_tracker.is_moving:
-            self.bearing_label.setText("EN ATTENTE DE MOUVEMENT")
+        # Pas encore de coords courantes → message d'attente
+        abs_bearing = calculate_absolute_bearing(self.current_data, self.nav.target)
+        if abs_bearing is None:
+            self.bearing_label.setText("EN ATTENTE DE COORDONNÉES")
             self.bearing_label.setStyleSheet(
                 "color: #888888; font-family: 'Menlo', 'Consolas', monospace; "
                 "font-size: 14px;"
             )
             return
 
-        # Bearing pas encore calculé (premier tick après mouvement)
+        # Décomposition par axe — toujours utile (le joueur peut viser
+        # +X / -Y / +Z en lisant la HUD du jeu).
+        delta_str = (
+            f"Δ X{format_axis_delta(abs_bearing['dx'])}  "
+            f"Y{format_axis_delta(abs_bearing['dy'])}  "
+            f"Z{format_axis_delta(abs_bearing['dz'])}"
+        )
+
+        # Joueur stationnaire : on ne peut pas calculer le bearing relatif,
+        # mais on affiche les Δ axes.
+        if not self._velocity_tracker.is_moving:
+            self.bearing_label.setText(f"VERS LA CIBLE :\n{delta_str}")
+            self.bearing_label.setStyleSheet(
+                "color: #aaaaaa; font-family: 'Menlo', 'Consolas', monospace; "
+                "font-size: 13px;"
+            )
+            return
+
+        # Bearing relatif pas encore calculé (premier tick après mouvement)
         if self._smoothed_yaw_off is None or self._smoothed_pitch_off is None:
-            self.bearing_label.setText("CAP: …")
+            self.bearing_label.setText(f"CAP: …\n{delta_str}")
             return
 
         yaw = self._smoothed_yaw_off
@@ -269,10 +289,10 @@ class GPSOverlay(QMainWindow):
         max_off = max(abs(yaw), abs(pitch))
 
         if max_off < 5.0:
-            self.bearing_label.setText("ALIGNÉ ✓")
+            self.bearing_label.setText(f"ALIGNÉ ✓\n{delta_str}")
             self.bearing_label.setStyleSheet(
                 "color: #40ff40; font-family: 'Menlo', 'Consolas', monospace; "
-                "font-size: 18px; font-weight: bold;"
+                "font-size: 16px; font-weight: bold;"
             )
             return
 
@@ -285,11 +305,11 @@ class GPSOverlay(QMainWindow):
         else:
             color = "#ffff40"
         self.bearing_label.setText(
-            f"CAP: {yaw_arrow}{abs(yaw):.0f}° {pitch_arrow}{abs(pitch):.0f}°"
+            f"CAP: {yaw_arrow}{abs(yaw):.0f}° {pitch_arrow}{abs(pitch):.0f}°\n{delta_str}"
         )
         self.bearing_label.setStyleSheet(
             f"color: {color}; font-family: 'Menlo', 'Consolas', monospace; "
-            "font-size: 16px; font-weight: bold;"
+            "font-size: 14px; font-weight: bold;"
         )
 
     def _refresh_distance_label(self):

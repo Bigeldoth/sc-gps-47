@@ -163,3 +163,71 @@ def test_bearing_at_target():
     )
     assert yaw == 0.0
     assert pitch == 0.0
+
+
+# ---- calculate_absolute_bearing ----
+
+from navigation import calculate_absolute_bearing, format_axis_delta
+
+
+def test_absolute_bearing_returns_deltas():
+    res = calculate_absolute_bearing(
+        {"x": 0, "y": 0, "z": 0}, {"x": 50, "y": -100, "z": 5}
+    )
+    assert res["dx"] == 50
+    assert res["dy"] == -100
+    assert res["dz"] == 5
+    # distance ≈ sqrt(2500 + 10000 + 25) ≈ 112.05
+    assert abs(res["distance_km"] - math.sqrt(2500 + 10000 + 25)) < 1e-6
+
+
+def test_absolute_bearing_yaw_pitch():
+    # Cible droit devant +Y → yaw ≈ 0, cible plus haute → pitch positif
+    res = calculate_absolute_bearing(
+        {"x": 0, "y": 0, "z": 0}, {"x": 0, "y": 10, "z": 10}
+    )
+    assert abs(res["yaw_deg"]) < 1e-6
+    assert abs(res["pitch_deg"] - 45.0) < 1e-6
+
+
+def test_absolute_bearing_target_to_right():
+    # Cible à +X (droite en convention atan2(dx, dy)) → yaw = +90°
+    res = calculate_absolute_bearing(
+        {"x": 0, "y": 0, "z": 0}, {"x": 10, "y": 0, "z": 0}
+    )
+    assert abs(res["yaw_deg"] - 90.0) < 1e-6
+
+
+def test_absolute_bearing_no_position():
+    assert calculate_absolute_bearing({"x": None}, {"x": 1, "y": 1, "z": 1}) is None
+
+
+def test_absolute_bearing_no_target():
+    assert calculate_absolute_bearing({"x": 0, "y": 0, "z": 0}, None) is None
+
+
+def test_absolute_bearing_pure_vertical():
+    # Cible directement au-dessus → pitch = 90°
+    res = calculate_absolute_bearing(
+        {"x": 0, "y": 0, "z": 0}, {"x": 0, "y": 0, "z": 5}
+    )
+    assert abs(res["pitch_deg"] - 90.0) < 1e-6
+
+
+def test_format_axis_delta_small():
+    assert format_axis_delta(5.4) == "+5.4"
+    assert format_axis_delta(-3.2) == "-3.2"
+
+
+def test_format_axis_delta_medium():
+    assert format_axis_delta(50) == "+50"
+    assert format_axis_delta(-512) == "-512"
+
+
+def test_format_axis_delta_large():
+    assert format_axis_delta(1500) == "+1.5k"
+    assert format_axis_delta(-14000) == "-14.0k"
+
+
+def test_format_axis_delta_none():
+    assert format_axis_delta(None) == "?"

@@ -33,6 +33,61 @@ def ema_angle(prev, new, alpha):
     return normalize_angle_signed(prev + alpha * diff)
 
 
+def calculate_absolute_bearing(current_pos, target):
+    """Cap absolu (repère monde) entre la position courante et la cible.
+
+    À utiliser quand le joueur est stationnaire : on ne connaît pas son
+    orientation mais on peut indiquer le vecteur monde à atteindre.
+
+    Args:
+        current_pos: dict avec ``x/y/z`` (km).
+        target: dict avec ``x/y/z`` (km).
+
+    Returns:
+        Dict ``{dx, dy, dz, yaw_deg, pitch_deg, distance_km}`` en repère
+        monde, ou ``None`` si impossible.
+    """
+    if not target or current_pos is None:
+        return None
+    if current_pos.get("x") is None:
+        return None
+
+    dx = target["x"] - current_pos["x"]
+    dy = target["y"] - current_pos["y"]
+    dz = target["z"] - current_pos["z"]
+    distance = math.sqrt(dx * dx + dy * dy + dz * dz)
+
+    horiz = math.hypot(dx, dy)
+    if dx == 0 and dy == 0:
+        yaw = 0.0
+    else:
+        yaw = math.degrees(math.atan2(dx, dy))
+    if horiz == 0:
+        pitch = 90.0 if dz > 0 else (-90.0 if dz < 0 else 0.0)
+    else:
+        pitch = math.degrees(math.atan2(dz, horiz))
+
+    return {
+        "dx": dx, "dy": dy, "dz": dz,
+        "yaw_deg": yaw, "pitch_deg": pitch,
+        "distance_km": distance,
+    }
+
+
+def format_axis_delta(km):
+    """Formate un delta d'axe pour affichage compact.
+
+    < 10 km : 1 décimale ; < 1000 km : entier ; >= 1000 km : 'k' notation.
+    """
+    if km is None:
+        return "?"
+    if abs(km) < 10:
+        return f"{km:+.1f}"
+    if abs(km) < 1000:
+        return f"{km:+.0f}"
+    return f"{km / 1000:+.1f}k"
+
+
 def calculate_velocity_bearing(velocity, current_pos, target):
     """Offsets (yaw, pitch) en degrés signés entre la direction de
     déplacement et la cible.
