@@ -33,6 +33,52 @@ def ema_angle(prev, new, alpha):
     return normalize_angle_signed(prev + alpha * diff)
 
 
+def calculate_velocity_bearing(velocity, current_pos, target):
+    """Offsets (yaw, pitch) en degrés signés entre la direction de
+    déplacement et la cible.
+
+    Args:
+        velocity: tuple ``(vx, vy, vz)`` en km/s, ou ``None`` (stationnaire).
+        current_pos: dict avec ``x/y/z`` (km) — position du joueur.
+        target: dict avec ``x/y/z`` (km) — destination.
+
+    Returns:
+        ``(yaw_off, pitch_off)`` dans ]-180, +180], ou ``None`` si la
+        vélocité, la position ou la cible ne sont pas définies.
+
+        - ``yaw_off`` positif : la cible est à droite du déplacement.
+        - ``pitch_off`` positif : la cible est au-dessus du déplacement.
+    """
+    if velocity is None or target is None or current_pos is None:
+        return None
+    if current_pos.get("x") is None:
+        return None
+
+    vx, vy, vz = velocity
+    if vx == 0 and vy == 0 and vz == 0:
+        return None
+
+    dx = target["x"] - current_pos["x"]
+    dy = target["y"] - current_pos["y"]
+    dz = target["z"] - current_pos["z"]
+    if dx == 0 and dy == 0 and dz == 0:
+        return 0.0, 0.0
+
+    # Cap horizontal de la vélocité et de la cible
+    vel_yaw = math.degrees(math.atan2(vx, vy)) if (vx or vy) else 0.0
+    tgt_yaw = math.degrees(math.atan2(dx, dy)) if (dx or dy) else 0.0
+    yaw_off = normalize_angle_signed(tgt_yaw - vel_yaw)
+
+    # Pitch (composante verticale)
+    vel_horiz = math.hypot(vx, vy)
+    tgt_horiz = math.hypot(dx, dy)
+    vel_pitch = math.degrees(math.atan2(vz, vel_horiz)) if vel_horiz > 0 else 0.0
+    tgt_pitch = math.degrees(math.atan2(dz, tgt_horiz)) if tgt_horiz > 0 else 0.0
+    pitch_off = normalize_angle_signed(tgt_pitch - vel_pitch)
+
+    return yaw_off, pitch_off
+
+
 def calculate_relative_bearing(current_pos, cam_dir, target, yaw_calib):
     """Offsets (yaw, pitch) en degrés signés vers la cible, dans le repère caméra.
 

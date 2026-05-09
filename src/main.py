@@ -12,13 +12,13 @@ from ocr import OCRProcessor
 from navigation import (
     NavigationEngine,
     format_distance,
-    calculate_relative_bearing,
+    calculate_velocity_bearing,
     ema_angle,
     normalize_angle_signed,
 )
 from config_manager import ConfigManager
 from hotkey_listener import HotkeyListener
-from calibration import YawCalibrator
+from velocity_tracker import VelocityTracker
 from ui.options import OptionsWindow
 from ui.poi_manager import POIManagerWindow
 
@@ -82,14 +82,14 @@ class GPSOverlay(QMainWindow):
         self._ema_alpha = 0.4
         self._stale_threshold_s = 2.0
 
-        # Guidage directionnel (CamDir)
-        self._calibrator = YawCalibrator(self.config_manager)
-        self._current_cam_dir = None
+        # Guidage directionnel basé sur la vélocité (style GPS voiture).
+        # On échantillonne la position et on dérive la direction de
+        # déplacement, plutôt que de lire l'orientation caméra (CamDir).
+        self._velocity_tracker = VelocityTracker()
         self._smoothed_yaw_off = None
         self._smoothed_pitch_off = None
         self._last_raw_yaw_off = None
         self._last_raw_pitch_off = None
-        self._last_pos_for_calib = None  # {"pos": data, "t": monotonic_ts}
 
         # UI
         self.central_widget = QWidget()
@@ -205,36 +205,22 @@ class GPSOverlay(QMainWindow):
         self._refresh_bearing_label()
 
     def _update_bearing_state(self, data):
-        """Met à jour calibrateur et offsets bearing depuis les données OCR."""
-        cam_yaw = data.get("cam_yaw")
-        cam_pitch = data.get("cam_pitch")
-        cam_dir = None
-        if cam_yaw is not None and cam_pitch is not None:
-            cam_dir = {
-                "pitch": cam_pitch,
-                "roll": data.get("cam_roll"),
-                "yaw": cam_yaw,
-            }
-        self._current_cam_dir = cam_dir
-
-        # Alimentation du calibrateur (ne tourne que si pas encore calibré)
-        if cam_dir is not None and data.get("x") is not None and self._last_pos_for_calib is not None:
-            prev = self._last_pos_for_calib
-            dt = time.monotonic() - prev["t"]
-            self._calibrator.add_sample(prev["pos"], data, dt, cam_yaw)
-            self._calibrator.try_solve()
+        """Met à jour la vélocité et les offsets bearing depuis les coords OCR."""
         if data.get("x") is not None:
-            self._last_pos_for_calib = {"pos": data, "t": time.monotonic()}
+            self._velocity_tracker.add_sample(
+                data["x"], data["y"], data["z"], time.monotonic()
+            )
 
-        calib = self._calibrator.result
-        if cam_dir is None or self.nav.target is None or calib is None:
+        velocity = self._velocity_tracker.velocity if self._velocity_tracker.is_moving else None
+
+        if velocity is None or self.nav.target is None:
             self._smoothed_yaw_off = None
             self._smoothed_pitch_off = None
             self._last_raw_yaw_off = None
             self._last_raw_pitch_off = None
             return
 
-        bearing = calculate_relative_bearing(data, cam_dir, self.nav.target, calib)
+        bearing = calculate_velocity_bearing(velocity, data, self.nav.target)
         if bearing is None:
             return
         yaw_off, pitch_off = bearing
@@ -257,36 +243,23 @@ class GPSOverlay(QMainWindow):
         self._last_raw_pitch_off = pitch_off
 
     def _refresh_bearing_label(self):
-        """Met à jour bearing_label selon l'état (cible, cam_dir, calibration)."""
+        """Met à jour bearing_label selon l'état (cible, mouvement, bearing)."""
         # Pas de cible → vide
         if self.nav.target is None:
             self.bearing_label.setText("")
             return
 
-        # CamDir absent (jeu sans r_DisplayInfo 3) → message + couleur orange
-        if self._current_cam_dir is None:
-            stale = (
-                self._last_coord_ts is None
-                or (time.monotonic() - self._last_coord_ts) > self._stale_threshold_s
-            )
-            self.bearing_label.setText("CAP: --- (active r_DisplayInfo 3)")
-            color = "#ffaa00" if stale else "#888888"
+        # Joueur stationnaire : impossible de déduire une direction depuis
+        # les positions. Affiche un message d'attente.
+        if not self._velocity_tracker.is_moving:
+            self.bearing_label.setText("EN ATTENTE DE MOUVEMENT")
             self.bearing_label.setStyleSheet(
-                f"color: {color}; font-family: 'Menlo', 'Consolas', monospace; "
+                "color: #888888; font-family: 'Menlo', 'Consolas', monospace; "
                 "font-size: 14px;"
             )
             return
 
-        # Calibration en cours
-        if self._calibrator.result is None:
-            self.bearing_label.setText("ÉTALONNAGE\nAvancez tout droit ~5 s")
-            self.bearing_label.setStyleSheet(
-                "color: #00ffff; font-family: 'Menlo', 'Consolas', monospace; "
-                "font-size: 14px;"
-            )
-            return
-
-        # Bearing pas encore calculé (premier tick après set_target)
+        # Bearing pas encore calculé (premier tick après mouvement)
         if self._smoothed_yaw_off is None or self._smoothed_pitch_off is None:
             self.bearing_label.setText("CAP: …")
             return
@@ -372,9 +345,9 @@ class GPSOverlay(QMainWindow):
         poi_action.triggered.connect(self.show_poi_manager_window)
         tray_menu.addAction(poi_action)
 
-        recalibrate_action = QAction("Recalibrer le cap", self)
-        recalibrate_action.triggered.connect(self.recalibrate_yaw)
-        tray_menu.addAction(recalibrate_action)
+        reset_gps_action = QAction("Réinitialiser le GPS", self)
+        reset_gps_action.triggered.connect(self.reset_velocity_tracker)
+        tray_menu.addAction(reset_gps_action)
 
         tray_menu.addSeparator()
 
@@ -495,21 +468,21 @@ class GPSOverlay(QMainWindow):
         if not self.is_visible:
             self.toggle_overlay()
 
-    def recalibrate_yaw(self):
-        """Force une nouvelle calibration de la convention yaw."""
-        self._calibrator.reset()
+    def reset_velocity_tracker(self):
+        """Oublie l'historique de positions (utile après un saut quantique)."""
+        self._velocity_tracker.reset()
         self._smoothed_yaw_off = None
         self._smoothed_pitch_off = None
         self._last_raw_yaw_off = None
         self._last_raw_pitch_off = None
         self._refresh_bearing_label()
         self.tray_icon.showMessage(
-            "Recalibrer le cap",
-            "Avancez tout droit ~5 s en variant le cap pour recalibrer.",
+            "GPS réinitialisé",
+            "Historique de mouvement effacé. Bouge pour recalculer la direction.",
             QSystemTrayIcon.MessageIcon.Information,
-            3000,
+            2500,
         )
-        logger.info("Recalibration yaw demandée")
+        logger.info("VelocityTracker réinitialisé")
 
     def prompt_save_point(self):
         logger.debug("prompt_save_point déclenché")

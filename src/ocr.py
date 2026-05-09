@@ -16,7 +16,8 @@ _RE_POS = re.compile(
 # Identifie une ligne CamDir même si l'OCR rate le ':' ou le 'C' initial.
 _RE_CAMDIR_TAG = re.compile(r'amdir', re.IGNORECASE)
 # Lignes Pos: que l'on accepte (frame système). Rejette ObjectContainer, OOC, Habs.
-_RE_POS_SYSTEM_FRAME = re.compile(r'(root|solar\s*system)', re.IGNORECASE)
+# 'R[o0e]+t' tolère les variantes OCR : Root, Roet, R00t, Rcot, etc.
+_RE_POS_SYSTEM_FRAME = re.compile(r'(r[o0e]{1,3}t|solar\s*system)', re.IGNORECASE)
 
 _TESSERACT_CONFIG = (
     r'--oem 3 --psm 6 '
@@ -103,6 +104,11 @@ _OCR_CORRECTIONS = {
     'CarnDir': 'CamDir',
     'Cam0ir': 'CamDir',
     'CarnOir': 'CamDir',
+    # Variantes "Root" pour le filtre frame système
+    'RoetPos': 'RootPos',
+    'Roet_Pos': 'Root_Pos',
+    'R0ot': 'Root',
+    'Rcot': 'Root',
 }
 
 
