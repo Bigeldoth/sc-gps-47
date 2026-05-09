@@ -31,9 +31,11 @@ class ScreenCapture:
                 raise FileNotFoundError(f"Screenshot introuvable : {self._test_screenshot}")
         else:
             monitor = self._sct.monitors[self.monitor_index]
+            # Le debug overlay SC (r_DisplayInfo 3) commence au pixel 0 ;
+            # on capture depuis le tout haut sinon la ligne CamDir est coupée.
             self._region = {
-                "top": monitor["top"] + 10,
-                "left": monitor["left"] + monitor["width"] - CAPTURE_WIDTH - 10,
+                "top": monitor["top"],
+                "left": monitor["left"] + monitor["width"] - CAPTURE_WIDTH,
                 "width": CAPTURE_WIDTH,
                 "height": CAPTURE_HEIGHT,
             }
