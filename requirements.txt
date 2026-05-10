@@ -1,12 +1,43 @@
-mss
-numpy
-opencv-python
-pytesseract
-PyQt6
-Pillow
-pynput
-pyinstaller
-# easyocr (optionnel, nécessite Visual Studio Build Tools sur Windows)
-# pip install easyocr
-# PaddleOCR (optionnel)
-# pip install paddleocr paddlepaddle
+# SpaceDrive GPS — dépendances runtime
+# Python 3.10+ requis
+
+# Capture d'écran
+mss>=9.0.0
+
+# Calcul numérique + traitement image
+numpy>=1.24.0
+opencv-python>=4.8.0
+Pillow>=10.0.0
+
+# OCR (moteur principal)
+pytesseract>=0.3.10
+# ⚠ Tesseract binary doit être installé séparément :
+#   Windows : https://github.com/UB-Mannheim/tesseract/wiki
+#   macOS   : brew install tesseract
+#   Linux   : apt install tesseract-ocr
+
+# Interface utilisateur
+PyQt6>=6.5.0
+
+# Hotkeys globaux (capture clavier hors focus)
+pynput>=1.7.6
+
+# ─────────────────────────────────────────────────────────
+# Build / packaging (dev only — pas requis au runtime)
+# ─────────────────────────────────────────────────────────
+pyinstaller>=6.0.0
+
+# ─────────────────────────────────────────────────────────
+# Optionnel : moteur OCR alternatif (PaddleOCR)
+# Plus précis sur texte fin mais 5-10× plus lent en CPU.
+# Non recommandé pour le scan temps réel à 50 ms.
+# ─────────────────────────────────────────────────────────
+# paddleocr>=2.7.0
+# paddlepaddle>=2.5.0       # CPU
+# paddlepaddle-gpu>=2.5.0   # GPU (nécessite CUDA)
+
+# ─────────────────────────────────────────────────────────
+# Optionnel : EasyOCR (non utilisé actuellement)
+# Nécessite Visual Studio Build Tools sur Windows.
+# ─────────────────────────────────────────────────────────
+# easyocr>=1.7.0

@@ -1,0 +1,10 @@
+Zone:\n*
+Pos:\n*
+\d\d\d\d.\d\d\d\dkm
+-\d\d\d\d.\d\d\d\dkm
+\d\d\d.\d\d\d\dkm
+-\d\d\d.\d\d\d\dkm
+\d\d.\d\d\d\dkm
+-\d\d.\d\d\d\dkm
+OOC_\n*
+Stanton\d
