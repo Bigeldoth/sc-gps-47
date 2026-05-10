@@ -8,6 +8,9 @@ a = Analysis(
     binaries=[],
     datas=[
         ('data\\poi.json', 'data'),
+        ('data\\templates', 'data\\templates'),  # Templates NCC (Phase D)
+        ('assets\\icon.png', 'assets'),
+        ('assets\\icon.ico', 'assets'),
         ('config.ini', '.'),
     ],
     hiddenimports=[
@@ -23,6 +26,11 @@ a = Analysis(
         'ocr',
         'capture',
         'navigation',
+        'sc_ocr',
+        'sc_ocr.preprocess',
+        'sc_ocr.segment',
+        'sc_ocr.classify',
+        'sc_ocr.templates',
     ],
     hookspath=[],
     hooksconfig={},
@@ -56,5 +64,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,  # Vous pouvez ajouter un fichier .ico ici
+    icon='assets\\icon.ico',
 )

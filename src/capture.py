@@ -27,6 +27,7 @@ import numpy as np
 import cv2
 import configparser
 import logging
+from sc_ocr.segment import find_glyph_regions, save_glyph_crops
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +84,7 @@ class ScreenCapture:
         config = configparser.ConfigParser()
         config.read('config.ini')
         self._save_debug = config.getboolean('Debug', 'save_ocr_images', fallback=False)
+        self._save_glyph_crops = config.getboolean('Debug', 'save_glyph_crops', fallback=False)
         test_path = config.get('Debug', 'test_screenshot', fallback='').strip()
         self._test_screenshot = test_path if test_path else None
 
@@ -145,7 +147,16 @@ class ScreenCapture:
             cv2.imwrite("debug_capture_otsu.png", otsu)
             cv2.imwrite("debug_capture_adaptive.png", adaptive)
 
-        return images
+        # Phase D : segmentation optionnelle des glyphes pour collecte de templates
+        glyph_data = None
+        if self._save_glyph_crops:
+            seg_result = find_glyph_regions(otsu)
+            glyphs = seg_result['glyphs']
+            if glyphs:
+                save_glyph_crops(otsu, glyphs)
+                glyph_data = seg_result
+
+        return images, glyph_data
 
     def stop(self):
         pass

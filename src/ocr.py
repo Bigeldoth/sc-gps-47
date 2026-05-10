@@ -9,6 +9,19 @@ Pipeline :
   6. Validation par plage géographique (|coord| < 30000 km)
   7. Consensus multi-pass : si ≥2 passes convergent à ±0.1 km, moyenne ;
      sinon, meilleur score
+
+Structure du HUD r_DisplayInfo 3 (3 lignes Pos:) :
+  Ligne 1 : Zone: SolarSystem_XXXXX Pos: X Y Z  → frame absolue, rejetée
+  Ligne 2 : Root Pos: X Y Z                     → frame absolue, rejetée
+  Ligne 3 : {ZoneName} Pos: X Y Z               → frame relative, CIBLE
+
+La 3ème ligne est systématiquement scannée sans filtre sur le préfixe du nom
+de zone : OOC_Hurston, GrimHex, StantonIV-9, etc. sont tous acceptés.
+Seuls Root/SolarSystem sont rejetés (frame absolue ~14 M km).
+
+Phase D : Pipeline hybride NCC custom
+  - Tesseract pour les noms (Zone:SolarSystem)
+  - NCC custom pour les coordonnées numériques (si templates disponibles)
 """
 import pytesseract
 import re
@@ -17,6 +30,10 @@ import os
 import sys
 import logging
 from concurrent.futures import ThreadPoolExecutor
+from sc_ocr.templates import TemplateLibrary
+from sc_ocr.segment import find_glyph_regions
+from sc_ocr.classify import classify_batch
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -32,11 +49,11 @@ _RE_POS = re.compile(
 )
 # Identifie une ligne CamDir même si l'OCR rate le ':' ou le 'C' initial.
 _RE_CAMDIR_TAG = re.compile(r'amdir', re.IGNORECASE)
-# Lignes Pos: que l'on accepte (frame système). Rejette ObjectContainer, OOC, Habs.
+# Rejette les lignes Root/SolarSystem (frame absolue ~14 M km, inutilisable).
 _RE_POS_SYSTEM_FRAME = re.compile(r'(r[o0e]{1,3}t|solar\s*system)', re.IGNORECASE)
 
-# Ligne Zone:OOC_xxx Pos: ax km ay km az km — repère planet-relative.
-_RE_OOC_TAG = re.compile(r'O[O0Q]C[_\s]+([\w]+(?:[_\s]+[\w]+)*?)\s*Pos', re.IGNORECASE)
+# Extrait le nom de zone avant "Pos:" — accepte tout format (OOC_, GrimHex, etc.)
+_RE_ZONE_NAME = re.compile(r'^(.*?)\s*[Pp]os:?\s*', re.IGNORECASE)
 
 # Pour la récupération du '.' manquant : 7 ou 8 chiffres avant 'km'.
 # Ex : '41335653km' (7 chiffres = 4 entiers + 3-4 décimales potentielles).
@@ -338,6 +355,13 @@ class OCRProcessor:
 
         self._pool = ThreadPoolExecutor(max_workers=3)
 
+        # Phase D : charger la bibliothèque de templates pour NCC
+        self.template_lib = TemplateLibrary()
+        if self.template_lib.has_templates():
+            logger.info(f"Templates NCC chargés : {self.template_lib.stats()}")
+        else:
+            logger.info("Aucun template NCC trouvé, fallback vers Tesseract pour coordonnées")
+
     def _init_tesseract(self, tesseract_path=None):
         if not tesseract_path:
             base_path = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
@@ -458,27 +482,37 @@ class OCRProcessor:
                     logger.info(f"[{pass_name}] Système détecté : ID={system_id}, Nom={data['location']}")
                     score += 10
             elif "Pos:" in line or "pos:" in line.lower():
-                ooc_match = _RE_OOC_TAG.search(line)
-                if not ooc_match:
-                    logger.debug(f"[{pass_name}] Pos ignoré (pas une ligne OOC) : {line[:80]}")
+                # Rejeter Root/SolarSystem (frame absolue ~14 M km).
+                if _RE_POS_SYSTEM_FRAME.search(line):
+                    logger.debug(f"[{pass_name}] Ligne Root/SolarSystem rejetée : {line[:80]}")
                     continue
-                ooc_name = ooc_match.group(1).strip().replace(" ", "_")
-                logger.debug(f"[{pass_name}] Ligne OOC détectée : ooc={ooc_name} | {line[:120]}")
-                normalized = _normalize_ooc_line(line)
-                coords = self._extract_coords_from_line(normalized, pass_name)
+
+                # Extraire le nom de zone = tout ce qui précède "Pos:"
+                zone_match = _RE_ZONE_NAME.match(line)
+                zone_name = zone_match.group(1).strip() if zone_match else ""
+                logger.debug(f"[{pass_name}] Ligne zone : zone={zone_name!r} | {line[:120]}")
+
+                # Phase D : essayer NCC en premier (plus rapide + précis si templates dispo)
+                coords = self._extract_coords_via_ncc(img, pass_name)
+
+                # Fallback : Tesseract sur la ligne normalisée si NCC n'a pas marché
+                if coords is None:
+                    normalized = _normalize_ooc_line(line)
+                    coords = self._extract_coords_from_line(normalized, pass_name)
+
                 if coords is not None:
                     x, y, z = coords
                     # Validation de plage géographique (Phase B).
                     if not _coords_in_range(x, y, z):
                         logger.warning(
-                            f"[{pass_name}] Coords hors plage OOC : "
+                            f"[{pass_name}] Coords hors plage : "
                             f"X={x} Y={y} Z={z} (max ±{_OOC_COORD_MAX_KM} km)"
                         )
                         continue
                     data["x"], data["y"], data["z"] = x, y, z
-                    data["ooc"] = ooc_name
+                    data["ooc"] = zone_name or "Unknown"
                     logger.info(
-                        f"[{pass_name}] Position extraite : ooc={ooc_name} "
+                        f"[{pass_name}] Position extraite : zone={zone_name!r} "
                         f"X={x} Y={y} Z={z}"
                     )
                     score += 10
@@ -489,6 +523,111 @@ class OCRProcessor:
             score += 5
 
         return score, data
+
+    def _extract_coords_via_ncc(self, binary_image, pass_name):
+        """Extrait les coordonnées via NCC custom (Phase D).
+
+        Stratégie ligne par ligne :
+          1. Segmenter en bandes de texte (rows)
+          2. Pour chaque row, classifier les glyphes via NCC
+          3. Reconstruire la chaîne et appliquer la regex Pos
+          4. Validation plage géographique (rejette implicitement Root/SolarSystem
+             qui ont des coords ~14 M km)
+          5. Retourner la première row qui donne des coords valides
+
+        Args:
+            binary_image : image binaire 0/255
+            pass_name : nom de la passe (pour logs)
+
+        Returns:
+            tuple (x, y, z) ou None
+        """
+        if not self.template_lib.has_templates():
+            return None
+
+        try:
+            seg_result = find_glyph_regions(binary_image)
+            glyphs = seg_result['glyphs']
+            if not glyphs:
+                return None
+
+            # Grouper les glyphs par row
+            glyphs_by_row = {}
+            for g in glyphs:
+                glyphs_by_row.setdefault(g['row_idx'], []).append(g)
+
+            # Traiter chaque row dans l'ordre, retourner la première avec coords valides
+            for row_idx in sorted(glyphs_by_row.keys()):
+                coords = self._extract_coords_from_row_ncc(
+                    binary_image, glyphs_by_row[row_idx], row_idx, pass_name
+                )
+                if coords is not None and _coords_in_range(*coords):
+                    return coords
+
+            return None
+
+        except Exception as e:
+            logger.error(f"[{pass_name}] Erreur NCC : {e}")
+            return None
+
+    def _extract_coords_from_row_ncc(self, binary_image, row_glyphs, row_idx, pass_name):
+        """Classifie les glyphs d'une row et tente d'extraire (x, y, z)."""
+        row_glyphs = sorted(row_glyphs, key=lambda g: g['x'])
+
+        # Préparer les crops dans l'ordre x
+        glyph_images = []
+        for g in row_glyphs:
+            x, y, w, h = g['x'], g['y'], g['w'], g['h']
+            crop = binary_image[y:y+h, x:x+w]
+            if crop.size > 0:
+                glyph_images.append((g['id'], crop))
+
+        if not glyph_images:
+            return None
+
+        classifications = classify_batch(
+            glyph_images, self.template_lib, glyphs_meta=row_glyphs
+        )
+
+        # Reconstruire la chaîne avec un espace si gap horizontal > 6 px
+        char_by_id = {c['glyph_id']: c['char'] for c in classifications}
+        chars = []
+        prev_x_end = None
+        for g in row_glyphs:
+            c = char_by_id.get(g['id'])
+            if c is None:
+                c = '?'
+            if prev_x_end is not None and (g['x'] - prev_x_end) > 6:
+                chars.append(' ')
+            chars.append(c)
+            prev_x_end = g['x'] + g['w']
+
+        reconstructed = ''.join(chars)
+        if not reconstructed.strip():
+            return None
+
+        logger.debug(f"[{pass_name}] NCC row{row_idx}: {reconstructed!r}")
+
+        # Préfixer "Pos: " virtuellement pour la regex (NCC ne lit pas les lettres)
+        candidate = "Pos: " + reconstructed
+        normalized = _normalize_ooc_line(candidate)
+
+        # Match strict uniquement : NCC + heuristique '.' doivent reconstruire
+        # le point décimal correctement. Si la regex stricte échoue, c'est
+        # probablement une frame absolue (Root/SolarSystem ~14 M km sans '.')
+        # → on saute cette row au lieu de risquer un faux match via recovery.
+        coord_match = _RE_POS.search(normalized)
+        if coord_match:
+            try:
+                return (
+                    float(coord_match.group(1)),
+                    float(coord_match.group(2)),
+                    float(coord_match.group(3)),
+                )
+            except ValueError:
+                pass
+
+        return None
 
     def _extract_coords_from_line(self, normalized_line, pass_name):
         """Extrait (x, y, z) depuis une ligne OOC normalisée.
