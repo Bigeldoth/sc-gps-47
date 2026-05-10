@@ -294,6 +294,17 @@ class GPSOverlay(QMainWindow):
         # Un scan qui retourne None ne doit PAS effacer la dernière valeur connue.
         # On ne met à jour current_data + texte que si l'OCR a vraiment lu une position.
         if data["x"] is not None:
+            # Rejet par vitesse impossible (Phase B) : si la nouvelle position
+            # impliquerait une vitesse > 100 km/s par rapport au dernier scan,
+            # c'est probablement une hallucination OCR. On garde la valeur
+            # précédente. Hors quantum drive, les vaisseaux SC plafonnent
+            # autour de 1-2 km/s — 100 km/s laisse une marge confortable
+            # pour les sauts post-quantum.
+            if self._is_velocity_implausible(data):
+                self._refresh_pos_color()
+                self._refresh_nav_label()
+                return
+
             self.current_data = data
             self.pos_label.setText(
                 f"X: {data['x']:>10.2f}   Y: {data['y']:>10.2f}\n"
@@ -338,6 +349,44 @@ class GPSOverlay(QMainWindow):
         if self._last_coord_ts is None:
             return None
         return time.monotonic() - self._last_coord_ts
+
+    # Vitesse maximale plausible entre deux scans (km/s).
+    # Hors quantum drive, les vaisseaux SC font ~1-2 km/s. 100 km/s laisse
+    # de la marge pour la sortie de quantum, sans accepter les sauts d'OCR.
+    _MAX_PLAUSIBLE_SPEED_KM_S = 100.0
+
+    def _is_velocity_implausible(self, new_data):
+        """Vrai si la nouvelle position implique un saut physiquement impossible.
+
+        Compare la position courante (`current_data`) à la nouvelle (`new_data`)
+        en utilisant le delta temps depuis `_last_coord_ts`. Rejette si la
+        vitesse implicite dépasse `_MAX_PLAUSIBLE_SPEED_KM_S`.
+
+        Tolère :
+          - le premier scan (pas de référence) → False ;
+          - un changement d'OOC (téléportation légitime via QT) → False ;
+          - un long écart de temps (> 5 s, on a peut-être manqué le saut) → False.
+        """
+        if self.current_data.get("x") is None or self._last_coord_ts is None:
+            return False
+        # Changement d'OOC : on ne compare pas, le repère a changé.
+        if new_data.get("ooc") != self.current_data.get("ooc"):
+            return False
+        dt = time.monotonic() - self._last_coord_ts
+        if dt <= 0 or dt > 5.0:
+            return False
+        dx = new_data["x"] - self.current_data["x"]
+        dy = new_data["y"] - self.current_data["y"]
+        dz = new_data["z"] - self.current_data["z"]
+        dist_km = (dx * dx + dy * dy + dz * dz) ** 0.5
+        speed = dist_km / dt
+        if speed > self._MAX_PLAUSIBLE_SPEED_KM_S:
+            logger.warning(
+                f"Rejet OCR : vitesse implausible {speed:.1f} km/s "
+                f"(Δ={dist_km:.2f} km en {dt:.2f} s)"
+            )
+            return True
+        return False
 
     def _tick_visual_refresh(self):
         """Recolorise pos_label et nav_label sans déclencher d'OCR.

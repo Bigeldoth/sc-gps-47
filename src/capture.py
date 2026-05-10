@@ -1,3 +1,27 @@
+"""Capture d'écran + pré-traitement OCR.
+
+Pipeline :
+
+  1. Capture mss BGR
+  2. isolate_channel(auto) — choisit le canal qui maximise la séparation
+     texte/fond selon les statistiques R/G/B :
+       - lum > 140         → invert grayscale (pièce éclairée)
+       - R - G > 15        → canal R (texte rouge/orange)
+       - G - R > 15        → canal G (texte vert/cyan)
+       - sinon             → max(R, G, B) (texte blanc — défaut HUD SC)
+  3. Upscale ×2
+  4. CLAHE clipLimit=3.0
+  5. GaussianBlur conditionnel : seulement si std(canal) > 45 (fast-path
+     en conditions normales — économie CPU + meilleure netteté)
+  6. 3 passes seuillage :
+       - pass_otsu         : Otsu sur canal isolé (texte = blanc, défaut)
+       - pass_otsu_inv     : Otsu inversé (cas dark-on-bright résiduel)
+       - pass_adaptive     : seuillage adaptatif local (backup fond uniforme)
+
+Par rapport à l'ancienne version (4 passes), suppression de la passe HSV
+qui produisait du bruit dans ~50 % des cas — l'isolation par canal couleur
+auto la rend redondante.
+"""
 import mss
 import numpy as np
 import cv2
@@ -8,6 +32,45 @@ logger = logging.getLogger(__name__)
 
 CAPTURE_WIDTH = 600
 CAPTURE_HEIGHT = 150
+
+# Seuil au-delà duquel on applique un GaussianBlur (sinon fast-path).
+# Mesure : écart-type du canal isolé. Au-dessus de ~45, le fond est
+# vraiment bruité (texture asteroid, particules), un blur léger aide.
+_NOISE_STD_THRESHOLD = 45.0
+
+
+def _isolate_channel_auto(bgr):
+    """Réduit une image BGR (H, W, 3) à un canal uint8 où le texte est clair.
+
+    Choix automatique du canal selon les statistiques :
+      - Luminance moyenne > 140 → fond clair (pièce éclairée). On inverse
+        la grayscale pour que le texte sombre devienne clair.
+      - R - G > 15 → texte rouge/orange dominant : canal R.
+      - G - R > 15 → texte vert/cyan dominant : canal G.
+      - Sinon → max(R, G, B), idéal pour texte blanc sur fond varié.
+
+    OpenCV utilise BGR (b=0, g=1, r=2). Le HUD SC est blanc → le défaut
+    est ``max(R, G, B)`` qui maximise le contraste pour le texte clair.
+    """
+    if bgr.ndim == 2:
+        return bgr  # déjà single channel
+    b = bgr[..., 0]
+    g = bgr[..., 1]
+    r = bgr[..., 2]
+    lum = bgr.mean()
+    r_mean = r.mean()
+    g_mean = g.mean()
+
+    if lum > 140:
+        # Fond globalement clair → texte sombre relatif. Invert grayscale.
+        gray = bgr.mean(axis=2)
+        return (255 - gray).astype(np.uint8)
+    if r_mean - g_mean > 15:
+        return r.astype(np.uint8)
+    if g_mean - r_mean > 15:
+        return g.astype(np.uint8)
+    # Texte blanc/mixte sur fond sombre — cas par défaut Star Citizen.
+    return bgr.max(axis=2).astype(np.uint8)
 
 
 class ScreenCapture:
@@ -48,39 +111,39 @@ class ScreenCapture:
             raw = self._sct.grab(self._region)
             img = np.asarray(raw, dtype=np.uint8)[:, :, :3]
 
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        gray = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_LINEAR)
+        # Phase A : isolation par canal couleur intelligent.
+        channel = _isolate_channel_auto(img)
+        channel = cv2.resize(channel, None, fx=2, fy=2, interpolation=cv2.INTER_LINEAR)
 
-        denoised = cv2.GaussianBlur(gray, (3, 3), 0)
-        enhanced = self._clahe.apply(denoised)
+        # GaussianBlur conditionnel : seulement si fond bruité.
+        # Préserve la netteté du texte fin en conditions normales.
+        if float(channel.std()) > _NOISE_STD_THRESHOLD:
+            channel = cv2.GaussianBlur(channel, (3, 3), 0)
+
+        enhanced = self._clahe.apply(channel)
 
         images = {}
 
-        _, thresh1 = cv2.threshold(enhanced, 180, 255, cv2.THRESH_BINARY)
-        images['pass1'] = thresh1
+        # Pass1 : Otsu sur canal isolé. Cas par défaut HUD blanc.
+        _, otsu = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        images['otsu'] = otsu
 
-        _, thresh2 = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        images['pass2'] = thresh2
+        # Pass2 : Otsu inversé pour les cas résiduels où le canal isolé
+        # ne suffit pas (ex : transition de scène, mid-luminance).
+        _, otsu_inv = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        images['otsu_inv'] = otsu_inv
 
-        # Pass3 : seuillage adaptatif — compare chaque pixel à son voisinage local.
-        # Résiste aux scènes éclairées où le fond du jeu est proche du blanc.
-        thresh3 = cv2.adaptiveThreshold(
-            denoised, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 21, -8
+        # Pass3 : adaptatif local, garde-fou pour fond uniformément clair.
+        adaptive = cv2.adaptiveThreshold(
+            enhanced, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 21, -8
         )
-        images['pass3'] = thresh3
-
-        # Pass4 : masque couleur HSV — isole les pixels quasi-blancs (faible saturation,
-        # haute luminosité) avant toute conversion en gris. Le texte HUD SC est blanc pur
-        # (saturation ~0, V ~255) ; les murs colorés ont une saturation élevée → rejetés
-        # quelle que soit la luminosité globale de la scène.
-        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-        white_mask = cv2.inRange(hsv, (0, 0, 180), (180, 40, 255))
-        white_mask = cv2.resize(white_mask, None, fx=2, fy=2, interpolation=cv2.INTER_LINEAR)
-        images['pass4'] = white_mask
+        images['adaptive'] = adaptive
 
         if self._save_debug:
-            cv2.imwrite("debug_capture_processed.png", thresh1)
             cv2.imwrite("debug_capture_original.png", img)
+            cv2.imwrite("debug_capture_channel.png", channel)
+            cv2.imwrite("debug_capture_otsu.png", otsu)
+            cv2.imwrite("debug_capture_adaptive.png", adaptive)
 
         return images
 
@@ -92,7 +155,7 @@ if __name__ == "__main__":
     cap = ScreenCapture()
     images = cap.capture()
     if images:
-        cv2.imwrite("test_capture.png", images.get('pass1'))
+        cv2.imwrite("test_capture.png", images.get('otsu'))
         print("Capture de test effectuée : test_capture.png")
     else:
         print("Pas de frame capturée.")

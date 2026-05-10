@@ -1,160 +1,105 @@
-# Changelog - SpaceDrive GPS
+# Changelog — SpaceDrive GPS
 
-## Version 1.4.0 (2026-05-05)
-
-### 🐛 Corrections critiques
-
-#### Regex Pos ultra-tolérant
-- **Problème** : Les coordonnées n'étaient pas capturées à cause d'erreurs OCR multiples
-- **Exemples non capturés** : 
-  - `4133.5819km_-1964.0889kn-529.9201k` (underscore, kn, k)
-  - `214139636.4299km_-1964.0889kn-529.9201k` (pas d'espace après Pos:)
-- **Solution** : 
-  - Regex accepte underscore `_` comme séparateur
-  - Regex accepte `k` seul sans `m` (k, kn, km, an)
-  - Regex accepte pas d'espace après `Pos:`
-  - Regex accepte tiret `-` comme séparateur
-- **Fichiers modifiés** : `src/ocr.py`
-
-#### Corrections OCR étendues
-- **Ajout** : `Zore:` → `Zone:` (erreur courante)
-- **Ajout** : `SovarSysten` → `SolarSystem` (erreurs multiples)
-- **Ajout** : `SolarSysten` → `SolarSystem`
-- **Fichiers modifiés** : `src/ocr.py`
+Tous les changements notables de ce projet. Format inspiré de [Keep a Changelog](https://keepachangelog.com/), versionnage [SemVer](https://semver.org/).
 
 ---
 
-## Version 1.3.0 (2026-05-04)
+## [Unreleased]
 
-### 🐛 Corrections critiques
-
-#### Regex Zone amélioré
-- **Problème** : Le regex capturait "Pos" à la fin de l'ID système (ex: "9948564368677Pos")
-- **Solution** : Regex s'arrête maintenant avant "Pos:", "Zone:" ou fin de ligne
-- **Fichiers modifiés** : `src/ocr.py`
-
-#### Matching intelligent des systèmes
-- **Problème** : Les IDs partiels ou avec erreurs OCR n'étaient pas reconnus
-- **Solution** : 
-  - Recherche partielle dans les IDs connus
-  - Si "9948564368677" est détecté (même partiellement) → affiche "Stanton"
-  - Matching flexible pour tolérer les erreurs OCR
-- **Fichiers modifiés** : `src/ocr.py`
-
-#### Affichage coordonnées amélioré
-- **Problème** : Les coordonnées n'étaient pas affichées si non détectées
-- **Solution** : 
-  - Affichage permanent : "X: --- | Y: --- | Z: ---" si non détecté
-  - Format amélioré avec unités : "X: 123.456 km"
-  - Couleur orange quand scan en cours, vert quand détecté
-- **Fichiers modifiés** : `src/main.py`
+### Plan
+- Phase A du plan d'optimisation OCR : pré-traitement par canal couleur (inspiré SC_OCR).
+- Voir [`docs/OCR_OPTIMIZATION_PLAN.md`](docs/OCR_OPTIMIZATION_PLAN.md).
 
 ---
 
-## Version 1.2.0 (2026-05-04)
+## [0.6.0] — 2026-05-10
 
-### 🐛 Corrections critiques
+### Ajouté
+- **Frame MFD style Star Citizen** : bordure ambre fine + séparateur, fond noir semi-transparent.
+- **Couleur progressive temporelle** sur les coordonnées : interpolation RGB linéaire vert→jaune→orange→rouge sur 12 s, indépendante du nombre de scans.
+- **Timer dédié 150 ms** pour le rafraîchissement visuel — la transition reste fluide même si l'OCR ralentit ou rate des scans.
+- **Snapshot hotkey** : `Shift+F3` fige les coordonnées à l'instant T pour la sauvegarde POI rapide. Refus + message overlay si données rouges (> 9 s).
+- **Flèche bearing 3D** `_world_arrow` : combine yaw monde et pitch en une flèche compacte (`↑↗→↘↓↙←↖` + `▲`/`▼`).
+- **4 passes seuillage** : seuil fixe + Otsu + adaptatif + masque HSV blanc — couvre les fonds variés (espace, cockpit éclairé, surfaces planétaires).
 
-#### Support résolution 2560x1440
-- **Problème** : La zone de capture était fixe pour 1920x1080, causant une mauvaise qualité OCR en 2560x1440
-- **Solution** : Calcul automatique de la zone de capture selon la résolution d'écran
-- **Fichiers modifiés** : `src/capture.py`
+### Modifié
+- **Regex Pos exige 3-4 décimales** (`\d{3,4}`) pour rejeter les lectures dégradées de Tesseract qui causaient ~17 m d'erreur sur les POI sauvegardés.
+- **Snap-on-large-jump** sur la distance : si l'écart relatif > 30 %, bypass de l'EMA (évite que la distance traîne après une arrivée brutale).
+- **Hauteur de capture** réduite à 150 px (3 premières lignes du HUD suffisent).
+- **Format OOC humanisé** : `Stanton_1_Hurston` → `Stanton 1 Hurston` à l'affichage.
+- **ID système numériques** non reconnus → `Unknown` (au lieu d'afficher `9948564368677`).
 
-#### Prétraitement OCR simplifié
-- **Problème** : Le filtre de netteté déformait le texte et rendait l'OCR inefficace
-- **Solution** : 
-  - Retrait du filtre de netteté agressif
-  - Seuillage simple et robuste (seuil fixe à 180)
-  - Débruitage léger pour préserver la qualité
-- **Résultat** : Meilleure reconnaissance du texte
-- **Fichiers modifiés** : `src/capture.py`
+### Supprimé
+- Ligne `MODE: NAVIGATION` et ligne `SYSTÈME` orange de l'overlay.
+- Fallback split-on-km : produisait trop d'extractions partielles fausses (ex: `X=2` capturé depuis `L2`).
 
-#### Regex plus tolérant
-- **Problème** : Le regex ne matchait pas les erreurs OCR courantes (km → kn, Km, an)
-- **Solution** : Regex acceptant toutes les variations de "km" et casse flexible
-- **Fichiers modifiés** : `src/ocr.py`
-
-#### Logs Tesseract améliorés
-- **Problème** : Détection silencieuse de Tesseract (print au lieu de logger)
-- **Solution** : Logs détaillés pour chaque chemin testé et erreurs visibles
-- **Fichiers modifiés** : `src/ocr.py`
-
-### ✨ Améliorations
-
-#### Mode debug pour captures
-- Ajout d'une option `save_ocr_images` dans config.ini
-- Sauvegarde automatique des captures avant/après traitement
-- Facilite le diagnostic des problèmes OCR
+### Documentation
+- Refonte complète du `README.md`.
+- Nouveau `docs/OCR_OPTIMIZATION_PLAN.md` (plan en 4 phases inspiré SC_OCR).
+- `requirements.txt` enrichi avec versions minimales et commentaires.
+- `setup.py` corrigé (dépendances synchronisées avec requirements).
 
 ---
 
-## Version 1.1.0 (2026-05-04)
+## [0.5.0] — 2026-04 (estimation)
 
-### 🐛 Corrections de bugs
+### Ajouté
+- Module `velocity_tracker.py` : estimateur de vélocité par différence finie sur positions OCR successives.
+- Module `calibration.py` : calibration yaw caméra ↔ monde.
+- Affichage `Δ X / Y / Z` par axe pour guidage à l'arrêt.
+- Bascule du repère Root au repère **OOC (planet-relative)** pour les POI — invariant à l'orbite des planètes.
 
-#### Plantage Shift+F2
-- **Problème** : L'application plantait lors de l'appui sur Shift+F2
-- **Cause** : Erreur dans `show_interaction_menu()` avec `self.mapToGlobal(self.rect().center())`
-- **Solution** : Utilisation de `QCursor.pos()` pour afficher le menu à la position du curseur
-- **Fichiers modifiés** : `src/main.py`
+### Modifié
+- Capture depuis y=0 pour englober la ligne CamDir du debug overlay.
+- Parser CamDir tolérant aux valeurs collées (`25-5177` → `[25, -5177]`).
 
-#### Reconnaissance du système Stanton
-- **Problème** : Le système n'était pas reconnu avec l'ID numérique "SolarSystem_9948564368677"
-- **Cause** : Le code attendait un nom textuel comme "SolarSystem_Stanton"
-- **Solution** : 
-  - Ajout d'un dictionnaire de mapping `SYSTEM_ID_MAP` pour convertir les IDs numériques en noms
-  - Mapping de "9948564368677" → "Stanton"
-  - Amélioration du regex pour accepter les IDs numériques longs
-- **Fichiers modifiés** : `src/ocr.py`
-
-### ✨ Améliorations
-
-#### Amélioration du prétraitement OCR
-- **Augmentation du contraste CLAHE** : clipLimit 3.0 → 5.0 pour une meilleure détection
-- **Ajout d'un filtre de netteté** : améliore la lisibilité du texte
-- **Optimisation du seuillage adaptatif** : blockSize 11 → 15, C 2 → -2
-- **Méthode de seuillage combinée** : utilise à la fois le seuillage adaptatif et Otsu
-- **Résultat** : Détection plus robuste du texte "SolarSystem" même avec contraste variable
-- **Fichiers modifiés** : `src/capture.py`
-
-#### Logs de debug
-- Ajout de logs détaillés pour le processus OCR :
-  - Log du texte brut extrait
-  - Log des lignes Zone détectées
-  - Log des lignes Pos détectées
-  - Log des coordonnées extraites avec succès
-  - Log des erreurs de conversion
-- **Fichiers modifiés** : `src/ocr.py`
-
-#### Gestion d'erreurs
-- Ajout de try/catch autour de `menu.exec()` pour éviter les plantages
-- Messages d'erreur plus informatifs dans la system tray
-
-### 📝 Notes techniques
-
-**Pour ajouter d'autres systèmes** :
-Éditez `src/ocr.py` et ajoutez les mappings dans `SYSTEM_ID_MAP` :
-```python
-SYSTEM_ID_MAP = {
-    "9948564368677": "Stanton",
-    "AUTRE_ID": "Nom_Systeme",
-    # ...
-}
-```
-
-**Pour consulter les logs** :
-Les logs sont enregistrés dans `spacedrive.log` avec le niveau DEBUG activé dans `config.ini`.
-
-### 🔍 Débogage
-
-Si vous rencontrez des problèmes de reconnaissance :
-1. Vérifiez le fichier `spacedrive.log`
-2. Cherchez les lignes contenant "Texte OCR brut" pour voir ce qui est capturé
-3. Vérifiez si les lignes "Zone" et "Pos" sont détectées
-4. Si un nouveau système n'est pas reconnu, ajoutez son ID dans `SYSTEM_ID_MAP`
+### Tests
+- `test_bearing.py`, `test_calibration.py`, `test_navigation_format.py`, `test_ocr_camdir.py`, `test_velocity_tracker.py`.
 
 ---
 
-## Version 1.0.0 (Date précédente)
+## [1.4.0] — 2026-05-05
 
-Version initiale du projet SpaceDrive GPS.
+### Corrigé
+- Regex Pos ultra-tolérant : underscore, `kn`, `Km`, `k` seul, pas d'espace après `Pos:`.
+- Corrections OCR étendues : `Zore:` → `Zone:`, variantes `SovarSysten/SolarSysten` → `SolarSystem`.
+
+---
+
+## [1.3.0] — 2026-05-04
+
+### Corrigé
+- Regex Zone : capture proprement l'ID système, ne mange plus `Pos` à la fin.
+- Matching intelligent des systèmes : recherche partielle dans `SYSTEM_ID_MAP`.
+- Affichage permanent des coordonnées avec placeholders `---` quand non détecté.
+
+---
+
+## [1.2.0] — 2026-05-04
+
+### Corrigé
+- Support résolution 2560×1440 : calcul automatique de la zone de capture.
+- Pré-traitement OCR simplifié : seuillage fixe à 180, retrait du filtre de netteté agressif.
+- Regex `km` plus tolérant aux variations.
+- Logs Tesseract via `logger` (et non `print`).
+
+### Ajouté
+- Mode debug `[Debug] save_ocr_images` dans `config.ini`.
+
+---
+
+## [1.1.0] — 2026-05-04
+
+### Corrigé
+- Plantage `Shift+F2` (utilisation de `QCursor.pos()` au lieu de `mapToGlobal`).
+- Reconnaissance Stanton via ID numérique : ajout de `SYSTEM_ID_MAP`.
+
+### Ajouté
+- CLAHE clipLimit 3.0 → 5.0.
+- Logs détaillés du processus OCR (texte brut, zones, coordonnées).
+
+---
+
+## [1.0.0]
+
+Version initiale.
