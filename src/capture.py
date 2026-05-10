@@ -7,7 +7,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 CAPTURE_WIDTH = 600
-CAPTURE_HEIGHT = 250
+CAPTURE_HEIGHT = 150
 
 
 class ScreenCapture:
@@ -61,6 +61,22 @@ class ScreenCapture:
 
         _, thresh2 = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         images['pass2'] = thresh2
+
+        # Pass3 : seuillage adaptatif — compare chaque pixel à son voisinage local.
+        # Résiste aux scènes éclairées où le fond du jeu est proche du blanc.
+        thresh3 = cv2.adaptiveThreshold(
+            denoised, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 21, -8
+        )
+        images['pass3'] = thresh3
+
+        # Pass4 : masque couleur HSV — isole les pixels quasi-blancs (faible saturation,
+        # haute luminosité) avant toute conversion en gris. Le texte HUD SC est blanc pur
+        # (saturation ~0, V ~255) ; les murs colorés ont une saturation élevée → rejetés
+        # quelle que soit la luminosité globale de la scène.
+        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+        white_mask = cv2.inRange(hsv, (0, 0, 180), (180, 40, 255))
+        white_mask = cv2.resize(white_mask, None, fx=2, fy=2, interpolation=cv2.INTER_LINEAR)
+        images['pass4'] = white_mask
 
         if self._save_debug:
             cv2.imwrite("debug_capture_processed.png", thresh1)

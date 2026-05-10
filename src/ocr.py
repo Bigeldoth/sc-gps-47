@@ -10,7 +10,10 @@ logger = logging.getLogger(__name__)
 
 _RE_ZONE = re.compile(r'Zone:\s*SolarSystem[_-]?([\d\w]+?)(?:Pos|Zone|$|\s)', re.IGNORECASE)
 _RE_POS = re.compile(
-    r'[Pp]os:?\s*(-?\d+\.?\d*)[_\s]*[kKaA][mnMN]?[_\s]*(-?\d+\.?\d*)[_\s]*[kKaA][mnMN]?[_\s]*(-?\d+\.?\d*)[_\s]*[kKaA][mnMN]?',
+    # Exige 3-4 décimales : SC affiche toujours 4 décimales (10cm de précision).
+    # Si Tesseract perd des chiffres, la lecture est rejetée plutôt que d'enregistrer
+    # une position approximative qui causerait des erreurs de ~10m à l'arrivée.
+    r'[Pp]os:?\s*(-?\d+\.\d{3,4})\s*km\s*(-?\d+\.\d{3,4})\s*km\s*(-?\d+\.\d{3,4})\s*km',
     re.IGNORECASE,
 )
 # Identifie une ligne CamDir même si l'OCR rate le ':' ou le 'C' initial.
@@ -117,6 +120,21 @@ _OCR_CORRECTIONS = {
     'R0ot': 'Root',
     'Rcot': 'Root',
 }
+
+
+def _normalize_ooc_line(line):
+    """Normalise une ligne OOC avant d'appliquer _RE_POS.
+
+    Corrige les artefacts Tesseract courants dans l'ordre :
+    1. Pos:_ → Pos:  (underscore/espaces multiples après les deux-points)
+    2. lkm/Ikm/kn/KM/kh → km  (variantes OCR de l'unité, après chiffre)
+    3. km_-529 → km -529  (underscore entre coordonnées)
+    """
+    line = re.sub(r'(Pos:?)[\s_]+', r'\1 ', line)
+    line = re.sub(r'(?<=[\d.])[lLiI1]?[kK][mMnNhH](?=[\s_\-\d]|$)', 'km', line)
+    line = re.sub(r'km[\s_]+(-?\d)', r'km \1', line)
+    return line
+
 
 
 class OCRProcessor:
@@ -258,7 +276,7 @@ class OCRProcessor:
                         if known_id in system_id or system_id in known_id:
                             matched_name = name
                             break
-                    data["location"] = matched_name if matched_name else system_id
+                    data["location"] = matched_name if matched_name else "Unknown"
                     logger.info(f"[{pass_name}] Système détecté : ID={system_id}, Nom={data['location']}")
                     score += 10
             elif "Pos:" in line or "pos:" in line.lower():
@@ -272,7 +290,8 @@ class OCRProcessor:
                     continue
                 ooc_name = ooc_match.group(1).strip().replace(" ", "_")
                 logger.debug(f"[{pass_name}] Ligne OOC détectée : ooc={ooc_name} | {line[:120]}")
-                coord_match = _RE_POS.search(line)
+                normalized = _normalize_ooc_line(line)
+                coord_match = _RE_POS.search(normalized)
                 if coord_match:
                     try:
                         data["x"] = float(coord_match.group(1))
@@ -287,7 +306,9 @@ class OCRProcessor:
                     except ValueError as e:
                         logger.error(f"[{pass_name}] Erreur conversion coordonnées : {e}")
                 else:
-                    logger.warning(f"[{pass_name}] Ligne OOC détectée mais regex Pos non matchée : {line}")
+                    logger.warning(
+                        f"[{pass_name}] Regex Pos non matchée : {line[:120]!r}"
+                    )
 
         if any(v is not None for v in (data["x"], data["y"], data["z"])):
             score += 5
