@@ -211,6 +211,5 @@ MIT — voir [LICENSE](LICENSE).
 - **mss** — capture d'écran rapide
 - **PyQt6** — overlay
 - **pynput** — hotkeys globaux
-- **[SC-Toolbox-Beta-V2/SC_OCR](https://github.com/ScPlaceholder/SC-Toolbox-Beta-V2)** — inspiration architecture pré-traitement et template matching
 
 Communauté Star Citizen — `o7`

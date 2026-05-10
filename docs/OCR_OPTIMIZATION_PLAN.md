@@ -4,7 +4,7 @@
 
 La fiabilité de la lecture OCR du HUD `r_DisplayInfo 3` est le facteur critique du logiciel. Une lecture imprécise (perte de décimales, valeurs aberrantes) cause des erreurs de navigation jusqu'à 17 m sur un POI sauvegardé.
 
-Ce plan s'inspire de [SC-Toolbox-Beta-V2/SC_OCR](https://github.com/ScPlaceholder/SC-Toolbox-Beta-V2/tree/master/tools/Mining_Signals/ocr/sc_ocr) — un module open-source qui résout un problème similaire (lecture d'un panneau scanner SC) avec une approche élégante en **template matching NCC pure NumPy**, latence ~1 ms, sans dépendance ML lourde.
+Ce plan adopte une approche **template matching NCC pure NumPy**, latence ~1 ms, sans dépendance ML lourde.
 
 ## État actuel (v0.5.0)
 
@@ -32,9 +32,9 @@ Capture (mss, 600×150)
 - Aucune validation physique (vitesse impossible entre deux scans).
 - Aucun système de templates pour les caractères du HUD SC.
 
-## Apprentissages clés de SC_OCR
+## Architecture retenue
 
-| Composant | Approche SC_OCR | Latence |
+| Composant | Approche | Latence |
 |---|---|---|
 | `preprocess.isolate_channel("auto")` | Choisit le canal R/G/B/max selon stats du fond | ~0.1 ms |
 | `preprocess.otsu_threshold` | Otsu pure NumPy sur canal isolé | ~0.3 ms |
@@ -64,8 +64,6 @@ Adapter le pré-traitement à la couleur du fond, sans toucher à Tesseract.
 4. **Supprimer la passe HSV** (couvert par `isolate_channel` en mode auto).
 5. **Garder pass3 (adaptatif)** uniquement comme backup pour fonds uniformes très clairs.
 
-**Référence SC_OCR :** [`preprocess.py`](https://github.com/ScPlaceholder/SC-Toolbox-Beta-V2/blob/master/tools/Mining_Signals/ocr/sc_ocr/preprocess.py)
-
 **Impact attendu :** précision sur fonds variés, élimination du bruit pass4.
 
 ---
@@ -80,7 +78,7 @@ Adapter le pré-traitement à la couleur du fond, sans toucher à Tesseract.
 2. **Validation par vitesse impossible** dans `src/main.py` `_on_worker_result` :
    - Calcul `Δpos / Δt` entre deux scans.
    - Si > 50 km/s (max plausible hors quantum) → rejeter, garder valeur précédente.
-3. **Récupération du `.` manquant** (inspiré [`validate.py:148`](https://github.com/ScPlaceholder/SC-Toolbox-Beta-V2/blob/master/tools/Mining_Signals/ocr/sc_ocr/validate.py)) :
+3. **Récupération du `.` manquant** :
    - Si la regex échoue mais qu'une chaîne `\d{6,8}km` existe, tenter d'insérer un `.` à toutes les positions plausibles et accepter celle dans la plage.
 4. **Consensus multi-pass** : si ≥ 2 passes convergent à ±0.1 km, moyenner ; sinon prendre la meilleure mais marquer faible confiance.
 
@@ -130,16 +128,14 @@ C'est l'aboutissement : remplacer Tesseract pour les chiffres par un classifieur
    - Session de 30 min en jeu → ~500 glyphes labellisés (auto via Tesseract sur cas vert haute confidence).
    - Validation manuelle.
 2. **Module `src/sc_ocr/`** :
-   - `preprocess.py` (port de SC_OCR)
-   - `segment.py` (port de SC_OCR)
+   - `preprocess.py`
+   - `segment.py`
    - `classify.py` (NCC shift-invariant pure NumPy)
    - `templates.py` (chargement bibliothèque)
 3. **Pipeline hybride** :
    - Tesseract reste pour l'extraction des **noms** (Zone, OOC).
    - NCC custom pour les **coordonnées numériques** (chiffres + `.` + `-` + `k` + `m`).
 4. **Latence cible** : < 10 ms par frame (vs ~100 ms Tesseract actuellement).
-
-**Référence projet à forker éventuellement :** [SC-Toolbox-Beta-V2](https://github.com/ScPlaceholder/SC-Toolbox-Beta-V2/tree/master/tools/Mining_Signals/ocr/sc_ocr)
 
 ---
 
@@ -171,7 +167,6 @@ C'est l'aboutissement : remplacer Tesseract pour les chiffres par un classifieur
 
 ## Liens utiles
 
-- [SC-Toolbox-Beta-V2](https://github.com/ScPlaceholder/SC-Toolbox-Beta-V2) — référence d'architecture
 - [Tesseract ImproveQuality](https://tesseract-ocr.github.io/tessdoc/ImproveQuality.html)
 - [PSM modes explained](https://pyimagesearch.com/2021/11/15/tesseract-page-segmentation-modes-psms-explained-how-to-improve-your-ocr-accuracy/)
 - [Star Citizen EAC notice](https://starcitizen.tools/Easy_Anti-Cheat) — rappel pourquoi memory reading est exclu

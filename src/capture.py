@@ -1,6 +1,6 @@
 """Capture d'écran + pré-traitement OCR.
 
-Pipeline (inspiré de SC-Toolbox-Beta-V2/sc_ocr/preprocess.py) :
+Pipeline :
 
   1. Capture mss BGR
   2. isolate_channel(auto) — choisit le canal qui maximise la séparation
