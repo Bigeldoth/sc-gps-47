@@ -17,8 +17,12 @@ env/
 # IDE and Editor files
 .vscode/
 .idea/
+.claude/
 *.swp
 *.swo
+
+# Glyphes collectés (templates en dérivent et sont versionnés sous data/templates/)
+data/glyphs/
 
 # OS generated files
 .DS_Store

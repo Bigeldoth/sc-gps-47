@@ -1,8 +1,50 @@
 import math
 import json
-
 import os
+import re
 import sys
+import time
+import logging
+from difflib import SequenceMatcher
+
+logger = logging.getLogger(__name__)
+
+
+# Durée pendant laquelle on tolère que l'OCR ne retrouve pas le nom de zone
+# avant de considérer que le joueur a quitté la zone de la cible.
+_ZONE_GRACE_PERIOD_S = 180.0  # 3 minutes
+
+# Seuil de similarité pour considérer deux noms de zone comme identiques
+# (tolérance aux variations OCR : OOC_Stanton1 vs 0OC_Stanton1 vs OOC Stanton1).
+_ZONE_MATCH_THRESHOLD = 0.85
+
+
+def _normalize_zone(name):
+    """Normalise un nom de zone pour comparaison robuste aux variations OCR.
+
+    Lowercase + retire tout caractère non-alphanumérique.
+    Ex: ``OOC_Stanton1_Hurston`` et ``OOC Stanton1-Hurston`` → ``oocstanton1hurston``.
+    """
+    if not name:
+        return ""
+    return re.sub(r'[^a-z0-9]+', '', name.lower())
+
+
+def _zones_match(a, b, threshold=_ZONE_MATCH_THRESHOLD):
+    """True si deux noms de zone sont considérés comme la même zone.
+
+    Tolérance aux confusions OCR (O/0, I/1, espaces/underscores) via
+    SequenceMatcher de difflib.
+    """
+    if not a or not b:
+        return False
+    a_norm = _normalize_zone(a)
+    b_norm = _normalize_zone(b)
+    if not a_norm or not b_norm:
+        return False
+    if a_norm == b_norm:
+        return True
+    return SequenceMatcher(None, a_norm, b_norm).ratio() >= threshold
 
 
 def format_distance(distance_km):
@@ -195,6 +237,13 @@ class NavigationEngine:
         self.user_poi = self.load_user_poi()
         self.target = None
 
+        # Zone tracking (cf. set_target/update_zone_tracking/is_target_in_same_ooc).
+        # On assume au lancement de la navigation que le joueur est dans la zone
+        # de la cible. Si l'OCR confirme au moins une fois la zone, on lock.
+        # Sinon, après _ZONE_GRACE_PERIOD_S sans match, on considère hors zone.
+        self._zone_match_locked = False
+        self._zone_last_match_ts = None
+
     def load_user_poi(self):
         """Charge les points enregistrés par l'utilisateur"""
         if os.path.exists(self.user_poi_file):
@@ -267,19 +316,76 @@ class NavigationEngine:
             return []
 
     def set_target(self, x, y, z, name="Destination", ooc=None):
-        """Définit la destination. ``ooc`` est requis pour la navigation
-        (distance et bearing ne sont valides que dans le même OOC)."""
-        self.target = {"x": x, "y": y, "z": z, "name": name, "ooc": ooc}
+        """Définit la destination et démarre le tracking de zone.
 
-    def is_target_in_same_ooc(self, current_pos):
-        """True si la cible et la position courante partagent le même OOC."""
+        ``ooc`` est le nom de zone attendu. On part du principe que l'utilisateur
+        est déjà dans cette zone — la navigation démarre immédiatement.
+
+        Le tracking de zone (``update_zone_tracking`` + ``is_target_in_same_ooc``)
+        confirme cette hypothèse au premier match OCR. Si aucun match dans les
+        ``_ZONE_GRACE_PERIOD_S`` secondes, on considère que le joueur n'est plus
+        dans la zone.
+        """
+        self.target = {"x": x, "y": y, "z": z, "name": name, "ooc": ooc}
+        self._zone_match_locked = False
+        self._zone_last_match_ts = time.monotonic()
+        if ooc:
+            logger.info(f"Navigation vers '{name}' (zone attendue: {ooc!r}) — assume in-zone")
+
+    def clear_target(self):
+        """Annule la navigation et reset le zone tracking."""
+        self.target = None
+        self._zone_match_locked = False
+        self._zone_last_match_ts = None
+
+    def update_zone_tracking(self, current_pos):
+        """Met à jour le tracking de zone selon le scan OCR courant.
+
+        À appeler à chaque résultat OCR. Si le nom de zone courant correspond
+        (au sens de ``_zones_match``) à celui de la cible, on lock définitif.
+        Sinon, on laisse courir le grace period.
+        """
         if not self.target or current_pos is None:
-            return False
+            return
+        if self._zone_match_locked:
+            return  # déjà verrouillé, plus besoin de comparer
         cur_ooc = current_pos.get("ooc")
         tgt_ooc = self.target.get("ooc")
-        if cur_ooc is None or tgt_ooc is None:
+        if not cur_ooc or not tgt_ooc:
+            return
+        if _zones_match(cur_ooc, tgt_ooc):
+            self._zone_match_locked = True
+            self._zone_last_match_ts = time.monotonic()
+            logger.info(
+                f"Zone confirmée par OCR : '{cur_ooc}' ≈ '{tgt_ooc}' — lock définitif"
+            )
+
+    def is_target_in_same_ooc(self, current_pos):
+        """True si on considère que le joueur est dans la zone de la cible.
+
+        Logique :
+          1. Lock définitif après le 1er match OCR confirmé via ``update_zone_tracking``.
+          2. Sinon : tolérance pendant ``_ZONE_GRACE_PERIOD_S`` (3 min) à partir
+             de ``set_target`` — on assume in-zone.
+          3. Au-delà sans aucun match : on considère hors zone.
+        """
+        if not self.target:
             return False
-        return cur_ooc == tgt_ooc
+        if self._zone_match_locked:
+            return True
+        if self._zone_last_match_ts is None:
+            return False
+        return (time.monotonic() - self._zone_last_match_ts) <= _ZONE_GRACE_PERIOD_S
+
+    def time_until_zone_expired(self):
+        """Secondes restantes avant que la zone expire.
+
+        Retourne ``None`` si lock définitif ou si pas de cible.
+        """
+        if self._zone_match_locked or self.target is None or self._zone_last_match_ts is None:
+            return None
+        elapsed = time.monotonic() - self._zone_last_match_ts
+        return max(0.0, _ZONE_GRACE_PERIOD_S - elapsed)
 
     def calculate_distance(self, current_pos):
         """Distance euclidienne entre la position courante et la cible.

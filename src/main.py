@@ -17,6 +17,7 @@ from navigation import (
     format_axis_delta,
     ema_angle,
     normalize_angle_signed,
+    _zones_match,
 )
 from config_manager import ConfigManager
 from hotkey_listener import HotkeyListener
@@ -50,7 +51,7 @@ class GPSWorker(QObject):
         if not self._running:
             return
         try:
-            images = self.capture.capture()
+            images, glyph_data = self.capture.capture()
             data = self.ocr.extract_data(images)
             self.result_ready.emit(data)
         except Exception as e:
@@ -312,6 +313,10 @@ class GPSOverlay(QMainWindow):
             )
             self._last_coord_ts = time.monotonic()
 
+            # Met à jour le zone tracking de la cible (lock après 1er match,
+            # grace period 3 min sinon — cf. NavigationEngine).
+            self.nav.update_zone_tracking(data)
+
             self._update_bearing_state(data)
 
             dist_km = self.nav.calculate_distance(data)
@@ -370,7 +375,10 @@ class GPSOverlay(QMainWindow):
         if self.current_data.get("x") is None or self._last_coord_ts is None:
             return False
         # Changement d'OOC : on ne compare pas, le repère a changé.
-        if new_data.get("ooc") != self.current_data.get("ooc"):
+        # Comparaison fuzzy pour tolérer les variations OCR du nom de zone.
+        new_ooc = new_data.get("ooc")
+        cur_ooc = self.current_data.get("ooc")
+        if new_ooc and cur_ooc and not _zones_match(new_ooc, cur_ooc):
             return False
         dt = time.monotonic() - self._last_coord_ts
         if dt <= 0 or dt > 5.0:
@@ -415,9 +423,10 @@ class GPSOverlay(QMainWindow):
     def _update_bearing_state(self, data):
         """Met à jour la vélocité et les offsets bearing depuis les coords OCR."""
         # Si l'OOC a changé, les coords sont dans un repère différent → reset
-        # du tracker pour éviter une vélocité aberrante.
+        # du tracker pour éviter une vélocité aberrante. On utilise une
+        # comparaison fuzzy pour ignorer les variations OCR du nom de zone.
         current_ooc = data.get("ooc")
-        if current_ooc is not None and current_ooc != self._last_known_ooc:
+        if current_ooc is not None and not _zones_match(current_ooc, self._last_known_ooc or ""):
             if self._last_known_ooc is not None:
                 logger.info(
                     f"Changement de zone OOC : {self._last_known_ooc} → {current_ooc}, "
@@ -485,18 +494,21 @@ class GPSOverlay(QMainWindow):
         target_ooc = self.nav.target.get("ooc")
         current_ooc = self.current_data.get("ooc")
 
-        if target_ooc and current_ooc and target_ooc != current_ooc:
-            self.nav_label.setText(
-                f"▶ {self.nav.target['name']}\n"
-                f"  zone: {_fmt_ooc(target_ooc)}\n"
-                f"  actuel: {_fmt_ooc(current_ooc)}"
-            )
-            self.nav_label.setStyleSheet(f"color: #ffaa00; font-size: 12px; {_css}")
-            return
-
         if target_ooc is None:
             self.nav_label.setText(f"▶ {self.nav.target['name']}\n  POI legacy — recréer")
             self.nav_label.setStyleSheet(f"color: #ffaa00; font-size: 13px; {_css}")
+            return
+
+        # Logique zone tracking : on assume in-zone tant que la grace period
+        # n'est pas expirée. Une fois locké (1er match OCR), définitif.
+        # Sinon, après 3 min sans match, on affiche un avertissement hors zone.
+        if not self.nav.is_target_in_same_ooc(self.current_data):
+            self.nav_label.setText(
+                f"▶ {self.nav.target['name']}\n"
+                f"  zone: {_fmt_ooc(target_ooc)}\n"
+                f"  actuel: {_fmt_ooc(current_ooc) if current_ooc else '?'}"
+            )
+            self.nav_label.setStyleSheet(f"color: #ffaa00; font-size: 12px; {_css}")
             return
 
         name = self.nav.target['name']
@@ -546,9 +558,35 @@ class GPSOverlay(QMainWindow):
         if self.isVisible():
             self.show()
 
+    def _load_app_icon(self):
+        """Charge l'icône SpaceDrive depuis assets/, ou fallback système.
+
+        Cherche dans l'ordre :
+          1. assets/icon.ico  (Windows, multi-tailles natives)
+          2. assets/icon.png  (cross-platform haute résolution)
+          3. icône standard SP_ComputerIcon (fallback ultime)
+        """
+        if getattr(sys, 'frozen', False):
+            base_dir = os.path.dirname(sys.executable)
+        else:
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+        for filename in ('icon.ico', 'icon.png'):
+            path = os.path.join(base_dir, 'assets', filename)
+            if os.path.exists(path):
+                icon = QIcon(path)
+                if not icon.isNull():
+                    logger.debug(f"Icône application : {path}")
+                    return icon
+
+        logger.warning("Aucune icône trouvée dans assets/, fallback SP_ComputerIcon")
+        return self.style().standardIcon(self.style().StandardPixmap.SP_ComputerIcon)
+
     def setup_tray_icon(self):
         self.tray_icon = QSystemTrayIcon(self)
-        self.tray_icon.setIcon(self.style().standardIcon(self.style().StandardPixmap.SP_ComputerIcon))
+        self.tray_icon.setIcon(self._load_app_icon())
+        # Aussi définie comme icône de la fenêtre (taskbar, alt-tab, etc.)
+        self.setWindowIcon(self.tray_icon.icon())
 
         tray_menu = QMenu()
 
