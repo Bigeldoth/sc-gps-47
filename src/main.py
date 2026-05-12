@@ -1,5 +1,6 @@
 import sys
 import os
+import math
 import time
 import logging
 import configparser
@@ -43,8 +44,18 @@ class GPSWorker(QObject):
         super().__init__()
         self.capture = ScreenCapture()
         ocr_engine = config.get('OCR', 'engine', fallback='tesseract')
-        self.ocr = OCRProcessor(engine=ocr_engine)
-        logger.info(f"Moteur OCR initialisé : {ocr_engine}")
+        glyph_engine = config.get('OCR', 'glyph_engine', fallback='ncc')
+        self.ocr = OCRProcessor(
+            engine=ocr_engine,
+            glyph_engine=glyph_engine,
+            onnx_model_path=config.get('OCR', 'onnx_model_path',
+                                       fallback='models/spacedrive_ocr.onnx'),
+            onnx_classes_path=config.get('OCR', 'onnx_classes_path',
+                                         fallback='models/spacedrive_ocr.classes.json'),
+            onnx_confidence_threshold=float(config.get(
+                'OCR', 'onnx_confidence_threshold', fallback='0.85')),
+        )
+        logger.info(f"OCR engine initialized: text={ocr_engine}  glyphs={glyph_engine}")
         self._running = True
 
     def process(self):
@@ -55,7 +66,7 @@ class GPSWorker(QObject):
             data = self.ocr.extract_data(images)
             self.result_ready.emit(data)
         except Exception as e:
-            logger.error(f"Erreur worker GPS : {e}")
+            logger.error(f"GPS worker error: {e}")
             self.result_ready.emit({"x": None, "y": None, "z": None, "location": "Unknown", "error": str(e)})
 
     def stop(self):
@@ -65,7 +76,7 @@ class GPSWorker(QObject):
 
 
 def _fmt_ooc(ooc):
-    """Transforme 'Stanton_1_Hurston' → 'Stanton 1 Hurston' pour l'affichage."""
+    """Transforms 'Stanton_1_Hurston' → 'Stanton 1 Hurston' for display."""
     if not ooc:
         return "?"
     return ooc.replace("_", " ").strip()
@@ -75,14 +86,15 @@ _ARROWS_8 = ("↑", "↗", "→", "↘", "↓", "↙", "←", "↖")
 
 
 def _world_arrow(abs_bearing):
-    """Combine les 3 axes du bearing absolu en une flèche compacte.
+    """8-direction navigation arrow to target (SC frame corrected).
 
-    Renvoie 'arrow_xy + arrow_z' où :
-      - arrow_xy : 8 directions cardinales dans le plan monde XY (Y+ = ↑, X+ = →)
-      - arrow_z  : ▲ si la cible est nettement au-dessus, ▼ en-dessous, sinon vide
+    SC (OOC) Convention: Y+ = forward (↑), Y- = backward (↓),
+    X- = right (→), X+ = left (←). X correction is already
+    applied in calculate_absolute_bearing (yaw_deg uses -dx).
 
-    Le pilote connaît le repère monde fixe du jeu (X+, Y+, Z+ visibles dans la
-    HUD via les coordonnées), il peut donc s'orienter directement.
+    Returns 'horizontal_arrow + vertical_indicator':
+      - ▲ if target is notably above (pitch > 25°)
+      - ▼ if notably below
     """
     if not abs_bearing:
         return ""
@@ -98,26 +110,26 @@ def _world_arrow(abs_bearing):
     return arrow_h + arrow_v
 
 
-# Anchors temps→couleur pour le vieillissement des données OCR.
-# Interpolation linéaire RGB entre ces points (en secondes).
+# Time→color anchors for OCR data aging.
+# Linear RGB interpolation between these points (in seconds).
 _AGE_STOPS = (
-    (0.0,  (0x40, 0xff, 0x40)),   # vert vif — donnée fraîche
-    (3.0,  (0xff, 0xee, 0x40)),   # jaune (3s)
+    (0.0,  (0x40, 0xff, 0x40)),   # bright green — fresh data
+    (3.0,  (0xff, 0xee, 0x40)),   # yellow (3s)
     (7.0,  (0xff, 0xaa, 0x00)),   # orange (7s)
-    (12.0, (0xff, 0x40, 0x40)),   # rouge — donnée périmée
+    (12.0, (0xff, 0x40, 0x40)),   # red — stale data
 )
 
-# Au-delà de cet âge, l'enregistrement rapide via hotkey est refusé.
-# Cale juste avant l'entrée franche dans le rouge → on accepte vert+jaune+orange.
+# Beyond this age, quick save via hotkey is rejected.
+# Calibrated just before entering red → accepts green+yellow+orange.
 _QUICK_SAVE_MAX_AGE_S = 9.0
 
 
 def _age_to_color(age_s):
-    """Interpole linéairement une couleur HEX depuis l'âge (s) du dernier OCR valide.
+    """Linearly interpolates a HEX color from age (s) of last valid OCR.
 
-    Vert (0s) → jaune (1.5s) → orange (3s) → rouge (5s+). La progression
-    dépend uniquement du temps écoulé, pas du nombre de scans, pour rester
-    stable même quand la fréquence d'OCR varie.
+    Green (0s) → yellow (1.5s) → orange (3s) → red (5s+). Progression
+    depends only on elapsed time, not number of scans, to remain
+    stable even when OCR frequency varies.
     """
     if age_s is None or age_s <= _AGE_STOPS[0][0]:
         r, g, b = _AGE_STOPS[0][1]
@@ -150,32 +162,32 @@ class GPSOverlay(QMainWindow):
         self.options_window = None
         self.poi_manager_window = None
 
-        # Lissage EMA + détection d'OCR périmé pour la distance vers la cible
+        # EMA smoothing + stale OCR detection for target distance
         self._smoothed_distance_km = None
         self._last_raw_distance_km = None
         self._last_coord_ts = None
         self._ema_alpha = 0.4
         self._stale_threshold_s = 2.0
 
-        # Guidage directionnel basé sur la vélocité (style GPS voiture).
-        # On échantillonne la position et on dérive la direction de
-        # déplacement, plutôt que de lire l'orientation caméra (CamDir).
+        # Directional guidance based on velocity (car GPS style).
+        # We sample position and derive movement direction,
+        # rather than reading camera orientation (CamDir).
         self._velocity_tracker = VelocityTracker()
-        self._last_known_ooc = None  # pour détecter un changement de repère
+        self._last_known_ooc = None  # to detect frame change
         self._smoothed_yaw_off = None
         self._smoothed_pitch_off = None
         self._last_raw_yaw_off = None
         self._last_raw_pitch_off = None
 
-        # Snapshot des coordonnées figé au moment de l'appui hotkey save.
-        # Préserve la valeur même si l'OCR rate entre l'appui et la confirmation
-        # du dialog. None = pas d'enregistrement en cours via hotkey.
+        # Snapshot of coordinates frozen at hotkey save press moment.
+        # Preserves value even if OCR fails between press and dialog confirmation.
+        # None = no save in progress via hotkey.
         self._save_snapshot = None
 
-        # Message temporaire affiché dans nav_label : (texte, expire_monotonic_ts).
+        # Temporary message displayed in nav_label: (text, expire_monotonic_ts).
         self._overlay_message = None
 
-        # UI — frame MFD style Star Citizen
+        # UI — MFD frame Star Citizen style
         self.central_widget = QWidget()
         self.central_widget.setStyleSheet("background-color: transparent;")
 
@@ -196,14 +208,14 @@ class GPSOverlay(QMainWindow):
 
         _lbl_css = "border: none; font-family: 'Consolas', 'Menlo', monospace;"
 
-        self.pos_label = QLabel("Scan en cours...")
+        self.pos_label = QLabel("Scanning...")
         self.pos_label.setStyleSheet(f"color: #c8c8c8; font-size: 13px; {_lbl_css}")
 
         _sep = QFrame()
         _sep.setFrameShape(QFrame.Shape.HLine)
         _sep.setStyleSheet("background-color: rgba(255,170,0,160); border: none; max-height: 1px;")
 
-        self.nav_label = QLabel("PAS DE CIBLE")
+        self.nav_label = QLabel("NO TARGET")
         self.nav_label.setStyleSheet(f"color: #00ffff; font-size: 14px; font-weight: bold; {_lbl_css}")
 
         self.layout.addWidget(self.pos_label)
@@ -222,9 +234,9 @@ class GPSOverlay(QMainWindow):
         self.timer.timeout.connect(self._request_update)
         self.timer.start(scan_interval)
 
-        # Timer dédié au vieillissement visuel des couleurs : indépendant du
-        # rythme de l'OCR, il garantit une transition fluide (vert→orange→rouge)
-        # même si le worker ralentit ou rate plusieurs scans d'affilée.
+        # Dedicated timer for visual color aging: independent of OCR rhythm,
+        # guarantees smooth transition (green→orange→red) even if worker slows
+        # or misses several scans in a row.
         self._color_refresh_timer = QTimer()
         self._color_refresh_timer.timeout.connect(self._tick_visual_refresh)
         self._color_refresh_timer.start(150)
@@ -232,7 +244,7 @@ class GPSOverlay(QMainWindow):
         self.save_point_signal.connect(self.prompt_save_point)
 
         self.hotkey_listener = HotkeyListener(self.config_manager)
-        # Hotkeys émis depuis le thread pynput → QueuedConnection pour traiter sur le thread Qt
+        # Hotkeys emitted from pynput thread → QueuedConnection to process on Qt thread
         self.hotkey_listener.toggle_overlay_triggered.connect(
             self.toggle_overlay, Qt.ConnectionType.QueuedConnection
         )
@@ -247,25 +259,25 @@ class GPSOverlay(QMainWindow):
         )
 
     def _on_hotkey_save_position(self):
-        """Capture les coords courantes au moment exact de l'appui.
+        """Captures current coordinates at exact press moment.
 
-        Si la lecture OCR est trop ancienne (rouge), refuse l'enregistrement et
-        affiche un message dans l'overlay. Sinon, fige un snapshot pour que la
-        valeur ne change pas pendant que le dialog reste ouvert.
+        If OCR reading is too old (red), rejects save and displays
+        message in overlay. Otherwise, freezes snapshot so value doesn't
+        change while dialog remains open.
         """
-        logger.debug("Hotkey 'save_position' détecté")
+        logger.debug("Hotkey 'save_position' detected")
         age = self._coord_age_s()
         if self.current_data.get("x") is None or age is None:
-            self._show_overlay_message("Aucune position OCR")
+            self._show_overlay_message("No OCR position")
             return
         if age > _QUICK_SAVE_MAX_AGE_S:
-            self._show_overlay_message("Enregistrement rapide impossible")
+            self._show_overlay_message("Quick save not possible")
             return
         self._save_snapshot = dict(self.current_data)
         self.save_point_signal.emit()
 
     def _show_overlay_message(self, text, duration_s=3.0):
-        """Affiche un message éphémère dans nav_label, en rouge."""
+        """Displays ephemeral message in nav_label in red."""
         self._overlay_message = (text, time.monotonic() + duration_s)
         self._refresh_nav_label()
 
@@ -287,20 +299,19 @@ class GPSOverlay(QMainWindow):
         self._worker_busy = False
 
         if "error" in data:
-            # On ne touche pas au texte affiché — il vieillira via la couleur.
+            # Don't touch displayed text — it will age via color.
             self._refresh_pos_color()
             self._refresh_nav_label()
             return
 
-        # Un scan qui retourne None ne doit PAS effacer la dernière valeur connue.
-        # On ne met à jour current_data + texte que si l'OCR a vraiment lu une position.
+        # A scan returning None must NOT erase last known value.
+        # We only update current_data + text if OCR actually read a position.
         if data["x"] is not None:
-            # Rejet par vitesse impossible (Phase B) : si la nouvelle position
-            # impliquerait une vitesse > 100 km/s par rapport au dernier scan,
-            # c'est probablement une hallucination OCR. On garde la valeur
-            # précédente. Hors quantum drive, les vaisseaux SC plafonnent
-            # autour de 1-2 km/s — 100 km/s laisse une marge confortable
-            # pour les sauts post-quantum.
+            # Reject by implausible velocity (Phase B): if new position
+            # implies speed > 100 km/s vs last scan, probably OCR hallucination.
+            # Keep previous value. Outside quantum drive, SC vessels cap
+            # around 1-2 km/s — 100 km/s gives comfortable margin
+            # for post-quantum jumps.
             if self._is_velocity_implausible(data):
                 self._refresh_pos_color()
                 self._refresh_nav_label()
@@ -313,18 +324,17 @@ class GPSOverlay(QMainWindow):
             )
             self._last_coord_ts = time.monotonic()
 
-            # Met à jour le zone tracking de la cible (lock après 1er match,
-            # grace period 3 min sinon — cf. NavigationEngine).
+            # Updates target zone tracking (lock after 1st match,
+            # grace period 3 min otherwise — see NavigationEngine).
             self.nav.update_zone_tracking(data)
 
             self._update_bearing_state(data)
 
             dist_km = self.nav.calculate_distance(data)
             if dist_km is None:
-                # Distance temporairement indisponible (ex: OOC mal lu à ce
-                # tick) — on garde la dernière valeur connue plutôt que
-                # d'effacer l'affichage. Le coloring temporel signale déjà
-                # la fraîcheur des données.
+                # Distance temporarily unavailable (e.g., OOC misread this tick)
+                # — keep last known value rather than clearing display.
+                # Temporal coloring already signals data freshness.
                 pass
             elif (
                 not self._velocity_tracker.is_moving
@@ -332,10 +342,9 @@ class GPSOverlay(QMainWindow):
             ):
                 self._smoothed_distance_km = dist_km
             else:
-                # Snap-on-large-jump : à l'arrivée sur une cible, le tracker met
-                # 1-2s à passer is_moving=False, et l'EMA traîne (ex: cible
-                # affichée à 4.68km alors qu'on est à 18m). Si l'écart relatif
-                # est important, on bypass l'EMA.
+                # Snap-on-large-jump: when arriving at target, tracker takes
+                # 1-2s to set is_moving=False, and EMA lags (e.g., target
+                # shows 4.68km when at 18m). If relative gap is large, bypass EMA.
                 prev = self._smoothed_distance_km
                 relative_jump = abs(dist_km - prev) / max(prev, 0.001)
                 if relative_jump > 0.3:
@@ -345,37 +354,37 @@ class GPSOverlay(QMainWindow):
                     self._smoothed_distance_km = a * dist_km + (1 - a) * prev
             self._last_raw_distance_km = dist_km
 
-        # Toujours rafraîchir la couleur (vieillissement), même sans nouvelles données.
+        # Always refresh color (aging), even without new data.
         self._refresh_pos_color()
         self._refresh_nav_label()
 
     def _coord_age_s(self):
-        """Âge (s) du dernier OCR valide, ou None si aucun encore."""
+        """Age (s) of last valid OCR, or None if none yet."""
         if self._last_coord_ts is None:
             return None
         return time.monotonic() - self._last_coord_ts
 
-    # Vitesse maximale plausible entre deux scans (km/s).
-    # Hors quantum drive, les vaisseaux SC font ~1-2 km/s. 100 km/s laisse
-    # de la marge pour la sortie de quantum, sans accepter les sauts d'OCR.
+    # Maximum plausible speed between two scans (km/s).
+    # Outside quantum drive, SC vessels do ~1-2 km/s. 100 km/s gives
+    # margin for quantum exit without accepting OCR jumps.
     _MAX_PLAUSIBLE_SPEED_KM_S = 100.0
 
     def _is_velocity_implausible(self, new_data):
-        """Vrai si la nouvelle position implique un saut physiquement impossible.
+        """True if new position implies physically impossible jump.
 
-        Compare la position courante (`current_data`) à la nouvelle (`new_data`)
-        en utilisant le delta temps depuis `_last_coord_ts`. Rejette si la
-        vitesse implicite dépasse `_MAX_PLAUSIBLE_SPEED_KM_S`.
+        Compares current position (`current_data`) to new (`new_data`)
+        using time delta from `_last_coord_ts`. Rejects if
+        implied speed exceeds `_MAX_PLAUSIBLE_SPEED_KM_S`.
 
-        Tolère :
-          - le premier scan (pas de référence) → False ;
-          - un changement d'OOC (téléportation légitime via QT) → False ;
-          - un long écart de temps (> 5 s, on a peut-être manqué le saut) → False.
+        Tolerates:
+          - first scan (no reference) → False;
+          - OOC change (legitimate teleport via QT) → False;
+          - long time gap (> 5 s, we may have missed jump) → False.
         """
         if self.current_data.get("x") is None or self._last_coord_ts is None:
             return False
-        # Changement d'OOC : on ne compare pas, le repère a changé.
-        # Comparaison fuzzy pour tolérer les variations OCR du nom de zone.
+        # OOC change: don't compare, frame changed.
+        # Fuzzy comparison to tolerate OCR variations in zone name.
         new_ooc = new_data.get("ooc")
         cur_ooc = self.current_data.get("ooc")
         if new_ooc and cur_ooc and not _zones_match(new_ooc, cur_ooc):
@@ -390,29 +399,29 @@ class GPSOverlay(QMainWindow):
         speed = dist_km / dt
         if speed > self._MAX_PLAUSIBLE_SPEED_KM_S:
             logger.warning(
-                f"Rejet OCR : vitesse implausible {speed:.1f} km/s "
-                f"(Δ={dist_km:.2f} km en {dt:.2f} s)"
+                f"OCR rejection: implausible speed {speed:.1f} km/s "
+                f"(Δ={dist_km:.2f} km in {dt:.2f} s)"
             )
             return True
         return False
 
     def _tick_visual_refresh(self):
-        """Recolorise pos_label et nav_label sans déclencher d'OCR.
+        """Recolors pos_label and nav_label without triggering OCR.
 
-        Découplé du worker pour que la transition vert→orange→rouge reste
-        fluide indépendamment de la cadence ou des échecs OCR.
+        Decoupled from worker so green→orange→red transition remains
+        smooth independent of cadence or OCR failures.
         """
         self._refresh_pos_color()
         self._refresh_nav_label()
 
     def _refresh_pos_color(self):
-        """Met à jour uniquement la couleur du pos_label selon l'âge des coords."""
+        """Updates only pos_label color based on coordinate age."""
         age = self._coord_age_s()
         if age is None:
             color = "#666666"
             text = self.pos_label.text()
-            if not text or text == "Scan en cours...":
-                self.pos_label.setText("Scan en cours...")
+            if not text or text == "Scanning...":
+                self.pos_label.setText("Scanning...")
         else:
             color = _age_to_color(age)
         self.pos_label.setStyleSheet(
@@ -421,16 +430,16 @@ class GPSOverlay(QMainWindow):
         )
 
     def _update_bearing_state(self, data):
-        """Met à jour la vélocité et les offsets bearing depuis les coords OCR."""
-        # Si l'OOC a changé, les coords sont dans un repère différent → reset
-        # du tracker pour éviter une vélocité aberrante. On utilise une
-        # comparaison fuzzy pour ignorer les variations OCR du nom de zone.
+        """Updates velocity and bearing offsets from OCR coordinates."""
+        # If OOC changed, coordinates are in different frame → reset
+        # tracker to avoid spurious velocity. Uses fuzzy comparison
+        # to ignore OCR variations in zone name.
         current_ooc = data.get("ooc")
         if current_ooc is not None and not _zones_match(current_ooc, self._last_known_ooc or ""):
             if self._last_known_ooc is not None:
                 logger.info(
-                    f"Changement de zone OOC : {self._last_known_ooc} → {current_ooc}, "
-                    f"reset du VelocityTracker"
+                    f"OOC zone change: {self._last_known_ooc} → {current_ooc}, "
+                    f"VelocityTracker reset"
                 )
                 self._velocity_tracker.reset()
             self._last_known_ooc = current_ooc
@@ -439,6 +448,14 @@ class GPSOverlay(QMainWindow):
             self._velocity_tracker.add_sample(
                 data["x"], data["y"], data["z"], time.monotonic()
             )
+            if self.nav.target:
+                logger.debug(
+                    "OCR Position: X=%.2f Y=%.2f Z=%.2f | "
+                    "Target '%s': X=%.2f Y=%.2f Z=%.2f",
+                    data["x"], data["y"], data["z"],
+                    self.nav.target.get("name", "?"),
+                    self.nav.target["x"], self.nav.target["y"], self.nav.target["z"],
+                )
 
         velocity = self._velocity_tracker.velocity if self._velocity_tracker.is_moving else None
 
@@ -453,8 +470,13 @@ class GPSOverlay(QMainWindow):
         if bearing is None:
             return
         yaw_off, pitch_off = bearing
+        logger.debug(
+            "Velocity bearing: vel=(%.3f,%.3f,%.3f) km/s "
+            "→ yaw_off=%.1f° pitch_off=%.1f°",
+            velocity[0], velocity[1], velocity[2], yaw_off, pitch_off,
+        )
 
-        # Skip-on-stable + EMA avec wrap-around
+        # Skip-on-stable + EMA with wrap-around
         if (
             self._last_raw_yaw_off == yaw_off
             and self._last_raw_pitch_off == pitch_off
@@ -472,10 +494,10 @@ class GPSOverlay(QMainWindow):
         self._last_raw_pitch_off = pitch_off
 
     def _refresh_nav_label(self):
-        """Met à jour nav_label : cible, distance et cap fusionnés."""
+        """Updates nav_label: target, distance and heading merged."""
         _css = "border: none; font-family: 'Consolas', 'Menlo', monospace;"
 
-        # Message éphémère en priorité (ex: "Enregistrement rapide impossible").
+        # Ephemeral message takes priority (e.g., "Quick save not possible").
         if self._overlay_message is not None:
             text, expire_ts = self._overlay_message
             if time.monotonic() < expire_ts:
@@ -487,7 +509,7 @@ class GPSOverlay(QMainWindow):
             self._overlay_message = None
 
         if not self.nav.target:
-            self.nav_label.setText("PAS DE CIBLE")
+            self.nav_label.setText("NO TARGET")
             self.nav_label.setStyleSheet(f"color: #555555; font-size: 13px; {_css}")
             return
 
@@ -495,18 +517,18 @@ class GPSOverlay(QMainWindow):
         current_ooc = self.current_data.get("ooc")
 
         if target_ooc is None:
-            self.nav_label.setText(f"▶ {self.nav.target['name']}\n  POI legacy — recréer")
+            self.nav_label.setText(f"▶ {self.nav.target['name']}\n  Legacy POI — recreate")
             self.nav_label.setStyleSheet(f"color: #ffaa00; font-size: 13px; {_css}")
             return
 
-        # Logique zone tracking : on assume in-zone tant que la grace period
-        # n'est pas expirée. Une fois locké (1er match OCR), définitif.
-        # Sinon, après 3 min sans match, on affiche un avertissement hors zone.
+        # Zone tracking logic: assume in-zone while grace period active.
+        # Once locked (1st OCR match), permanent. Otherwise after 3 min without
+        # match, display out-of-zone warning.
         if not self.nav.is_target_in_same_ooc(self.current_data):
             self.nav_label.setText(
                 f"▶ {self.nav.target['name']}\n"
                 f"  zone: {_fmt_ooc(target_ooc)}\n"
-                f"  actuel: {_fmt_ooc(current_ooc) if current_ooc else '?'}"
+                f"  current: {_fmt_ooc(current_ooc) if current_ooc else '?'}"
             )
             self.nav_label.setStyleSheet(f"color: #ffaa00; font-size: 12px; {_css}")
             return
@@ -518,28 +540,36 @@ class GPSOverlay(QMainWindow):
             self.nav_label.setStyleSheet(f"color: #555555; font-size: 14px; {_css}")
             return
 
-        # Couleur de fiabilité interpolée linéairement sur l'âge du dernier OCR.
+        # Reliability color linearly interpolated on age of last OCR.
         age_color = _age_to_color(self._coord_age_s())
 
         dist_str = format_distance(self._smoothed_distance_km)
 
-        # Flèche compacte combinant les 3 axes monde (XY direction + Z élévation).
+        # Navigation arrow to target (SC frame: X inverted corrected).
         abs_bearing = calculate_absolute_bearing(self.current_data, self.nav.target)
         arrow_str = ""
         if abs_bearing:
+            logger.debug(
+                "Absolute bearing to '%s': dx=%.2f dy=%.2f dz=%.2f "
+                "yaw=%.1f° pitch=%.1f° dist=%.2f km",
+                self.nav.target.get("name", "?"),
+                abs_bearing["dx"], abs_bearing["dy"], abs_bearing["dz"],
+                abs_bearing["yaw_deg"], abs_bearing["pitch_deg"],
+                abs_bearing["distance_km"],
+            )
             arrow = _world_arrow(abs_bearing)
             if arrow:
                 arrow_str = f"  {arrow}"
 
-        # Cap yaw/pitch relatif au déplacement — uniquement disponible en mouvement.
-        # La distance s'affiche TOUJOURS, indépendamment du cap.
+        # Yaw/pitch heading relative to movement — only available while moving.
+        # Distance ALWAYS displays, independent of heading.
         cap_str = ""
         if self._velocity_tracker.is_moving and self._smoothed_yaw_off is not None:
             yaw = self._smoothed_yaw_off
             pitch = self._smoothed_pitch_off
             max_off = max(abs(yaw), abs(pitch))
             if max_off < 5.0:
-                cap_str = "   ✓ aligné"
+                cap_str = "   ✓ aligned"
             else:
                 yaw_arrow = "→" if yaw > 0 else "←"
                 pitch_arrow = "↑" if pitch > 0 else "↓"
@@ -559,12 +589,12 @@ class GPSOverlay(QMainWindow):
             self.show()
 
     def _load_app_icon(self):
-        """Charge l'icône SpaceDrive depuis assets/, ou fallback système.
+        """Loads SpaceDrive icon from assets/, or system fallback.
 
-        Cherche dans l'ordre :
-          1. assets/icon.ico  (Windows, multi-tailles natives)
-          2. assets/icon.png  (cross-platform haute résolution)
-          3. icône standard SP_ComputerIcon (fallback ultime)
+        Looks in order:
+          1. assets/icon.ico  (Windows, native multi-size)
+          2. assets/icon.png  (cross-platform high resolution)
+          3. standard SP_ComputerIcon (ultimate fallback)
         """
         if getattr(sys, 'frozen', False):
             base_dir = os.path.dirname(sys.executable)
@@ -579,18 +609,18 @@ class GPSOverlay(QMainWindow):
                     logger.debug(f"Icône application : {path}")
                     return icon
 
-        logger.warning("Aucune icône trouvée dans assets/, fallback SP_ComputerIcon")
+        logger.warning("No icon found in assets/, fallback SP_ComputerIcon")
         return self.style().standardIcon(self.style().StandardPixmap.SP_ComputerIcon)
 
     def setup_tray_icon(self):
         self.tray_icon = QSystemTrayIcon(self)
         self.tray_icon.setIcon(self._load_app_icon())
-        # Aussi définie comme icône de la fenêtre (taskbar, alt-tab, etc.)
+        # Also set as window icon (taskbar, alt-tab, etc.)
         self.setWindowIcon(self.tray_icon.icon())
 
         tray_menu = QMenu()
 
-        self.toggle_action = QAction("Masquer l'overlay", self)
+        self.toggle_action = QAction("Hide overlay", self)
         self.toggle_action.triggered.connect(self.toggle_overlay)
         tray_menu.addAction(self.toggle_action)
 
@@ -598,39 +628,39 @@ class GPSOverlay(QMainWindow):
         options_action.triggered.connect(self.show_options_window)
         tray_menu.addAction(options_action)
 
-        poi_action = QAction("Gestion des POI...", self)
+        poi_action = QAction("POI Manager...", self)
         poi_action.triggered.connect(self.show_poi_manager_window)
         tray_menu.addAction(poi_action)
 
-        reset_gps_action = QAction("Réinitialiser le GPS", self)
+        reset_gps_action = QAction("Reset GPS", self)
         reset_gps_action.triggered.connect(self.reset_velocity_tracker)
         tray_menu.addAction(reset_gps_action)
 
         tray_menu.addSeparator()
 
-        poi_menu = tray_menu.addMenu("Points d'intérêt")
+        poi_menu = tray_menu.addMenu("Points of Interest")
 
-        save_action = QAction("Enregistrer position", self)
+        save_action = QAction("Save position", self)
         save_action.triggered.connect(self.prompt_save_point)
         poi_menu.addAction(save_action)
 
-        select_poi_action = QAction("Choisir une destination...", self)
+        select_poi_action = QAction("Choose destination...", self)
         select_poi_action.triggered.connect(self.show_poi_selector)
         poi_menu.addAction(select_poi_action)
 
-        data_menu = tray_menu.addMenu("Données")
+        data_menu = tray_menu.addMenu("Data")
 
-        export_action = QAction("Exporter mes points (JSON)", self)
+        export_action = QAction("Export points (JSON)", self)
         export_action.triggered.connect(self.export_data)
         data_menu.addAction(export_action)
 
-        import_action = QAction("Importer des points (JSON)", self)
+        import_action = QAction("Import points (JSON)", self)
         import_action.triggered.connect(self.import_data)
         data_menu.addAction(import_action)
 
         tray_menu.addSeparator()
 
-        quit_action = QAction("Quitter", self)
+        quit_action = QAction("Quit", self)
         quit_action.triggered.connect(self.quit_application)
         tray_menu.addAction(quit_action)
 
@@ -639,7 +669,7 @@ class GPSOverlay(QMainWindow):
 
         self.tray_icon.showMessage(
             "SpaceDrive GPS",
-            "Overlay GPS actif !",
+            "GPS overlay active!",
             QSystemTrayIcon.MessageIcon.Information,
             2000
         )
@@ -648,16 +678,16 @@ class GPSOverlay(QMainWindow):
         if self.is_visible:
             self.hide()
             self.is_visible = False
-            self.toggle_action.setText("Afficher l'overlay")
+            self.toggle_action.setText("Show overlay")
         else:
             self.show()
             self.is_visible = True
-            self.toggle_action.setText("Masquer l'overlay")
+            self.toggle_action.setText("Hide overlay")
 
     def _bring_dialog_to_front(self, dialog):
-        """Force le dialogue au premier plan malgré l'overlay always-on-top."""
+        """Forces dialog to foreground despite overlay always-on-top."""
         dialog.show()
-        # Activation différée pour que Qt traite l'événement de show() avant
+        # Deferred activation so Qt processes show() event first
         QTimer.singleShot(0, dialog.raise_)
         QTimer.singleShot(0, dialog.activateWindow)
 
@@ -668,16 +698,16 @@ class GPSOverlay(QMainWindow):
                 self.options_window.options_saved.connect(self._on_options_saved)
             self._bring_dialog_to_front(self.options_window)
         except Exception:
-            logger.exception("Erreur ouverture options")
+            logger.exception("Error opening options")
             self.tray_icon.showMessage(
-                "Erreur",
-                "Impossible d'ouvrir la fenêtre d'options. Voir spacedrive.log.",
+                "Error",
+                "Could not open options window. See spacedrive.log.",
                 QSystemTrayIcon.MessageIcon.Critical,
                 3000,
             )
 
     def show_poi_manager_window(self):
-        logger.debug("Ouverture de la fenêtre POI manager demandée")
+        logger.debug("POI manager window opening requested")
         try:
             if self.poi_manager_window is None or not self.poi_manager_window.isVisible():
                 self.poi_manager_window = POIManagerWindow(self.nav, self)
@@ -685,10 +715,10 @@ class GPSOverlay(QMainWindow):
                 self.poi_manager_window.goto_requested.connect(self._on_goto_requested)
             self._bring_dialog_to_front(self.poi_manager_window)
         except Exception:
-            logger.exception("Erreur ouverture POI manager")
+            logger.exception("Error opening POI manager")
             self.tray_icon.showMessage(
-                "Erreur",
-                "Impossible d'ouvrir la gestion des POI. Voir spacedrive.log.",
+                "Error",
+                "Could not open POI manager. See spacedrive.log.",
                 QSystemTrayIcon.MessageIcon.Critical,
                 3000,
             )
@@ -696,8 +726,8 @@ class GPSOverlay(QMainWindow):
     def _on_options_saved(self):
         scan_interval = self.config_manager.get_scan_interval()
         self.timer.setInterval(scan_interval)
-        logger.info(f"Intervalle de scan mis à jour : {scan_interval} ms")
-        # Rafraîchir les hotkeys au cas où ils ont été modifiés
+        logger.info(f"Scan interval updated: {scan_interval} ms")
+        # Refresh hotkeys in case they were modified
         self.hotkey_listener.reload_hotkeys()
 
     def _on_destination_changed(self, poi):
@@ -709,7 +739,7 @@ class GPSOverlay(QMainWindow):
         self._last_raw_yaw_off = None
         self._last_raw_pitch_off = None
         self._refresh_nav_label()
-        logger.info(f"Destination définie : {poi['name']}")
+        logger.info(f"Destination set: {poi['name']}")
 
     def _on_goto_requested(self, poi):
         self.nav.set_target(poi["x"], poi["y"], poi["z"], poi["name"], ooc=poi.get("ooc"))
@@ -724,7 +754,7 @@ class GPSOverlay(QMainWindow):
             self.toggle_overlay()
 
     def reset_velocity_tracker(self):
-        """Oublie l'historique de positions (utile après un saut quantique)."""
+        """Forgets position history (useful after quantum jump)."""
         self._velocity_tracker.reset()
         self._smoothed_yaw_off = None
         self._smoothed_pitch_off = None
@@ -732,36 +762,36 @@ class GPSOverlay(QMainWindow):
         self._last_raw_pitch_off = None
         self._refresh_nav_label()
         self.tray_icon.showMessage(
-            "GPS réinitialisé",
-            "Historique de mouvement effacé. Bouge pour recalculer la direction.",
+            "GPS reset",
+            "Movement history cleared. Move to recalculate direction.",
             QSystemTrayIcon.MessageIcon.Information,
             2500,
         )
-        logger.info("VelocityTracker réinitialisé")
+        logger.info("VelocityTracker reset")
 
     def prompt_save_point(self):
-        logger.debug("prompt_save_point déclenché")
-        # Si appel via hotkey, snapshot figé au moment de l'appui.
-        # Si appel via menu tray, on prend l'état courant.
+        logger.debug("prompt_save_point triggered")
+        # If called via hotkey, snapshot frozen at press moment.
+        # If called via tray menu, take current state.
         snap = self._save_snapshot if self._save_snapshot is not None else self.current_data
-        self._save_snapshot = None  # consommé
+        self._save_snapshot = None  # consumed
 
         if snap.get("x") is None:
             self.tray_icon.showMessage(
-                "Aucune position",
-                "Les coordonnées ne sont pas encore détectées par l'OCR.",
+                "No position",
+                "Coordinates not yet detected by OCR.",
                 QSystemTrayIcon.MessageIcon.Warning,
                 3000,
             )
             return
 
         try:
-            # QInputDialog en instance pour pouvoir forcer l'always-on-top
-            # (l'overlay parent a WindowTransparentForInput, le dialogue par
-            # défaut peut apparaître sans focus derrière l'overlay)
+            # QInputDialog instance to force always-on-top
+            # (overlay parent has WindowTransparentForInput, default dialog
+            # may appear unfocused behind overlay)
             dialog = QInputDialog(self)
-            dialog.setWindowTitle("Enregistrer Point")
-            dialog.setLabelText("Nom du point d'intérêt :")
+            dialog.setWindowTitle("Save Point")
+            dialog.setLabelText("Point of interest name:")
             dialog.setInputMode(QInputDialog.InputMode.TextInput)
             dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
             dialog.setModal(True)
@@ -782,18 +812,18 @@ class GPSOverlay(QMainWindow):
                 snap.get("location", "Unknown"),
                 ooc=ooc,
             )
-            ooc_str = f" ({ooc})" if ooc else " (zone inconnue)"
+            ooc_str = f" ({ooc})" if ooc else " (unknown zone)"
             self.tray_icon.showMessage(
-                "Succès",
-                f"Point '{name}' enregistré{ooc_str}.",
+                "Success",
+                f"Point '{name}' saved{ooc_str}.",
                 QSystemTrayIcon.MessageIcon.Information,
                 2500,
             )
         except Exception:
-            logger.exception("Erreur enregistrement position")
+            logger.exception("Error saving position")
             self.tray_icon.showMessage(
-                "Erreur",
-                "Impossible d'enregistrer la position. Voir spacedrive.log.",
+                "Error",
+                "Could not save position. See spacedrive.log.",
                 QSystemTrayIcon.MessageIcon.Critical,
                 3000,
             )
@@ -801,7 +831,7 @@ class GPSOverlay(QMainWindow):
     def show_poi_selector(self):
         pois = self.nav.get_all_poi_for_location("All")
         if not pois:
-            self.tray_icon.showMessage("Info", "Aucun point enregistré.", QSystemTrayIcon.MessageIcon.Information)
+            self.tray_icon.showMessage("Info", "No points registered.", QSystemTrayIcon.MessageIcon.Information)
             return
 
         menu = QMenu()
@@ -813,16 +843,16 @@ class GPSOverlay(QMainWindow):
         menu.exec(self.tray_icon.geometry().center())
 
     def export_data(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Exporter les points", "", "JSON Files (*.json)")
+        path, _ = QFileDialog.getSaveFileName(self, "Export points", "", "JSON Files (*.json)")
         if path:
             if self.nav.export_points(path):
-                self.tray_icon.showMessage("Succès", "Points exportés.", QSystemTrayIcon.MessageIcon.Information)
+                self.tray_icon.showMessage("Success", "Points exported.", QSystemTrayIcon.MessageIcon.Information)
 
     def import_data(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Importer des points", "", "JSON Files (*.json)")
+        path, _ = QFileDialog.getOpenFileName(self, "Import points", "", "JSON Files (*.json)")
         if path:
             if self.nav.import_points(path):
-                self.tray_icon.showMessage("Succès", "Points importés.", QSystemTrayIcon.MessageIcon.Information)
+                self.tray_icon.showMessage("Success", "Points imported.", QSystemTrayIcon.MessageIcon.Information)
 
     def quit_application(self):
         self.hotkey_listener.cleanup()

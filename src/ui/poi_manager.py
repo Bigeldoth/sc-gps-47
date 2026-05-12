@@ -1,6 +1,6 @@
 """
-Gestionnaire de Points d'Intérêt pour SpaceDrive GPS.
-Permet de rechercher, ajouter, éditer, supprimer et sélectionner des POI.
+POI (Points of Interest) Manager for SpaceDrive GPS.
+Allows searching, adding, editing, deleting, and selecting POIs.
 """
 import logging
 import json
@@ -18,46 +18,46 @@ logger = logging.getLogger(__name__)
 
 class POIManagerWindow(QDialog):
     """
-    Fenêtre de gestion des Points d'Intérêt avec style sombre minimaliste.
-    Permet de :
-    - Rechercher des POI
-    - Ajouter/Éditer/Supprimer des POI
-    - Définir une destination
-    - Naviguer vers un POI
+    POI Manager window with minimalist dark theme.
+    Allows:
+    - Searching POIs
+    - Adding/Editing/Deleting POIs
+    - Setting a destination
+    - Navigating to a POI
     """
-    
-    # Signaux émis lors des actions
-    destination_changed = pyqtSignal(dict)  # Émet le POI sélectionné
-    goto_requested = pyqtSignal(dict)  # Émet le POI vers lequel naviguer
-    
+
+    # Signals emitted on actions
+    destination_changed = pyqtSignal(dict)  # Emits selected POI
+    goto_requested = pyqtSignal(dict)  # Emits POI to navigate to
+
     def __init__(self, navigation_engine, parent=None):
         """
-        Initialise la fenêtre de gestion des POI.
-        
+        Initializes the POI manager window.
+
         Args:
-            navigation_engine: Instance de NavigationEngine
-            parent: Widget parent (optionnel)
+            navigation_engine: NavigationEngine instance
+            parent: Parent widget (optional)
         """
         super().__init__(parent)
         self.nav = navigation_engine
-        self.all_pois = []  # Liste complète des POI
-        self.filtered_pois = []  # Liste filtrée par la recherche
-        
-        self.setWindowTitle("Gestion des Points d'Intérêt")
+        self.all_pois = []  # Complete list of POIs
+        self.filtered_pois = []  # List filtered by search
+
+        self.setWindowTitle("POI Manager")
         self.setMinimumWidth(800)
         self.setMinimumHeight(600)
-        
-        # Appliquer le thème sombre
+
+        # Apply dark theme
         self._apply_dark_theme()
-        
-        # Créer l'interface
+
+        # Create UI
         self._create_ui()
-        
-        # Charger les POI
+
+        # Load POIs
         self._load_pois()
-    
+
     def _apply_dark_theme(self):
-        """Applique un thème sombre minimaliste à la fenêtre"""
+        """Applies minimalist dark theme to the window"""
         palette = QPalette()
         palette.setColor(QPalette.ColorRole.Window, QColor(30, 30, 30))
         palette.setColor(QPalette.ColorRole.WindowText, QColor(220, 220, 220))
@@ -143,26 +143,26 @@ class POIManagerWindow(QDialog):
         """)
     
     def _create_ui(self):
-        """Crée l'interface utilisateur"""
+        """Creates the user interface"""
         layout = QVBoxLayout()
-        
-        # Barre de recherche
+
+        # Search bar
         search_layout = QHBoxLayout()
-        search_label = QLabel("Rechercher :")
+        search_label = QLabel("Search:")
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Nom, coordonnées ou description...")
+        self.search_input.setPlaceholderText("Name, coordinates or description...")
         self.search_input.textChanged.connect(self._filter_pois)
-        
+
         search_layout.addWidget(search_label)
         search_layout.addWidget(self.search_input)
         layout.addLayout(search_layout)
-        
-        # Tableau des POI
+
+        # POI table
         self.poi_table = QTableWidget()
         self.poi_table.setColumnCount(6)
-        self.poi_table.setHorizontalHeaderLabels(["Nom", "Zone (OOC)", "X", "Y", "Z", "Description"])
+        self.poi_table.setHorizontalHeaderLabels(["Name", "Zone (OOC)", "X", "Y", "Z", "Description"])
 
-        # Configurer les colonnes
+        # Configure columns
         header = self.poi_table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
@@ -170,58 +170,58 @@ class POIManagerWindow(QDialog):
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
-        
-        # Activer le tri
+
+        # Enable sorting
         self.poi_table.setSortingEnabled(True)
-        
-        # Sélection d'une seule ligne à la fois
+
+        # Single row selection at a time
         self.poi_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.poi_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        
-        # Double-clic pour définir comme destination
+
+        # Double-click to set as destination
         self.poi_table.doubleClicked.connect(self._set_as_destination)
-        
+
         self.poi_table.verticalHeader().setVisible(False)
-        
+
         layout.addWidget(self.poi_table)
-        
-        # Boutons d'action
+
+        # Action buttons
         button_layout = QHBoxLayout()
-        
-        self.add_button = QPushButton("Ajouter")
+
+        self.add_button = QPushButton("Add")
         self.add_button.clicked.connect(self._add_poi)
         button_layout.addWidget(self.add_button)
-        
-        self.edit_button = QPushButton("Éditer")
+
+        self.edit_button = QPushButton("Edit")
         self.edit_button.clicked.connect(self._edit_poi)
         button_layout.addWidget(self.edit_button)
-        
-        self.delete_button = QPushButton("Supprimer")
+
+        self.delete_button = QPushButton("Delete")
         self.delete_button.setObjectName("delete_button")
         self.delete_button.clicked.connect(self._delete_poi)
         button_layout.addWidget(self.delete_button)
-        
+
         button_layout.addStretch()
-        
-        self.destination_button = QPushButton("Définir comme destination")
+
+        self.destination_button = QPushButton("Set as destination")
         self.destination_button.clicked.connect(self._set_as_destination)
         button_layout.addWidget(self.destination_button)
-        
-        self.goto_button = QPushButton("Aller")
+
+        self.goto_button = QPushButton("Go")
         self.goto_button.setObjectName("goto_button")
         self.goto_button.clicked.connect(self._goto_poi)
         button_layout.addWidget(self.goto_button)
-        
+
         layout.addLayout(button_layout)
-        
+
         self.setLayout(layout)
     
     def _load_pois(self):
-        """Charge tous les POI depuis le NavigationEngine"""
+        """Loads all POIs from the NavigationEngine"""
         try:
             self.all_pois = []
-            
-            # Charger les POI du système (depuis poi.json)
+
+            # Load system POIs (from poi.json)
             if isinstance(self.nav.poi_data, list):
                 for system in self.nav.poi_data:
                     if not isinstance(system, dict):
@@ -244,9 +244,9 @@ class POIManagerWindow(QDialog):
                             }
                             self.all_pois.append(poi_entry)
             else:
-                logger.warning("Structure de poi_data invalide (attendu: liste)")
-            
-            # Charger les POI utilisateur
+                logger.warning("Invalid poi_data structure (expected: list)")
+
+            # Load user POIs
             for poi in self.nav.user_poi or []:
                 if not isinstance(poi, dict):
                     continue
@@ -261,21 +261,21 @@ class POIManagerWindow(QDialog):
                     "source": "user",
                 }
                 self.all_pois.append(poi_entry)
-            
-            # Afficher tous les POI
+
+            # Display all POIs
             self.filtered_pois = self.all_pois.copy()
             self._update_table()
-            
-            logger.info(f"{len(self.all_pois)} POI chargés")
+
+            logger.info(f"{len(self.all_pois)} POIs loaded")
         except Exception as e:
-            logger.exception(f"Erreur lors du chargement des POI : {e}")
-            QMessageBox.critical(self, "Erreur", f"Impossible de charger les POI : {str(e)}")
+            logger.exception(f"Error loading POIs: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to load POIs: {str(e)}")
     
     def _update_table(self):
-        """Met à jour le tableau avec les POI filtrés"""
-        self.poi_table.setSortingEnabled(False)  # Désactiver le tri pendant la mise à jour
+        """Updates the table with filtered POIs"""
+        self.poi_table.setSortingEnabled(False)  # Disable sorting during update
         self.poi_table.setRowCount(len(self.filtered_pois))
-        
+
         def fmt(value):
             try:
                 return f"{float(value):.2f}"
@@ -283,17 +283,17 @@ class POIManagerWindow(QDialog):
                 return "?"
 
         for row, poi in enumerate(self.filtered_pois):
-            # Nom
+            # Name
             name_item = QTableWidgetItem(str(poi.get("name", "")))
-            name_item.setData(Qt.ItemDataRole.UserRole, poi)  # Stocker le POI complet
+            name_item.setData(Qt.ItemDataRole.UserRole, poi)  # Store complete POI
             self.poi_table.setItem(row, 0, name_item)
 
-            # Zone OOC ('legacy' si absent — POI sauvegardé avant le refactor)
+            # OOC Zone ('legacy' if absent — POI saved before refactor)
             ooc_str = poi.get("ooc") or "(legacy)"
             ooc_item = QTableWidgetItem(ooc_str)
             self.poi_table.setItem(row, 1, ooc_item)
 
-            # Coordonnées
+            # Coordinates
             x_item = QTableWidgetItem(fmt(poi.get("x")))
             x_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             self.poi_table.setItem(row, 2, x_item)
@@ -310,12 +310,12 @@ class POIManagerWindow(QDialog):
             desc_item = QTableWidgetItem(str(poi.get("description", "")))
             self.poi_table.setItem(row, 5, desc_item)
 
-        self.poi_table.setSortingEnabled(True)  # Réactiver le tri
+        self.poi_table.setSortingEnabled(True)  # Re-enable sorting
     
     def _filter_pois(self, search_text):
-        """Filtre les POI selon le texte de recherche"""
+        """Filters POIs according to search text"""
         search_text = search_text.lower()
-        
+
         if not search_text:
             self.filtered_pois = self.all_pois.copy()
         else:
@@ -327,26 +327,26 @@ class POIManagerWindow(QDialog):
                 or search_text in str(poi["y"])
                 or search_text in str(poi["z"])
             ]
-        
+
         self._update_table()
-    
+
     def _get_selected_poi(self):
-        """Retourne le POI sélectionné ou None"""
+        """Returns the selected POI or None"""
         selected_rows = self.poi_table.selectedIndexes()
         if not selected_rows:
             return None
-        
+
         row = selected_rows[0].row()
         name_item = self.poi_table.item(row, 0)
         return name_item.data(Qt.ItemDataRole.UserRole)
-    
+
     def _add_poi(self):
-        """Ouvre un dialogue pour ajouter un nouveau POI"""
+        """Opens a dialog to add a new POI"""
         dialog = POIEditDialog(None, self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             poi_data = dialog.get_poi_data()
-            
-            # Ajouter au NavigationEngine
+
+            # Add to NavigationEngine
             self.nav.add_user_point(
                 poi_data["name"],
                 poi_data["x"],
@@ -354,29 +354,29 @@ class POIManagerWindow(QDialog):
                 poi_data["z"],
                 poi_data.get("location", "Unknown")
             )
-            
-            # Recharger les POI
+
+            # Reload POIs
             self._load_pois()
-            
-            logger.info(f"POI ajouté : {poi_data['name']}")
-            QMessageBox.information(self, "Succès", f"POI '{poi_data['name']}' ajouté avec succès.")
+
+            logger.info(f"POI added: {poi_data['name']}")
+            QMessageBox.information(self, "Success", f"POI '{poi_data['name']}' added successfully.")
     
     def _edit_poi(self):
-        """Ouvre un dialogue pour éditer le POI sélectionné"""
+        """Opens a dialog to edit the selected POI"""
         poi = self._get_selected_poi()
         if not poi:
-            QMessageBox.warning(self, "Attention", "Veuillez sélectionner un POI à éditer.")
+            QMessageBox.warning(self, "Warning", "Please select a POI to edit.")
             return
-        
+
         if poi["source"] == "system":
-            QMessageBox.warning(self, "Attention", "Les POI système ne peuvent pas être édités.")
+            QMessageBox.warning(self, "Warning", "System POIs cannot be edited.")
             return
-        
+
         dialog = POIEditDialog(poi, self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             new_data = dialog.get_poi_data()
-            
-            # Trouver et mettre à jour le POI dans user_poi
+
+            # Find and update the POI in user_poi
             for i, user_poi in enumerate(self.nav.user_poi):
                 if (user_poi["name"] == poi["name"] and
                     user_poi["x"] == poi["x"] and
@@ -391,38 +391,38 @@ class POIManagerWindow(QDialog):
                         "location": new_data.get("location", "Unknown")
                     }
                     break
-            
-            # Sauvegarder
+
+            # Save
             self.nav.save_user_poi()
-            
-            # Recharger les POI
+
+            # Reload POIs
             self._load_pois()
-            
-            logger.info(f"POI édité : {new_data['name']}")
-            QMessageBox.information(self, "Succès", f"POI '{new_data['name']}' modifié avec succès.")
+
+            logger.info(f"POI edited: {new_data['name']}")
+            QMessageBox.information(self, "Success", f"POI '{new_data['name']}' modified successfully.")
     
     def _delete_poi(self):
-        """Supprime le POI sélectionné après confirmation"""
+        """Deletes the selected POI after confirmation"""
         poi = self._get_selected_poi()
         if not poi:
-            QMessageBox.warning(self, "Attention", "Veuillez sélectionner un POI à supprimer.")
+            QMessageBox.warning(self, "Warning", "Please select a POI to delete.")
             return
-        
+
         if poi["source"] == "system":
-            QMessageBox.warning(self, "Attention", "Les POI système ne peuvent pas être supprimés.")
+            QMessageBox.warning(self, "Warning", "System POIs cannot be deleted.")
             return
-        
-        # Dialogue de confirmation
+
+        # Confirmation dialog
         reply = QMessageBox.question(
             self,
             "Confirmation",
-            f"Êtes-vous sûr de vouloir supprimer le POI '{poi['name']}' ?",
+            f"Are you sure you want to delete POI '{poi['name']}'?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No
         )
-        
+
         if reply == QMessageBox.StandardButton.Yes:
-            # Supprimer du NavigationEngine
+            # Delete from NavigationEngine
             self.nav.user_poi = [
                 p for p in self.nav.user_poi
                 if not (p["name"] == poi["name"] and
@@ -430,158 +430,158 @@ class POIManagerWindow(QDialog):
                        p["y"] == poi["y"] and
                        p["z"] == poi["z"])
             ]
-            
-            # Sauvegarder
+
+            # Save
             self.nav.save_user_poi()
-            
-            # Recharger les POI
+
+            # Reload POIs
             self._load_pois()
-            
-            logger.info(f"POI supprimé : {poi['name']}")
-            QMessageBox.information(self, "Succès", f"POI '{poi['name']}' supprimé avec succès.")
-    
+
+            logger.info(f"POI deleted: {poi['name']}")
+            QMessageBox.information(self, "Success", f"POI '{poi['name']}' deleted successfully.")
+
     def _set_as_destination(self):
-        """Définit le POI sélectionné comme destination"""
+        """Sets the selected POI as destination"""
         poi = self._get_selected_poi()
         if not poi:
-            QMessageBox.warning(self, "Attention", "Veuillez sélectionner un POI.")
+            QMessageBox.warning(self, "Warning", "Please select a POI.")
             return
-        
-        # Émettre le signal
+
+        # Emit signal
         self.destination_changed.emit(poi)
-        
-        logger.info(f"Destination définie : {poi['name']}")
-        QMessageBox.information(self, "Succès", f"Destination définie : {poi['name']}")
-    
+
+        logger.info(f"Destination set: {poi['name']}")
+        QMessageBox.information(self, "Success", f"Destination set: {poi['name']}")
+
     def _goto_poi(self):
-        """Navigue immédiatement vers le POI sélectionné"""
+        """Immediately navigates to the selected POI"""
         poi = self._get_selected_poi()
         if not poi:
-            QMessageBox.warning(self, "Attention", "Veuillez sélectionner un POI.")
+            QMessageBox.warning(self, "Warning", "Please select a POI.")
             return
-        
-        # Émettre les deux signaux
+
+        # Emit both signals
         self.destination_changed.emit(poi)
         self.goto_requested.emit(poi)
-        
-        logger.info(f"Navigation vers : {poi['name']}")
-        QMessageBox.information(self, "Succès", f"Navigation vers {poi['name']} activée.")
-        
-        # Fermer la fenêtre
+
+        logger.info(f"Navigating to: {poi['name']}")
+        QMessageBox.information(self, "Success", f"Navigation to {poi['name']} activated.")
+
+        # Close window
         self.accept()
 
 
 class POIEditDialog(QDialog):
-    """Dialogue pour ajouter ou éditer un POI"""
-    
+    """Dialog for adding or editing a POI"""
+
     def __init__(self, poi_data=None, parent=None):
         super().__init__(parent)
         self.poi_data = poi_data
         self.is_edit = poi_data is not None
-        
-        self.setWindowTitle("Éditer le POI" if self.is_edit else "Ajouter un POI")
+
+        self.setWindowTitle("Edit POI" if self.is_edit else "Add POI")
         self.setModal(True)
         self.setMinimumWidth(400)
-        
-        # Appliquer le même thème
+
+        # Apply same theme
         self.setPalette(parent.palette())
         self.setStyleSheet(parent.styleSheet())
-        
+
         self._create_ui()
-        
+
         if self.is_edit:
             self._load_poi_data()
-    
+
     def _create_ui(self):
-        """Crée l'interface du dialogue"""
+        """Creates the dialog interface"""
         layout = QVBoxLayout()
-        
-        # Nom
+
+        # Name
         name_layout = QHBoxLayout()
-        name_layout.addWidget(QLabel("Nom :"))
+        name_layout.addWidget(QLabel("Name:"))
         self.name_input = QLineEdit()
         name_layout.addWidget(self.name_input)
         layout.addLayout(name_layout)
-        
-        # Coordonnées X
+
+        # Coordinates X
         x_layout = QHBoxLayout()
-        x_layout.addWidget(QLabel("X :"))
+        x_layout.addWidget(QLabel("X:"))
         self.x_input = QLineEdit()
         x_layout.addWidget(self.x_input)
         layout.addLayout(x_layout)
-        
-        # Coordonnées Y
+
+        # Coordinates Y
         y_layout = QHBoxLayout()
-        y_layout.addWidget(QLabel("Y :"))
+        y_layout.addWidget(QLabel("Y:"))
         self.y_input = QLineEdit()
         y_layout.addWidget(self.y_input)
         layout.addLayout(y_layout)
-        
-        # Coordonnées Z
+
+        # Coordinates Z
         z_layout = QHBoxLayout()
-        z_layout.addWidget(QLabel("Z :"))
+        z_layout.addWidget(QLabel("Z:"))
         self.z_input = QLineEdit()
         z_layout.addWidget(self.z_input)
         layout.addLayout(z_layout)
-        
+
         # Location
         location_layout = QHBoxLayout()
-        location_layout.addWidget(QLabel("Localisation :"))
+        location_layout.addWidget(QLabel("Location:"))
         self.location_input = QLineEdit()
-        self.location_input.setPlaceholderText("Ex: MicroTech, Crusader...")
+        self.location_input.setPlaceholderText("E.g.: MicroTech, Crusader...")
         location_layout.addWidget(self.location_input)
         layout.addLayout(location_layout)
-        
+
         # Description
         desc_layout = QHBoxLayout()
-        desc_layout.addWidget(QLabel("Description :"))
+        desc_layout.addWidget(QLabel("Description:"))
         self.desc_input = QLineEdit()
         desc_layout.addWidget(self.desc_input)
         layout.addLayout(desc_layout)
-        
-        # Boutons
+
+        # Buttons
         button_layout = QHBoxLayout()
-        
+
         ok_button = QPushButton("OK")
         ok_button.clicked.connect(self._validate_and_accept)
         button_layout.addWidget(ok_button)
-        
-        cancel_button = QPushButton("Annuler")
+
+        cancel_button = QPushButton("Cancel")
         cancel_button.clicked.connect(self.reject)
         button_layout.addWidget(cancel_button)
-        
+
         layout.addLayout(button_layout)
-        
+
         self.setLayout(layout)
-    
+
     def _load_poi_data(self):
-        """Charge les données du POI dans les champs"""
+        """Loads POI data into the fields"""
         self.name_input.setText(self.poi_data["name"])
         self.x_input.setText(str(self.poi_data["x"]))
         self.y_input.setText(str(self.poi_data["y"]))
         self.z_input.setText(str(self.poi_data["z"]))
         self.location_input.setText(self.poi_data.get("location", ""))
         self.desc_input.setText(self.poi_data.get("description", ""))
-    
+
     def _validate_and_accept(self):
-        """Valide les données et accepte le dialogue"""
-        # Vérifier que tous les champs requis sont remplis
+        """Validates data and accepts the dialog"""
+        # Check that all required fields are filled
         if not self.name_input.text():
-            QMessageBox.warning(self, "Erreur", "Le nom est requis.")
+            QMessageBox.warning(self, "Error", "Name is required.")
             return
-        
+
         try:
             float(self.x_input.text())
             float(self.y_input.text())
             float(self.z_input.text())
         except ValueError:
-            QMessageBox.warning(self, "Erreur", "Les coordonnées doivent être des nombres valides.")
+            QMessageBox.warning(self, "Error", "Coordinates must be valid numbers.")
             return
-        
+
         self.accept()
-    
+
     def get_poi_data(self):
-        """Retourne les données du POI saisies"""
+        """Returns the entered POI data"""
         return {
             "name": self.name_input.text(),
             "x": float(self.x_input.text()),

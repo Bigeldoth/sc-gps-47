@@ -1,4 +1,4 @@
 """
-Package UI pour SpaceDrive GPS.
-Contient les fenêtres d'options et de gestion des POI.
+UI package for SpaceDrive GPS.
+Contains options window and POI manager window.
 """

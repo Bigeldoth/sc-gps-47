@@ -1,36 +1,36 @@
-# Build et déploiement
+# Build and deployment
 
-## Build local (PyInstaller)
+## Local build (PyInstaller)
 
 ```powershell
-# Depuis la racine du projet
+# From project root
 python -m PyInstaller --clean spaceDrive.spec
 ```
 
-**Sortie** : `dist/spaceDrive.exe` (~80 Mo).
+**Output**: `dist/spaceDrive.exe` (~80 MB).
 
-L'exécutable est portable : copie-le où tu veux, double-clic pour lancer. Tesseract OCR doit être installé séparément sur la machine cible (ou bundlé dans le dossier `tesseract/` à côté de l'exe — voir la spec).
+The executable is portable: copy it where you want, double-click to launch. Tesseract OCR must be installed separately on the target machine (or bundled in `tesseract/` folder next to exe — see spec).
 
 ## Build via GitHub Actions
 
-Le workflow `.github/workflows/build.yml` génère automatiquement un exécutable Windows :
-- À chaque push sur `main` ou `develop`.
-- Disponible dans les artefacts du run GitHub Actions.
+The `.github/workflows/build.yml` workflow automatically generates a Windows executable:
+- On every push to `main` or `develop`.
+- Available in the GitHub Actions run artifacts.
 
 ## Versioning
 
-[Semantic Versioning](https://semver.org/) : `MAJOR.MINOR.PATCH`.
+[Semantic Versioning](https://semver.org/): `MAJOR.MINOR.PATCH`.
 
-- Tag git pour chaque release : `git tag -a v0.6.0 -m "MFD redesign + précision OCR"`
-- `setuptools_scm` lit le tag et expose la version au runtime.
+- Git tag for each release: `git tag -a v0.6.0 -m "MFD redesign + OCR precision"`
+- `setuptools_scm` reads the tag and exposes version at runtime.
 
-## Configuration locale
+## Local configuration
 
 ```powershell
-# 1. Copie config.ini.example vers config.ini si absent
-# (config.ini est versionné par défaut avec des valeurs raisonnables)
+# 1. Copy config.ini.example to config.ini if absent
+# (config.ini is versioned by default with sensible values)
 
-# 2. Vérifie que Tesseract est installé
+# 2. Verify Tesseract is installed
 tesseract --version
 ```
 
@@ -40,37 +40,37 @@ tesseract --version
 python -m pytest tests/ -v
 ```
 
-Couvre : navigation, calcul de bearing, parsing CamDir, calibration, vélocité.
+Covers: navigation, bearing calculation, CamDir parsing, calibration, velocity.
 
-## Débogage
+## Debugging
 
-- Logs : `spacedrive.log` (niveau via `[Logging] level` dans `config.ini`).
-- Captures de debug : activer `[Debug] save_ocr_images = True` → écrit `debug_capture_original.png` et `debug_capture_processed.png` à chaque scan.
-- Pour analyser une capture statique sans le jeu : pointer `[Debug] test_screenshot = chemin/vers/screenshot.png` dans `config.ini`.
+- Logs: `spacedrive.log` (level via `[Logging] level` in `config.ini`).
+- Debug captures: enable `[Debug] save_ocr_images = True` → writes `debug_capture_original.png` and `debug_capture_processed.png` on each scan.
+- To analyze a static capture without the game: point `[Debug] test_screenshot = path/to/screenshot.png` in `config.ini`.
 
-## Structure du projet
+## Project structure
 
 ```
 spaceDrive/
 ├── src/
-│   ├── main.py              # GPSOverlay + worker OCR
-│   ├── capture.py           # Capture écran + pré-traitement
+│   ├── main.py              # GPSOverlay + OCR worker
+│   ├── capture.py           # Screen capture + preprocessing
 │   ├── ocr.py               # OCRProcessor (Tesseract/Paddle)
 │   ├── navigation.py        # NavigationEngine + POI
-│   ├── velocity_tracker.py  # Estimation vélocité
-│   ├── calibration.py       # Calibration yaw cam ↔ monde
-│   ├── config_manager.py    # Wrapper config.ini
-│   ├── hotkey_listener.py   # pynput → signaux Qt
+│   ├── velocity_tracker.py  # Velocity estimation
+│   ├── calibration.py       # Camera yaw ↔ world calibration
+│   ├── config_manager.py    # config.ini wrapper
+│   ├── hotkey_listener.py   # pynput → Qt signals
 │   └── ui/
-│       ├── options.py       # Fenêtre options
-│       └── poi_manager.py   # Fenêtre POI
+│       ├── options.py       # Options window
+│       └── poi_manager.py   # POI window
 ├── data/
-│   ├── poi.json             # POI système (versionnés)
-│   └── user_poi.json        # POI utilisateur (locaux)
+│   ├── poi.json             # System POIs (versioned)
+│   └── user_poi.json        # User POIs (local)
 ├── tests/                   # pytest
 ├── docs/                    # Documentation
-├── config.ini               # Configuration runtime
+├── config.ini               # Runtime configuration
 ├── requirements.txt
 ├── setup.py
-└── spaceDrive.spec          # Spec PyInstaller
+└── spaceDrive.spec          # PyInstaller spec
 ```

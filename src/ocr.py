@@ -1,27 +1,27 @@
-"""OCR pipeline pour le HUD debug Star Citizen.
+"""OCR pipeline for the Star Citizen HUD debug overlay.
 
-Pipeline :
-  1. Capture (cf. capture.py) → 3 passes binaires
-  2. Tesseract OEM3 PSM6 sur chaque passe (parallèle, ThreadPoolExecutor)
-  3. Normalisation post-OCR (Pos:_, lkm/Km, underscores parasites)
-  4. Regex Pos stricte 3-4 décimales
-  5. Si la regex échoue : tentative de récupération du '.' manquant
-  6. Validation par plage géographique (|coord| < 30000 km)
-  7. Consensus multi-pass : si ≥2 passes convergent à ±0.1 km, moyenne ;
-     sinon, meilleur score
+Pipeline:
+  1. Capture (see capture.py) → 3 binary passes
+  2. Tesseract OEM3 PSM6 on each pass (parallel, ThreadPoolExecutor)
+  3. Post-OCR normalization (Pos:_, lkm/Km, stray underscores)
+  4. Strict Pos regex with 3-4 decimal places
+  5. If the regex fails: attempt to recover the missing '.'
+  6. Geographic range validation (|coord| < 30000 km)
+  7. Multi-pass consensus: if ≥2 passes converge within ±0.1 km, average;
+     otherwise, best score
 
-Structure du HUD r_DisplayInfo 3 (3 lignes Pos:) :
-  Ligne 1 : Zone: SolarSystem_XXXXX Pos: X Y Z  → frame absolue, rejetée
-  Ligne 2 : Root Pos: X Y Z                     → frame absolue, rejetée
-  Ligne 3 : {ZoneName} Pos: X Y Z               → frame relative, CIBLE
+HUD r_DisplayInfo 3 structure (3 Pos: lines):
+  Line 1: Zone: SolarSystem_XXXXX Pos: X Y Z  → absolute frame, rejected
+  Line 2: Root Pos: X Y Z                     → absolute frame, rejected
+  Line 3: {ZoneName} Pos: X Y Z               → relative frame, TARGET
 
-La 3ème ligne est systématiquement scannée sans filtre sur le préfixe du nom
-de zone : OOC_Hurston, GrimHex, StantonIV-9, etc. sont tous acceptés.
-Seuls Root/SolarSystem sont rejetés (frame absolue ~14 M km).
+The 3rd line is always scanned without filtering on the zone name prefix:
+OOC_Hurston, GrimHex, StantonIV-9, etc. are all accepted.
+Only Root/SolarSystem are rejected (absolute frame ~14 M km).
 
-Phase D : Pipeline hybride NCC custom
-  - Tesseract pour les noms (Zone:SolarSystem)
-  - NCC custom pour les coordonnées numériques (si templates disponibles)
+Phase D: Hybrid NCC custom pipeline
+  - Tesseract for names (Zone:SolarSystem)
+  - Custom NCC for numeric coordinates (if templates available)
 """
 import pytesseract
 import re
@@ -41,36 +41,36 @@ logger = logging.getLogger(__name__)
 
 _RE_ZONE = re.compile(r'Zone:\s*SolarSystem[_-]?([\d\w]+?)(?:Pos|Zone|$|\s)', re.IGNORECASE)
 _RE_POS = re.compile(
-    # Exige 3-4 décimales : SC affiche toujours 4 décimales (10cm de précision).
-    # Si Tesseract perd des chiffres, la lecture est rejetée plutôt que d'enregistrer
-    # une position approximative qui causerait des erreurs de ~10m à l'arrivée.
+    # Require 3-4 decimal places: SC always displays 4 decimals (10 cm precision).
+    # If Tesseract drops digits, the reading is rejected rather than recording
+    # an approximate position that would cause ~10 m errors at destination.
     r'[Pp]os:?\s*(-?\d+\.\d{3,4})\s*km\s*(-?\d+\.\d{3,4})\s*km\s*(-?\d+\.\d{3,4})\s*km',
     re.IGNORECASE,
 )
-# Identifie une ligne CamDir même si l'OCR rate le ':' ou le 'C' initial.
+# Identifies a CamDir line even if OCR misses the ':' or leading 'C'.
 _RE_CAMDIR_TAG = re.compile(r'amdir', re.IGNORECASE)
-# Rejette les lignes Root/SolarSystem (frame absolue ~14 M km, inutilisable).
+# Rejects Root/SolarSystem lines (absolute frame ~14 M km, unusable).
 _RE_POS_SYSTEM_FRAME = re.compile(r'(r[o0e]{1,3}t|solar\s*system)', re.IGNORECASE)
 
-# Extrait le nom de zone avant "Pos:" — accepte tout format (OOC_, GrimHex, etc.)
+# Extracts the zone name before "Pos:" — accepts any format (OOC_, GrimHex, etc.)
 _RE_ZONE_NAME = re.compile(r'^(.*?)\s*[Pp]os:?\s*', re.IGNORECASE)
 
-# Pour la récupération du '.' manquant : 7 ou 8 chiffres avant 'km'.
-# Ex : '41335653km' (7 chiffres = 4 entiers + 3-4 décimales potentielles).
+# For missing '.' recovery: 7 or 8 digits before 'km'.
+# e.g. '41335653km' (7 digits = 4 integer + 3-4 potential decimals).
 _RE_DIGITS_KM = re.compile(r'(-?)(\d{6,9})\s*km', re.IGNORECASE)
 
 
-# ─── Validation géographique (Phase B) ────────────────────────────────
+# ─── Geographic validation (Phase B) ────────────────────────────────────
 
-# Une coordonnée OOC plausible reste sous 30 000 km en absolu.
-# Le système Stanton fait ~60 000 km de diamètre, et un POI sur une
-# planète/lune/station est toujours dans ce rayon. Au-delà → hallucination
-# OCR (typiquement la frame Root/SolarSystem qui s'est glissée).
+# A plausible OOC coordinate stays below 30 000 km in absolute value.
+# The Stanton system is ~60 000 km in diameter, and any POI on a
+# planet/moon/station is always within that radius. Beyond → OCR hallucination
+# (typically the Root/SolarSystem frame that slipped through).
 _OOC_COORD_MAX_KM = 30_000.0
 
 
 def _coords_in_range(x, y, z):
-    """Vrai si (x, y, z) est dans la plage plausible OOC."""
+    """True if (x, y, z) is within the plausible OOC range."""
     return (
         abs(x) < _OOC_COORD_MAX_KM
         and abs(y) < _OOC_COORD_MAX_KM
@@ -78,10 +78,10 @@ def _coords_in_range(x, y, z):
     )
 
 
-# ─── Configuration Tesseract (Phase C) ────────────────────────────────
+# ─── Tesseract configuration (Phase C) ────────────────────────────────
 
-# `classify_bln_numeric_mode=1` force la normalisation numérique baseline,
-# réduisant la confusion 5↔S, 0↔O, 1↔l sur les chiffres du HUD.
+# `classify_bln_numeric_mode=1` forces numeric baseline normalization,
+# reducing 5↔S, 0↔O, 1↔l confusion on HUD digits.
 _TESSERACT_CONFIG_BASE = (
     r'--oem 3 --psm 6 '
     r'-c preserve_interword_spaces=1 '
@@ -91,13 +91,13 @@ _TESSERACT_CONFIG_BASE = (
 
 
 def _build_tesseract_config():
-    """Construit la config Tesseract avec user_words/patterns si présents.
+    """Builds the Tesseract config with user_words/patterns if present.
 
-    `data/user_words.txt` : un mot par ligne (Stanton, Hurston, OOC_X...).
-    `data/user_patterns.txt` : un pattern par ligne (\n* pour digit, etc.).
+    `data/user_words.txt`: one word per line (Stanton, Hurston, OOC_X...).
+    `data/user_patterns.txt`: one pattern per line (\\n* for digit, etc.).
 
-    Tesseract pondère les hypothèses qui matchent ces dictionnaires/patterns,
-    réduisant les hallucinations sur les noms connus.
+    Tesseract weights hypotheses that match these dictionaries/patterns,
+    reducing hallucinations on known names.
     """
     config = _TESSERACT_CONFIG_BASE
     if getattr(sys, 'frozen', False):
@@ -108,28 +108,28 @@ def _build_tesseract_config():
     user_patterns = os.path.join(base_dir, 'data', 'user_patterns.txt')
     if os.path.exists(user_words):
         config += f' -c user_words_file={user_words}'
-        logger.debug(f"Tesseract user_words : {user_words}")
+        logger.debug(f"Tesseract user_words: {user_words}")
     if os.path.exists(user_patterns):
         config += f' -c user_patterns_file={user_patterns}'
-        logger.debug(f"Tesseract user_patterns : {user_patterns}")
+        logger.debug(f"Tesseract user_patterns: {user_patterns}")
     return config
 
 
-# ─── Parsing CamDir ───────────────────────────────────────────────────
+# ─── CamDir parsing ───────────────────────────────────────────────────
 
 def _parse_camdir_values(line, max_abs=180):
-    """Extrait (pitch, roll, yaw) d'une ligne CamDir, gère la perte d'espaces.
+    """Extracts (pitch, roll, yaw) from a CamDir line, handles missing spaces.
 
-    Stratégie :
-      1. Isole le payload après 'amdir' jusqu'à 'FOV' (ou fin de ligne).
-      2. Insère un espace avant tout '-' qui suit un chiffre, pour séparer
-         les valeurs négatives consécutives ('25-5177' → '25 -5177').
-      3. Extrait les tokens via re.findall(r'-?\\d+').
-      4. Pour chaque token dont |valeur| > max_abs, scinde gourmandement
-         depuis la gauche : on coupe au préfixe le plus court qui reste
-         dans [-max_abs, +max_abs] et dont le reste l'est aussi.
-         Ex: '-5177' → ['-5', '177'].
-      5. Retourne la liste des 3 premiers ints valides ou None.
+    Strategy:
+      1. Isolate the payload after 'amdir' up to 'FOV' (or end of line).
+      2. Insert a space before any '-' that follows a digit, to separate
+         consecutive negative values ('25-5177' → '25 -5177').
+      3. Extract tokens via re.findall(r'-?\\d+').
+      4. For each token whose |value| > max_abs, greedily split from the
+         left: cut at the shortest prefix that stays within [-max_abs, +max_abs]
+         and whose remainder also does.
+         e.g. '-5177' → ['-5', '177'].
+      5. Return the list of the first 3 valid ints or None.
     """
     if not line:
         return None
@@ -137,7 +137,10 @@ def _parse_camdir_values(line, max_abs=180):
     if not m:
         return None
     payload = line[m.end():]
-    fov_idx = re.search(r'FOV', payload, re.IGNORECASE)
+    # Fuzzy detection of the FOV delimiter: Tesseract often corrupts "FOV" as
+    # "gfOV", "SOV", "FGV", "FQV", "F0V"... Look for a 2-3 letter token
+    # containing at least 'O' or '0' preceded by a character ≈ 'F'.
+    fov_idx = re.search(r'[FfGgSs][oO0O][vVbB]', payload)
     if fov_idx:
         payload = payload[:fov_idx.start()]
     payload = re.sub(r'(\d)-', r'\1 -', payload)
@@ -178,7 +181,7 @@ def _parse_camdir_values(line, max_abs=180):
     return None
 
 
-# ─── Corrections post-OCR ─────────────────────────────────────────────
+# ─── Post-OCR corrections ─────────────────────────────────────────────
 
 _OCR_CORRECTIONS = {
     'Zore:': 'Zone:',
@@ -199,41 +202,53 @@ _OCR_CORRECTIONS = {
 
 
 def _normalize_ooc_line(line):
-    """Normalise une ligne OOC avant d'appliquer _RE_POS.
+    """Normalizes an OOC line before applying _RE_POS.
 
-    Corrige les artefacts Tesseract courants dans l'ordre :
-    1. Pos:_ → Pos:  (underscore/espaces multiples après les deux-points)
-    2. lkm/Ikm/kn/KM/kh → km  (variantes OCR de l'unité, après chiffre)
-    3. km_-529 → km -529  (underscore entre coordonnées)
+    Fixes common Tesseract artifacts:
+    1. Missing space before Pos: (zone glued: 'OOC_L2Pos:' → 'OOC_L2 Pos:')
+    2. Pos:_ → Pos:  (underscore/multiple spaces after the colon)
+    3. lkm/Ikm/kn/KM/kh → km  (OCR variants of the unit, after a digit)
+    4. km_-529 → km -529  (underscore between coordinates)
     """
+    # Insert a space before Pos: if it is glued to a non-space character.
+    line = re.sub(r'(?<=[^\s])([Pp]os:)', r' \1', line)
     line = re.sub(r'(Pos:?)[\s_]+', r'\1 ', line)
     line = re.sub(r'(?<=[\d.])[lLiI1]?[kK][mMnNhH](?=[\s_\-\d]|$)', 'km', line)
     line = re.sub(r'km[\s_]+(-?\d)', r'km \1', line)
     return line
 
 
-# ─── Récupération du '.' manquant (Phase B) ──────────────────────────
+def _is_meter_line(line: str) -> bool:
+    """True if the line expresses coordinates in meters (not km).
+
+    Sub-zone lines (PlayerContainer, HabPos...) use 'm' as the unit.
+    They are rejected: they do not correspond to navigable OOC coordinates.
+    """
+    return bool(re.search(r'\d+\.\d+\s*m\b(?!\s*k)', line, re.IGNORECASE))
+
+
+# ─── Missing '.' recovery (Phase B) ──────────────────────────────────
 
 def _try_recover_decimal(digits_str, sign_str=''):
-    """Tente d'insérer un '.' à différentes positions dans une suite de chiffres.
+    """Attempts to insert a '.' at various positions in a digit string.
 
-    SC affiche les coords avec exactement 4 décimales (ex: '4133.5653').
-    Si Tesseract a fusionné le point ('41335653'), on tente d'insérer
-    un '.' à la position qui donne une valeur dans la plage plausible.
+    SC displays coords with exactly 4 decimal places (e.g. '4133.5653').
+    If Tesseract merged the dot ('41335653'), we try to insert a '.'
+    at a position that gives a value within the plausible range.
 
     Args:
-        digits_str: chaîne de chiffres uniquement (ex: '41335653').
-        sign_str: '-' ou '' pour le signe.
+        digits_str: digit-only string (e.g. '41335653').
+        sign_str: '-' or '' for the sign.
 
     Returns:
-        Float si une position donne une valeur dans la plage OOC, None sinon.
+        Float if a position yields a value in the OOC range, None otherwise.
     """
     if len(digits_str) < 4:
         return None
     sign_factor = -1.0 if sign_str == '-' else 1.0
-    # Position privilégiée : 4 décimales (format SC standard).
-    # On tente d'abord cette position, puis 3 (cas où une décimale a été
-    # perdue), puis on élargit.
+    # Preferred position: 4 decimal places (standard SC format).
+    # Try that position first, then 3 (if one decimal was lost),
+    # then widen the search.
     candidate_positions = []
     n = len(digits_str)
     for n_decimals in (4, 3, 2):
@@ -252,10 +267,10 @@ def _try_recover_decimal(digits_str, sign_str=''):
 
 
 def _try_recover_pos_line(line):
-    """Tente de récupérer (x, y, z) si _RE_POS échoue à cause d'un '.' manquant.
+    """Attempts to recover (x, y, z) when _RE_POS fails due to a missing '.'.
 
-    Cherche 3 occurrences de `(\\d{6,9})km` dans la ligne et tente d'insérer
-    un '.' à la position des 4 dernières chiffres pour chacune.
+    Looks for 3 occurrences of `(\\d{6,9})km` in the line and attempts to
+    insert a '.' at the last-4-digits position for each one.
     """
     matches = list(_RE_DIGITS_KM.finditer(line))
     if len(matches) < 3:
@@ -273,23 +288,23 @@ def _try_recover_pos_line(line):
     return None
 
 
-# ─── Consensus multi-pass (Phase B) ──────────────────────────────────
+# ─── Multi-pass consensus (Phase B) ──────────────────────────────────
 
-# Tolérance pour considérer que deux passes convergent.
+# Tolerance to consider two passes converging.
 _CONSENSUS_TOL_KM = 0.1
 
 
 def _consensus_coords(pass_results):
-    """Cherche un consensus entre les passes qui ont extrait des coordonnées.
+    """Looks for a consensus among passes that extracted coordinates.
 
     Args:
-        pass_results: liste de tuples (pass_name, score, data) où data contient
-            potentiellement (x, y, z) non None.
+        pass_results: list of tuples (pass_name, score, data) where data may
+            contain (x, y, z) that are not None.
 
     Returns:
-        Tuple (consensus_data, consensus_score) si ≥2 passes convergent
-        à ±0.1 km, None sinon. Le consensus_data est la moyenne des passes
-        qui convergent.
+        Tuple (consensus_data, consensus_score) if ≥2 passes converge
+        within ±0.1 km, None otherwise. consensus_data is the average of
+        the converging passes.
     """
     valid = [
         (name, score, data) for name, score, data in pass_results
@@ -297,7 +312,7 @@ def _consensus_coords(pass_results):
     ]
     if len(valid) < 2:
         return None
-    # Pour chaque passe valide, compte combien d'autres passes sont à ±tol.
+    # For each valid pass, count how many other passes are within ±tol.
     best_cluster = None
     best_size = 1
     for i, (_, _, ref) in enumerate(valid):
@@ -316,12 +331,12 @@ def _consensus_coords(pass_results):
             best_cluster = cluster
     if best_cluster is None or best_size < 2:
         return None
-    # Moyenne sur le cluster
+    # Average over the cluster
     n = len(best_cluster)
     avg_x = sum(d["x"] for _, _, d in best_cluster) / n
     avg_y = sum(d["y"] for _, _, d in best_cluster) / n
     avg_z = sum(d["z"] for _, _, d in best_cluster) / n
-    # Prendre les autres champs (ooc, location, camdir) de la passe la plus haut score
+    # Take other fields (ooc, location, camdir) from the highest-scoring pass
     best = max(best_cluster, key=lambda t: t[1])
     consensus = dict(best[2])
     consensus["x"] = avg_x
@@ -339,28 +354,60 @@ class OCRProcessor:
         "Stanton": "Stanton",
     }
 
-    def __init__(self, tesseract_path=None, engine="tesseract"):
+    def __init__(
+        self,
+        tesseract_path=None,
+        engine="tesseract",
+        glyph_engine="ncc",
+        onnx_model_path="models/spacedrive_ocr.onnx",
+        onnx_classes_path="models/spacedrive_ocr.classes.json",
+        onnx_confidence_threshold=0.85,
+    ):
         self.engine = engine.lower()
-        self.paddle_ocr = None
         self.tesseract_config = _build_tesseract_config()
 
         if self.engine == "tesseract":
             self._init_tesseract(tesseract_path)
-        elif self.engine == "paddle":
-            self._init_paddle()
         else:
-            logger.warning(f"Moteur OCR inconnu '{engine}', fallback vers Tesseract")
+            logger.warning(f"Unknown OCR engine '{engine}', falling back to Tesseract")
             self.engine = "tesseract"
             self._init_tesseract(tesseract_path)
 
         self._pool = ThreadPoolExecutor(max_workers=3)
 
-        # Phase D : charger la bibliothèque de templates pour NCC
+        # Phase D: load the template library for NCC
         self.template_lib = TemplateLibrary()
         if self.template_lib.has_templates():
-            logger.info(f"Templates NCC chargés : {self.template_lib.stats()}")
+            logger.info(f"NCC templates loaded: {self.template_lib.stats()}")
         else:
-            logger.info("Aucun template NCC trouvé, fallback vers Tesseract pour coordonnées")
+            logger.info("No NCC templates found, falling back to Tesseract for coordinates")
+
+        # Glyph classifier selection (pure NumPy NCC or ONNX CNN)
+        self.glyph_engine = glyph_engine.lower()
+        self._glyph_classifier = self._build_glyph_classifier(
+            onnx_model_path, onnx_classes_path, onnx_confidence_threshold,
+        )
+
+        # Frame dedup cache: avoids re-running Tesseract if the HUD has not changed.
+        self._last_frame_hash: int | None = None
+        self._last_result: dict | None = None
+
+    def _build_glyph_classifier(self, onnx_model_path, onnx_classes_path, onnx_threshold):
+        """Builds the classification callable (classify_batch signature)."""
+        if self.glyph_engine == "onnx":
+            try:
+                from sc_ocr.onnx_classifier import ONNXGlyphClassifier
+                onnx_clf = ONNXGlyphClassifier(
+                    onnx_model_path, onnx_classes_path, confidence_threshold=onnx_threshold,
+                )
+                logger.info("Glyph classifier: ONNX (model %s)", onnx_model_path)
+                return onnx_clf.classify_batch
+            except Exception as exc:
+                logger.error("ONNX classifier init failed (%s) — falling back to NCC.", exc)
+                self.glyph_engine = "ncc"
+
+        logger.info("Glyph classifier: NCC template matching")
+        return classify_batch
 
     def _init_tesseract(self, tesseract_path=None):
         if not tesseract_path:
@@ -384,62 +431,41 @@ class OCRProcessor:
 
             found = False
             for path in possible_paths:
-                logger.debug(f"Recherche Tesseract dans : {path}")
+                logger.debug(f"Searching for Tesseract at: {path}")
                 if os.path.exists(path):
                     pytesseract.pytesseract.tesseract_cmd = path
-                    logger.info(f"Tesseract trouvé : {path}")
+                    logger.info(f"Tesseract found: {path}")
                     found = True
                     break
 
             if not found:
-                logger.error("ERREUR: Tesseract-OCR non trouvé dans les emplacements standards!")
-                logger.error("Chemins testés: " + ", ".join(possible_paths))
+                logger.error("ERROR: Tesseract-OCR not found in standard locations!")
+                logger.error("Paths tried: " + ", ".join(possible_paths))
         else:
             pytesseract.pytesseract.tesseract_cmd = tesseract_path
 
-        logger.info("Tesseract OCR initialisé")
-
-    def _init_paddle(self):
-        try:
-            from paddleocr import PaddleOCR
-
-            self.paddle_ocr = PaddleOCR(
-                use_angle_cls=True,
-                lang='en',
-                show_log=False,
-                use_gpu=False
-            )
-            logger.info("PaddleOCR initialisé avec succès")
-        except ImportError:
-            logger.error("PaddleOCR n'est pas installé. Installez-le avec: pip install paddleocr paddlepaddle")
-            logger.warning("Fallback vers Tesseract")
-            self.engine = "tesseract"
-            self._init_tesseract(None)
-        except Exception as e:
-            logger.error(f"Erreur lors de l'initialisation de PaddleOCR : {e}")
-            logger.warning("Fallback vers Tesseract")
-            self.engine = "tesseract"
-            self._init_tesseract(None)
+        logger.info("Tesseract OCR initialized")
 
     def _ocr_image_to_text(self, img):
-        if self.engine == "paddle" and self.paddle_ocr is not None:
-            try:
-                result = self.paddle_ocr.ocr(img, cls=True)
-                text_lines = []
-                if result and result[0]:
-                    for line in result[0]:
-                        if line and len(line) >= 2:
-                            text_lines.append(line[1][0])
-                return '\n'.join(text_lines)
-            except Exception as e:
-                logger.error(f"Erreur PaddleOCR : {e}, fallback vers Tesseract pour cette image")
-                return pytesseract.image_to_string(img, config=self.tesseract_config)
-        else:
-            return pytesseract.image_to_string(img, config=self.tesseract_config)
+        return pytesseract.image_to_string(img, config=self.tesseract_config)
 
     def extract_data(self, images):
-        logger.debug(f"Extraction OCR à partir de {len(images)} passes avec moteur {self.engine}")
-        return self._parse_images_parallel(images)
+        logger.debug(f"OCR extraction from {len(images)} passes with engine {self.engine}")
+
+        # Frame deduplication: fast hash on downsampled pixels.
+        # If the HUD is identical to the previous tick, return the cached result
+        # without re-running Tesseract (~0.1 ms instead of ~150 ms).
+        frame_hash = hash(
+            b''.join(img[::4, ::4].tobytes() for img in images.values())
+        )
+        if frame_hash == self._last_frame_hash and self._last_result is not None:
+            logger.debug("Identical frame — cached OCR result reused (Tesseract skipped)")
+            return self._last_result
+
+        result = self._parse_images_parallel(images)
+        self._last_frame_hash = frame_hash
+        self._last_result = result
+        return result
 
     def _ocr_single_pass(self, pass_name, img):
         ocr_text = self._ocr_image_to_text(img)
@@ -463,13 +489,13 @@ class OCRProcessor:
                     data["cam_roll"] = float(roll)
                     data["cam_yaw"] = float(yaw)
                     logger.debug(
-                        f"[{pass_name}] CamDir extrait : pitch={pitch} roll={roll} yaw={yaw}"
+                        f"[{pass_name}] CamDir extracted: pitch={pitch} roll={roll} yaw={yaw}"
                     )
                     score += 5
                 else:
-                    logger.warning(f"[{pass_name}] Ligne CamDir non parsable : {line!r}")
+                    logger.warning(f"[{pass_name}] Unparseable CamDir line: {line!r}")
             elif "Zone:" in line and "SolarSystem" in line:
-                logger.debug(f"[{pass_name}] Ligne Zone détectée : {line}")
+                logger.debug(f"[{pass_name}] Zone line detected: {line}")
                 zone_match = _RE_ZONE.search(line)
                 if zone_match:
                     system_id = zone_match.group(1).strip()
@@ -479,40 +505,44 @@ class OCRProcessor:
                             matched_name = name
                             break
                     data["location"] = matched_name if matched_name else "Unknown"
-                    logger.info(f"[{pass_name}] Système détecté : ID={system_id}, Nom={data['location']}")
+                    logger.info(f"[{pass_name}] System detected: ID={system_id}, Name={data['location']}")
                     score += 10
             elif "Pos:" in line or "pos:" in line.lower():
-                # Rejeter Root/SolarSystem (frame absolue ~14 M km).
+                # Reject meter lines (sub-zone HabPos, PlayerContainer...).
+                if _is_meter_line(line):
+                    logger.debug(f"[{pass_name}] Meter line ignored: {line[:80]}")
+                    continue
+                # Reject Root/SolarSystem (absolute frame ~14 M km).
                 if _RE_POS_SYSTEM_FRAME.search(line):
-                    logger.debug(f"[{pass_name}] Ligne Root/SolarSystem rejetée : {line[:80]}")
+                    logger.debug(f"[{pass_name}] Root/SolarSystem line rejected: {line[:80]}")
                     continue
 
-                # Extraire le nom de zone = tout ce qui précède "Pos:"
+                # Extract the zone name = everything before "Pos:"
                 zone_match = _RE_ZONE_NAME.match(line)
                 zone_name = zone_match.group(1).strip() if zone_match else ""
-                logger.debug(f"[{pass_name}] Ligne zone : zone={zone_name!r} | {line[:120]}")
+                logger.debug(f"[{pass_name}] Zone line: zone={zone_name!r} | {line[:120]}")
 
-                # Phase D : essayer NCC en premier (plus rapide + précis si templates dispo)
+                # Phase D: try NCC first (faster + more accurate if templates available)
                 coords = self._extract_coords_via_ncc(img, pass_name)
 
-                # Fallback : Tesseract sur la ligne normalisée si NCC n'a pas marché
+                # Fallback: Tesseract on the normalized line if NCC did not work
                 if coords is None:
                     normalized = _normalize_ooc_line(line)
                     coords = self._extract_coords_from_line(normalized, pass_name)
 
                 if coords is not None:
                     x, y, z = coords
-                    # Validation de plage géographique (Phase B).
+                    # Geographic range validation (Phase B).
                     if not _coords_in_range(x, y, z):
-                        logger.warning(
-                            f"[{pass_name}] Coords hors plage : "
-                            f"X={x} Y={y} Z={z} (max ±{_OOC_COORD_MAX_KM} km)"
+                        logger.debug(
+                            f"[{pass_name}] Coords out of range (absolute frame?): "
+                            f"X={x:.1f} Y={y:.1f} Z={z:.1f} km — ignored"
                         )
                         continue
                     data["x"], data["y"], data["z"] = x, y, z
                     data["ooc"] = zone_name or "Unknown"
                     logger.info(
-                        f"[{pass_name}] Position extraite : zone={zone_name!r} "
+                        f"[{pass_name}] Position extracted: zone={zone_name!r} "
                         f"X={x} Y={y} Z={z}"
                     )
                     score += 10
@@ -525,24 +555,25 @@ class OCRProcessor:
         return score, data
 
     def _extract_coords_via_ncc(self, binary_image, pass_name):
-        """Extrait les coordonnées via NCC custom (Phase D).
+        """Extracts coordinates via custom NCC (Phase D).
 
-        Stratégie ligne par ligne :
-          1. Segmenter en bandes de texte (rows)
-          2. Pour chaque row, classifier les glyphes via NCC
-          3. Reconstruire la chaîne et appliquer la regex Pos
-          4. Validation plage géographique (rejette implicitement Root/SolarSystem
-             qui ont des coords ~14 M km)
-          5. Retourner la première row qui donne des coords valides
+        Line-by-line strategy:
+          1. Segment into text bands (rows)
+          2. For each row, classify glyphs via NCC
+          3. Reconstruct the string and apply the Pos regex
+          4. Geographic range validation (implicitly rejects Root/SolarSystem
+             which have coords ~14 M km)
+          5. Return the first row that yields valid coordinates
 
         Args:
-            binary_image : image binaire 0/255
-            pass_name : nom de la passe (pour logs)
+            binary_image: binary image 0/255
+            pass_name: pass name (for logs)
 
         Returns:
-            tuple (x, y, z) ou None
+            tuple (x, y, z) or None
         """
-        if not self.template_lib.has_templates():
+        # ONNX classifier does not need templates; NCC does.
+        if self.glyph_engine != "onnx" and not self.template_lib.has_templates():
             return None
 
         try:
@@ -551,12 +582,12 @@ class OCRProcessor:
             if not glyphs:
                 return None
 
-            # Grouper les glyphs par row
+            # Group glyphs by row
             glyphs_by_row = {}
             for g in glyphs:
                 glyphs_by_row.setdefault(g['row_idx'], []).append(g)
 
-            # Traiter chaque row dans l'ordre, retourner la première avec coords valides
+            # Process each row in order, return the first with valid coordinates
             for row_idx in sorted(glyphs_by_row.keys()):
                 coords = self._extract_coords_from_row_ncc(
                     binary_image, glyphs_by_row[row_idx], row_idx, pass_name
@@ -567,14 +598,14 @@ class OCRProcessor:
             return None
 
         except Exception as e:
-            logger.error(f"[{pass_name}] Erreur NCC : {e}")
+            logger.error(f"[{pass_name}] NCC error: {e}")
             return None
 
     def _extract_coords_from_row_ncc(self, binary_image, row_glyphs, row_idx, pass_name):
-        """Classifie les glyphs d'une row et tente d'extraire (x, y, z)."""
+        """Classifies glyphs in a row and attempts to extract (x, y, z)."""
         row_glyphs = sorted(row_glyphs, key=lambda g: g['x'])
 
-        # Préparer les crops dans l'ordre x
+        # Prepare crops in x order
         glyph_images = []
         for g in row_glyphs:
             x, y, w, h = g['x'], g['y'], g['w'], g['h']
@@ -585,11 +616,11 @@ class OCRProcessor:
         if not glyph_images:
             return None
 
-        classifications = classify_batch(
+        classifications = self._glyph_classifier(
             glyph_images, self.template_lib, glyphs_meta=row_glyphs
         )
 
-        # Reconstruire la chaîne avec un espace si gap horizontal > 6 px
+        # Reconstruct the string with a space if horizontal gap > 6 px
         char_by_id = {c['glyph_id']: c['char'] for c in classifications}
         chars = []
         prev_x_end = None
@@ -608,14 +639,14 @@ class OCRProcessor:
 
         logger.debug(f"[{pass_name}] NCC row{row_idx}: {reconstructed!r}")
 
-        # Préfixer "Pos: " virtuellement pour la regex (NCC ne lit pas les lettres)
+        # Virtually prepend "Pos: " for the regex (NCC does not read letters)
         candidate = "Pos: " + reconstructed
         normalized = _normalize_ooc_line(candidate)
 
-        # Match strict uniquement : NCC + heuristique '.' doivent reconstruire
-        # le point décimal correctement. Si la regex stricte échoue, c'est
-        # probablement une frame absolue (Root/SolarSystem ~14 M km sans '.')
-        # → on saute cette row au lieu de risquer un faux match via recovery.
+        # Strict match only: NCC + heuristic '.' must reconstruct the decimal
+        # point correctly. If the strict regex fails, it is likely an absolute
+        # frame (Root/SolarSystem ~14 M km without '.') — skip this row instead
+        # of risking a false match via recovery.
         coord_match = _RE_POS.search(normalized)
         if coord_match:
             try:
@@ -630,11 +661,11 @@ class OCRProcessor:
         return None
 
     def _extract_coords_from_line(self, normalized_line, pass_name):
-        """Extrait (x, y, z) depuis une ligne OOC normalisée.
+        """Extracts (x, y, z) from a normalized OOC line.
 
-        Tente d'abord la regex stricte (4 décimales), puis la récupération
-        du '.' manquant si elle échoue. Retourne None si aucune méthode
-        ne donne une triplet valide.
+        Tries the strict regex first (4 decimal places), then missing '.'
+        recovery if it fails. Returns None if neither method yields a valid
+        triplet.
         """
         coord_match = _RE_POS.search(normalized_line)
         if coord_match:
@@ -645,28 +676,27 @@ class OCRProcessor:
                     float(coord_match.group(3)),
                 )
             except ValueError as e:
-                logger.error(f"[{pass_name}] Erreur conversion coordonnées : {e}")
+                logger.error(f"[{pass_name}] Coordinate conversion error: {e}")
                 return None
-        # Tentative de récupération du '.' manquant (Phase B).
+        # Attempt to recover the missing '.' (Phase B).
         recovered = _try_recover_pos_line(normalized_line)
         if recovered is not None:
             logger.info(
-                f"[{pass_name}] Position récupérée via insertion '.' : "
+                f"[{pass_name}] Position recovered via '.' insertion: "
                 f"X={recovered[0]} Y={recovered[1]} Z={recovered[2]}"
             )
             return recovered
-        logger.warning(f"[{pass_name}] Regex Pos non matchée : {normalized_line[:120]!r}")
+        logger.warning(f"[{pass_name}] Pos regex not matched: {normalized_line[:120]!r}")
         return None
 
     def _parse_images_parallel(self, images):
-        """Lance l'OCR en parallèle, applique le consensus multi-pass.
+        """Runs OCR in parallel and applies multi-pass consensus.
 
-        Stratégie :
-          1. Toutes les passes tournent en parallèle.
-          2. On collecte tous les résultats (pass_name, score, data).
-          3. Si ≥2 passes convergent à ±0.1 km → on utilise la moyenne.
-          4. Sinon → on prend la passe au meilleur score (comportement
-             antérieur).
+        Strategy:
+          1. All passes run in parallel.
+          2. Collect all results (pass_name, score, data).
+          3. If ≥2 passes converge within ±0.1 km → use the average.
+          4. Otherwise → take the pass with the best score (previous behavior).
         """
         futures = {
             self._pool.submit(self._ocr_single_pass, pass_name, img): pass_name
@@ -678,17 +708,17 @@ class OCRProcessor:
             score, data = future.result()
             pass_results.append((pass_name, score, data))
 
-        # Tentative de consensus multi-pass (Phase B).
+        # Attempt multi-pass consensus (Phase B).
         consensus = _consensus_coords(pass_results)
         if consensus is not None:
             consensus_data, _ = consensus
             logger.debug(
-                f"Consensus multi-pass : X={consensus_data['x']:.4f} "
+                f"Multi-pass consensus: X={consensus_data['x']:.4f} "
                 f"Y={consensus_data['y']:.4f} Z={consensus_data['z']:.4f}"
             )
             return consensus_data
 
-        # Fallback : meilleur score.
+        # Fallback: best score.
         best_data = None
         best_score = -1
         for _, score, data in pass_results:
@@ -718,6 +748,6 @@ if __name__ == "__main__":
     img = cv2.imread("test_capture.png")
     if img is not None:
         result = processor.extract_data({"test": img})
-        print(f"Résultat OCR : {result}")
+        print(f"OCR result: {result}")
     else:
-        print("Image test_capture.png non trouvée.")
+        print("Image test_capture.png not found.")

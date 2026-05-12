@@ -1,43 +1,38 @@
-# SpaceDrive GPS — dépendances runtime
-# Python 3.10+ requis
+# SpaceDrive GPS — runtime dependencies
+# Python 3.10+ required
 
-# Capture d'écran
+# Screen capture
 mss>=9.0.0
 
-# Calcul numérique + traitement image
+# Numerical computation + image processing
 numpy>=1.24.0
 opencv-python>=4.8.0
 Pillow>=10.0.0
 
-# OCR (moteur principal)
+# OCR (primary engine)
 pytesseract>=0.3.10
-# ⚠ Tesseract binary doit être installé séparément :
+# ⚠ Tesseract binary must be installed separately:
 #   Windows : https://github.com/UB-Mannheim/tesseract/wiki
 #   macOS   : brew install tesseract
 #   Linux   : apt install tesseract-ocr
 
-# Interface utilisateur
+# GUI
 PyQt6>=6.5.0
 
-# Hotkeys globaux (capture clavier hors focus)
+# Global hotkeys (keyboard capture when app is not focused)
 pynput>=1.7.6
 
+# ONNX CPU inference (optional — required only if [OCR] glyph_engine = onnx)
+# Pure local runtime, ~5 MB. Falls back to NCC template matching if absent.
+onnxruntime>=1.17.0
+
 # ─────────────────────────────────────────────────────────
-# Build / packaging (dev only — pas requis au runtime)
+# Build / packaging (dev only — not required at runtime)
 # ─────────────────────────────────────────────────────────
 pyinstaller>=6.0.0
 
 # ─────────────────────────────────────────────────────────
-# Optionnel : moteur OCR alternatif (PaddleOCR)
-# Plus précis sur texte fin mais 5-10× plus lent en CPU.
-# Non recommandé pour le scan temps réel à 50 ms.
-# ─────────────────────────────────────────────────────────
-# paddleocr>=2.7.0
-# paddlepaddle>=2.5.0       # CPU
-# paddlepaddle-gpu>=2.5.0   # GPU (nécessite CUDA)
-
-# ─────────────────────────────────────────────────────────
-# Optionnel : EasyOCR (non utilisé actuellement)
-# Nécessite Visual Studio Build Tools sur Windows.
+# Optional: EasyOCR (not currently used)
+# Requires Visual Studio Build Tools on Windows.
 # ─────────────────────────────────────────────────────────
 # easyocr>=1.7.0

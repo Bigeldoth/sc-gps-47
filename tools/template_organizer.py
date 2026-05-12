@@ -1,15 +1,15 @@
-"""Organisation automatique des glyphes segmentés en templates par caractère.
+"""Automatic organization of segmented glyphs into templates by character.
 
-Après une session de collecte (30 min en jeu avec save_glyph_crops=True),
-ce script :
-  1. Scanne data/glyphs/{TIMESTAMP}/
-  2. Utilise Tesseract haute confiance pour labelliser automatiquement
-  3. Organise dans data/templates/{char}/ (0-9, ., -, k, m, etc.)
-  4. Génère un rapport
+After a collection session (30 min in-game with save_glyph_crops=True),
+this script:
+  1. Scans data/glyphs/{TIMESTAMP}/
+  2. Uses high-confidence Tesseract for automatic labeling
+  3. Organizes into data/templates/{char}/ (0-9, ., -, k, m, etc.)
+  4. Generates report
 
-Structure finale :
+Final structure:
   data/templates/
-    ├── 0/ (chiffre)
+    ├── 0/ (digit)
     │   ├── template_001.png
     │   ├── template_002.png
     │   ...
@@ -19,7 +19,7 @@ Structure finale :
     ├── -/
     ├── k/
     ├── m/
-    └── _/ (espace)
+    └── _/ (space)
 """
 import os
 import cv2
@@ -35,10 +35,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Caractères attendus pour les coordonnées numériques
+# Expected characters for numeric coordinates
 EXPECTED_CHARS = set('0123456789.-km ')
 
-# Config Tesseract pour haute confiance sur caractères
+# Tesseract config for high-confidence character recognition
 _TESSERACT_CONFIG = (
     r'--oem 3 --psm 10 '
     r'-c classify_bln_numeric_mode=1 '
@@ -47,7 +47,7 @@ _TESSERACT_CONFIG = (
 
 
 def init_tesseract(tesseract_path=None):
-    """Initialise pytesseract avec le chemin correct."""
+    """Initialize pytesseract with correct path."""
     if not tesseract_path:
         possible_paths = [
             r"C:\Program Files\Tesseract-OCR\tesseract.exe",
@@ -59,9 +59,9 @@ def init_tesseract(tesseract_path=None):
         for path in possible_paths:
             if os.path.exists(path):
                 pytesseract.pytesseract.tesseract_cmd = path
-                logger.info(f"Tesseract trouvé : {path}")
+                logger.info(f"Tesseract found: {path}")
                 return True
-        logger.error("Tesseract-OCR non trouvé !")
+        logger.error("Tesseract-OCR not found!")
         return False
     else:
         pytesseract.pytesseract.tesseract_cmd = tesseract_path
@@ -69,13 +69,13 @@ def init_tesseract(tesseract_path=None):
 
 
 def find_latest_glyph_dir(glyphs_base_dir='data/glyphs'):
-    """Trouve le répertoire de glyphes le plus récent.
+    """Find most recent glyph directory.
 
     Returns:
-        chemin du dossier TIMESTAMP ou None
+        path to TIMESTAMP folder or None
     """
     if not os.path.isdir(glyphs_base_dir):
-        logger.error(f"Répertoire {glyphs_base_dir} non trouvé")
+        logger.error(f"Directory {glyphs_base_dir} not found")
         return None
 
     subdirs = [
@@ -84,32 +84,32 @@ def find_latest_glyph_dir(glyphs_base_dir='data/glyphs'):
     ]
 
     if not subdirs:
-        logger.error(f"Aucun dossier de glyphes dans {glyphs_base_dir}")
+        logger.error(f"No glyph folders in {glyphs_base_dir}")
         return None
 
-    # Le plus récent (tri lexicographique si noms YYYYMMDD_HHMMSS_mmm)
+    # Most recent (lexicographic sort if YYYYMMDD_HHMMSS_mmm names)
     latest = sorted(subdirs)[-1]
     path = os.path.join(glyphs_base_dir, latest)
-    logger.info(f"Dossier glyphes détecté : {path}")
+    logger.info(f"Glyph folder detected: {path}")
     return path
 
 
 def classify_glyph(image_path, config=_TESSERACT_CONFIG):
-    """Utilise Tesseract pour labelliser un glyphe.
+    """Use Tesseract to label a glyph.
 
     Args:
-        image_path : chemin vers le PNG
-        config : config Tesseract
+        image_path: path to PNG
+        config: Tesseract config
 
     Returns:
-        (char_recognized, confidence_score) ou (None, 0.0)
+        (char_recognized, confidence_score) or (None, 0.0)
     """
     try:
         img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
         if img is None or img.size == 0:
             return None, 0.0
 
-        # Essayer petit upscale pour PSM 10 (single character)
+        # Try small upscale for PSM 10 (single character)
         h, w = img.shape
         if w < 8 or h < 8:
             img = cv2.resize(img, (w * 2, h * 2), interpolation=cv2.INTER_LINEAR)
@@ -121,29 +121,29 @@ def classify_glyph(image_path, config=_TESSERACT_CONFIG):
         if not text:
             return None, 0.0
 
-        # Prendre le premier caractère
+        # Take first character
         char = text[0]
 
-        # Confidence très élevée (Tesseract retourne 0-100, normalisé ici)
-        # On accepte seulement si confiance > 70
-        confidence = 0.85  # Approximation, Tesseract n'expose pas la confiance facilement en PSM 10
+        # High confidence (Tesseract returns 0-100, normalized here)
+        # Accept only if confidence > 70
+        confidence = 0.85  # Approximation, Tesseract doesn't expose confidence easily in PSM 10
 
         return char, confidence
 
     except Exception as e:
-        logger.warning(f"Erreur classification {image_path} : {e}")
+        logger.warning(f"Classification error {image_path}: {e}")
         return None, 0.0
 
 
 def organize_glyphs(glyph_dir, output_base='data/templates'):
-    """Organise les glyphes en dossiers par caractère.
+    """Organize glyphs into folders by character.
 
     Args:
-        glyph_dir : répertoire source des glyphes (TIMESTAMP)
-        output_base : répertoire de sortie (data/templates/)
+        glyph_dir: source glyph directory (TIMESTAMP)
+        output_base: output directory (data/templates/)
 
     Returns:
-        dict avec stats
+        dict with stats
     """
     os.makedirs(output_base, exist_ok=True)
 
@@ -158,7 +158,7 @@ def organize_glyphs(glyph_dir, output_base='data/templates'):
     failed = []
     total = 0
 
-    # Scanner tous les PNG
+    # Scan all PNGs
     for filename in sorted(os.listdir(glyph_dir)):
         if not filename.lower().endswith('.png'):
             continue
@@ -166,23 +166,23 @@ def organize_glyphs(glyph_dir, output_base='data/templates'):
         filepath = os.path.join(glyph_dir, filename)
         total += 1
 
-        # Classifier
+        # Classify
         char, confidence = classify_glyph(filepath)
 
         if char is None:
             failed.append(filename)
             stats['unclassified'] += 1
-            logger.warning(f"[{total}] {filename} : non classifiable")
+            logger.warning(f"[{total}] {filename}: not classifiable")
             continue
 
-        # Vérifier que c'est un caractère attendu
+        # Check if expected character
         if char not in EXPECTED_CHARS:
-            logger.debug(f"[{total}] {filename} : '{char}' (hors liste, skip)")
+            logger.debug(f"[{total}] {filename}: '{char}' (not in list, skip)")
             stats['unexpected_char'] += 1
             failed.append(filename)
             continue
 
-        # Copier dans le dossier approprié
+        # Copy to appropriate folder
         dest_dir = char_dirs[char]
         dest_path = os.path.join(dest_dir, filename)
 
@@ -192,7 +192,7 @@ def organize_glyphs(glyph_dir, output_base='data/templates'):
             stats[char] += 1
             logger.info(f"[{total}] {filename} → '{char}' ({confidence:.2f})")
         except Exception as e:
-            logger.error(f"[{total}] Erreur copie {filename} : {e}")
+            logger.error(f"[{total}] Copy error {filename}: {e}")
             stats['copy_error'] += 1
             failed.append(filename)
 
@@ -200,26 +200,26 @@ def organize_glyphs(glyph_dir, output_base='data/templates'):
 
 
 def print_report(stats, failed, total, output_base='data/templates'):
-    """Affiche un rapport des résultats.
+    """Print results report.
 
     Args:
-        stats : dict de stats par caractère
-        failed : list de fichiers échoués
-        total : nombre total de fichiers
-        output_base : répertoire output
+        stats: dict of stats by character
+        failed: list of failed files
+        total: total file count
+        output_base: output directory
     """
     print("\n" + "=" * 60)
-    print("RAPPORT ORGANISATION TEMPLATES")
+    print("TEMPLATE ORGANIZATION REPORT")
     print("=" * 60)
-    print(f"Total glyphes traités : {total}")
-    print(f"Organisés avec succès : {sum(v for k, v in stats.items() if k not in ['unclassified', 'unexpected_char', 'copy_error'])}")
+    print(f"Total glyphs processed: {total}")
+    print(f"Successfully organized: {sum(v for k, v in stats.items() if k not in ['unclassified', 'unexpected_char', 'copy_error'])}")
     print()
 
-    print("Répartition par caractère :")
+    print("Distribution by character:")
     for char in sorted(EXPECTED_CHARS):
         count = stats.get(char, 0)
         if count > 0:
-            print(f"  '{char}' : {count:3d} templates")
+            print(f"  '{char}': {count:3d} templates")
 
     unclassified = stats.get('unclassified', 0)
     unexpected = stats.get('unexpected_char', 0)
@@ -227,22 +227,22 @@ def print_report(stats, failed, total, output_base='data/templates'):
 
     if unclassified + unexpected + errors > 0:
         print()
-        print("Problèmes rencontrés :")
+        print("Issues encountered:")
         if unclassified > 0:
-            print(f"  Non classifiable : {unclassified}")
+            print(f"  Not classifiable: {unclassified}")
         if unexpected > 0:
-            print(f"  Caractère inattendu : {unexpected}")
+            print(f"  Unexpected character: {unexpected}")
         if errors > 0:
-            print(f"  Erreurs copy : {errors}")
+            print(f"  Copy errors: {errors}")
 
     if failed:
         print()
-        print(f"Premiers fichiers échoués ({len(failed)}) :")
+        print(f"First failed files ({len(failed)}):")
         for f in failed[:10]:
             print(f"  - {f}")
 
     print()
-    print(f"Templates organisés dans : {output_base}/")
+    print(f"Templates organized in: {output_base}/")
     print("=" * 60 + "\n")
 
 
@@ -250,25 +250,25 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Organise les glyphes collectés en templates par caractère"
+        description="Organize collected glyphs into templates by character"
     )
     parser.add_argument(
         "--glyph-dir",
         type=str,
         default=None,
-        help="Chemin du dossier source (data/glyphs/{TIMESTAMP}). Auto-détecte si absent."
+        help="Path to source folder (data/glyphs/{TIMESTAMP}). Auto-detect if absent."
     )
     parser.add_argument(
         "--output",
         type=str,
         default="data/templates",
-        help="Répertoire de sortie (défaut: data/templates)"
+        help="Output directory (default: data/templates)"
     )
     parser.add_argument(
         "--tesseract-path",
         type=str,
         default=None,
-        help="Chemin vers tesseract.exe si non standard"
+        help="Path to tesseract.exe if non-standard"
     )
 
     args = parser.parse_args()
@@ -277,27 +277,27 @@ def main():
     if not init_tesseract(args.tesseract_path):
         sys.exit(1)
 
-    # Trouver le dossier de glyphes
+    # Find glyph folder
     glyph_dir = args.glyph_dir or find_latest_glyph_dir()
     if not glyph_dir:
         sys.exit(1)
 
-    logger.info(f"Organisation des glyphes depuis : {glyph_dir}")
-    logger.info(f"Destination : {args.output}")
+    logger.info(f"Organizing glyphs from: {glyph_dir}")
+    logger.info(f"Destination: {args.output}")
 
-    # Organiser
+    # Organize
     stats, failed, total = organize_glyphs(glyph_dir, args.output)
 
-    # Rapport
+    # Report
     print_report(stats, failed, total, args.output)
 
-    # Retour
+    # Return
     success_count = sum(v for k, v in stats.items() if k not in ['unclassified', 'unexpected_char', 'copy_error'])
     if success_count == 0:
-        logger.error("Aucun glyph organisé correctement !")
+        logger.error("No glyphs organized correctly!")
         sys.exit(1)
 
-    logger.info(f"✅ {success_count}/{total} glyphes organisés")
+    logger.info(f"✅ {success_count}/{total} glyphs organized")
 
 
 if __name__ == "__main__":

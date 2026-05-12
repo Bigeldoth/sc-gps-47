@@ -1,10 +1,10 @@
-"""Segmentation des glyphes : projection horizontale + composantes connexes.
+"""Glyph segmentation: horizontal projection + connected components.
 
-Pipeline :
-  1. Projection horizontale → identifie les bandes de texte
-  2. Pour chaque bande : composantes connexes + fusion proximité 2 px
-  3. Retourne les régions de bounding box des glyphes (x, y, w, h)
-  4. Optionnel : sauvegarde les glyphes segmentés pour collecte de templates
+Pipeline:
+  1. Horizontal projection → identifies text bands
+  2. For each band: connected components + proximity merge within 2 px
+  3. Returns bounding box regions of glyphs (x, y, w, h)
+  4. Optional: saves segmented glyphs for template collection
 """
 import numpy as np
 import cv2
@@ -16,16 +16,16 @@ logger = logging.getLogger(__name__)
 
 
 def find_text_rows(binary_image, min_row_height=3):
-    """Projection horizontale : identifie les bandes de texte.
+    """Horizontal projection: identifies text bands.
 
     Args:
-        binary_image : image binaire 0/255
-        min_row_height : hauteur minimale d'une bande en pixels
+        binary_image : binary image 0/255
+        min_row_height : minimum band height in pixels
 
     Returns:
-        list de tuples (row_start, row_end) pour chaque bande détectée
+        list of tuples (row_start, row_end) for each detected band
     """
-    # Projection horizontale : somme pixels blancs par ligne
+    # Horizontal projection: sum of white pixels per row
     proj = np.sum(binary_image > 128, axis=1)
     rows = []
     in_text = False
@@ -47,15 +47,15 @@ def find_text_rows(binary_image, min_row_height=3):
 
 
 def find_glyphs_in_row(row_image, min_glyph_width=4, proximity_threshold=2):
-    """Composantes connexes dans une bande de texte, avec fusion proximité.
+    """Connected components within a text band, with proximity merging.
 
     Args:
-        row_image : image binaire d'une bande (H, W)
-        min_glyph_width : largeur minimale d'un glyphe
-        proximity_threshold : fusionner les glyphes distants de moins de N pixels
+        row_image : binary image of a band (H, W)
+        min_glyph_width : minimum glyph width
+        proximity_threshold : merge glyphs closer than N pixels apart
 
     Returns:
-        list de tuples (x, y, w, h) bounding boxes des glyphes
+        list of tuples (x, y, w, h) bounding boxes of glyphs
     """
     _, labels = cv2.connectedComponents(row_image, connectivity=8)
     components = []
@@ -75,8 +75,8 @@ def find_glyphs_in_row(row_image, min_glyph_width=4, proximity_threshold=2):
     if not components:
         return []
 
-    # Fusion proximité : si deux glyphes sont distants de < threshold px,
-    # les fusionner en un seul bounding box.
+    # Proximity merge: if two glyphs are < threshold px apart,
+    # merge them into a single bounding box.
     components.sort(key=lambda c: c[0])
     merged = [components[0]]
 
@@ -85,7 +85,7 @@ def find_glyphs_in_row(row_image, min_glyph_width=4, proximity_threshold=2):
         x_gap = comp[0] - (last[0] + last[2])
 
         if x_gap < proximity_threshold:
-            # Fusionner : élargir le bounding box
+            # Merge: expand the bounding box
             x_min = min(last[0], comp[0])
             y_min = min(last[1], comp[1])
             x_max = max(last[0] + last[2], comp[0] + comp[2])
@@ -98,20 +98,20 @@ def find_glyphs_in_row(row_image, min_glyph_width=4, proximity_threshold=2):
 
 
 def find_glyph_regions(binary_image):
-    """Segmentation complète : projection horizontale → glyphes.
+    """Full segmentation: horizontal projection → glyphs.
 
     Args:
-        binary_image : image binaire 0/255 (H, W)
+        binary_image : binary image 0/255 (H, W)
 
     Returns:
-        dict :
-            - 'rows' : list de tuples (row_start, row_end)
-            - 'glyphs' : list de dicts {
+        dict:
+            - 'rows' : list of tuples (row_start, row_end)
+            - 'glyphs' : list of dicts {
                 'x': int,
                 'y': int,
                 'w': int,
                 'h': int,
-                'row_idx': int (index de la bande parent)
+                'row_idx': int (index of parent band)
               }
     """
     rows = find_text_rows(binary_image)
@@ -126,7 +126,7 @@ def find_glyph_regions(binary_image):
             glyphs.append({
                 'id': glyph_id,
                 'x': x,
-                'y': y + row_start,  # y absolu dans l'image
+                'y': y + row_start,  # absolute y in the image
                 'w': w,
                 'h': h,
                 'row_idx': row_idx,
@@ -140,16 +140,16 @@ def find_glyph_regions(binary_image):
 
 
 def save_glyph_crops(binary_image, glyphs, output_dir='data/glyphs', prefix=''):
-    """Sauvegarde les glyphes segmentés pour collecte de templates.
+    """Saves segmented glyphs for template collection.
 
-    Structure de sortie :
+    Output structure:
         data/glyphs/{timestamp}/{glyph_id}_...png
 
     Args:
-        binary_image : image binaire source
-        glyphs : list de dicts glyph (de find_glyph_regions)
-        output_dir : répertoire de sortie
-        prefix : préfixe pour le timestamp
+        binary_image : source binary image
+        glyphs : list of glyph dicts (from find_glyph_regions)
+        output_dir : output directory
+        prefix : prefix for the timestamp
     """
     os.makedirs(output_dir, exist_ok=True)
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:-3]
@@ -158,7 +158,7 @@ def save_glyph_crops(binary_image, glyphs, output_dir='data/glyphs', prefix=''):
 
     for glyph in glyphs:
         x, y, w, h = glyph['x'], glyph['y'], glyph['w'], glyph['h']
-        # Padding léger pour contexte
+        # Light padding for context
         pad = 2
         y1 = max(0, y - pad)
         y2 = min(binary_image.shape[0], y + h + pad)
@@ -170,4 +170,4 @@ def save_glyph_crops(binary_image, glyphs, output_dir='data/glyphs', prefix=''):
 
         cv2.imwrite(filename, crop)
 
-    logger.info(f"Glyphes sauvegardés : {len(glyphs)} dans {glyph_dir}")
+    logger.info(f"Glyphs saved: {len(glyphs)} in {glyph_dir}")

@@ -1,8 +1,8 @@
-"""Génère l'icône SpaceDrive (cercle cyan néon + flèche).
+"""Generate SpaceDrive icon (neon cyan circle + arrow).
 
-Reproduit le logo : cercle cyan néon ouvert + flèche émergente en bas-droite,
-avec effet de glow externe. Sauvegarde en PNG (multi-tailles) et ICO Windows
-dans le dossier ``assets/`` à la racine du projet.
+Reproduces logo: open neon cyan circle + emergent arrow at bottom-right,
+with external glow effect. Saves as PNG (multi-size) and Windows ICO
+in ``assets/`` folder at project root.
 
 Usage:
     python tools/generate_icon.py
@@ -11,35 +11,35 @@ import os
 import math
 from PIL import Image, ImageDraw, ImageFilter
 
-# Couleur principale cyan néon (proche du logo de l'utilisateur)
+# Main neon cyan color (close to user's logo)
 CYAN = (0, 230, 232, 255)        # #00E6E8
-CYAN_GLOW = (0, 200, 230, 130)   # même teinte plus translucide pour le glow
+CYAN_GLOW = (0, 200, 230, 130)   # same hue more translucent for glow
 
-# Résolution de travail (on downscale ensuite pour les ICO)
+# Working resolution (downscale later for ICO)
 WORK_SIZE = 1024
 
 
 def _draw_arc_thick(draw, bbox, start_deg, end_deg, color, width):
-    """Dessine un arc épais (PIL.arc dessine sur 1 px seulement à largeur fine,
-    on simule l'épaisseur via plusieurs arcs concentriques).
+    """Draw thick arc (PIL.arc only draws 1 px at thin width,
+    simulate thickness via multiple concentric arcs).
     """
     draw.arc(bbox, start=start_deg, end=end_deg, fill=color, width=width)
 
 
 def _draw_arrow_head(draw, tip, direction_deg, size, color):
-    """Dessine une pointe de flèche triangulaire pointant dans direction_deg.
+    """Draw triangular arrowhead pointing in direction_deg.
 
     Args:
-        tip : (x, y) pointe de la flèche
-        direction_deg : angle de la pointe (0° = droite, 90° = bas)
-        size : longueur du côté du triangle
-        color : RGBA
+        tip: (x, y) arrow tip
+        direction_deg: angle of tip (0° = right, 90° = down)
+        size: triangle side length
+        color: RGBA
     """
     a = math.radians(direction_deg)
-    # Base du triangle perpendiculaire à la direction, derrière la pointe
+    # Triangle base perpendicular to direction, behind tip
     back_x = tip[0] - size * math.cos(a)
     back_y = tip[1] - size * math.sin(a)
-    # Perpendiculaire
+    # Perpendicular
     perp = a + math.pi / 2
     half = size * 0.6
     p1 = (back_x + half * math.cos(perp), back_y + half * math.sin(perp))
@@ -48,53 +48,53 @@ def _draw_arrow_head(draw, tip, direction_deg, size, color):
 
 
 def render_icon(size=WORK_SIZE):
-    """Rend l'icône à la résolution donnée.
+    """Render icon at given resolution.
 
     Returns:
-        PIL.Image RGBA fond transparent.
+        PIL.Image RGBA transparent background.
     """
-    # Canvas transparent
+    # Transparent canvas
     img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
 
-    # Géométrie : cercle centré, rayon ~38% du canvas
+    # Geometry: centered circle, radius ~38% of canvas
     cx, cy = size / 2, size / 2
     radius = size * 0.36
-    stroke = max(2, int(size * 0.04))  # ~4% du canvas
+    stroke = max(2, int(size * 0.04))  # ~4% of canvas
 
-    # bbox pour l'arc
+    # bbox for arc
     bbox = (cx - radius, cy - radius, cx + radius, cy + radius)
 
-    # ─── Couche glow ─────────────────────────────────────────────
-    # Dessiner le motif sur un calque, blurrer, composite sous le motif net
+    # ─── Glow layer ──────────────────────────────────────────────
+    # Draw pattern on layer, blur, composite under sharp pattern
     glow = Image.new('RGBA', (size, size), (0, 0, 0, 0))
     gdraw = ImageDraw.Draw(glow)
     glow_stroke = int(stroke * 1.6)
 
-    # Arc cyan presque complet, gap entre ~340° et ~30° (~50° d'ouverture à droite)
-    # PIL angles : 0° = 3h, croît horaire, donc on dessine de 30° à 340°.
+    # Nearly complete cyan arc, gap between ~340° and ~30° (~50° opening right)
+    # PIL angles: 0° = 3h, increases clockwise, so draw 30° to 340°.
     _draw_arc_thick(gdraw, bbox, 30, 340, CYAN_GLOW, glow_stroke)
 
-    # Flèche émergente depuis le gap (vers ~25° = bas-droite extérieur)
-    arrow_angle = 25  # angle où la flèche pointe
-    arrow_anchor_angle = 25  # position d'attachement sur le cercle (gap droite)
+    # Arrow emerging from gap (toward ~25° = bottom-right outside)
+    arrow_angle = 25  # angle arrow points
+    arrow_anchor_angle = 25  # attachment position on circle (right gap)
     anchor_x = cx + radius * math.cos(math.radians(arrow_anchor_angle))
     anchor_y = cy + radius * math.sin(math.radians(arrow_anchor_angle))
-    # Flèche prolonge vers l'extérieur, pointe à droite (horizontale)
+    # Arrow extends outward, points right (horizontal)
     arrow_length = size * 0.14
     tip_x = anchor_x + arrow_length * math.cos(math.radians(arrow_angle))
     tip_y = anchor_y + arrow_length * math.sin(math.radians(arrow_angle))
-    # Trait reliant l'ancre à la pointe
+    # Line connecting anchor to tip
     gdraw.line(
         [(anchor_x, anchor_y), (tip_x, tip_y)],
         fill=CYAN_GLOW, width=glow_stroke,
     )
     _draw_arrow_head(gdraw, (tip_x, tip_y), arrow_angle, size * 0.13, CYAN_GLOW)
 
-    # Blur du calque glow
+    # Blur glow layer
     glow_blur = max(4, int(size * 0.04))
     glow = glow.filter(ImageFilter.GaussianBlur(glow_blur))
 
-    # ─── Couche nette ────────────────────────────────────────────
+    # ─── Sharp layer ─────────────────────────────────────────────
     sharp = Image.new('RGBA', (size, size), (0, 0, 0, 0))
     sdraw = ImageDraw.Draw(sharp)
     _draw_arc_thick(sdraw, bbox, 30, 340, CYAN, stroke)
@@ -104,7 +104,7 @@ def render_icon(size=WORK_SIZE):
     )
     _draw_arrow_head(sdraw, (tip_x, tip_y), arrow_angle, size * 0.13, CYAN)
 
-    # Composite : glow d'abord, motif net par-dessus
+    # Composite: glow first, sharp pattern on top
     img = Image.alpha_composite(img, glow)
     img = Image.alpha_composite(img, sharp)
 
@@ -112,19 +112,19 @@ def render_icon(size=WORK_SIZE):
 
 
 def main():
-    # Dossier de sortie : <racine_projet>/assets/
+    # Output folder: <project_root>/assets/
     tools_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(tools_dir)
     out_dir = os.path.join(project_root, 'assets')
     os.makedirs(out_dir, exist_ok=True)
 
-    # Image haute résolution
+    # High-resolution image
     master = render_icon(WORK_SIZE)
     png_path = os.path.join(out_dir, 'icon.png')
     master.save(png_path, 'PNG')
     print(f"Wrote {png_path} ({WORK_SIZE}x{WORK_SIZE})")
 
-    # ICO Windows multi-tailles
+    # Multi-size Windows ICO
     ico_sizes = [16, 24, 32, 48, 64, 128, 256]
     ico_images = []
     for s in ico_sizes:
@@ -139,7 +139,7 @@ def main():
     )
     print(f"Wrote {ico_path} (sizes: {ico_sizes})")
 
-    # PNG 64x64 pour preview rapide
+    # 64x64 PNG for quick preview
     preview = master.resize((64, 64), Image.Resampling.LANCZOS)
     preview_path = os.path.join(out_dir, 'icon_64.png')
     preview.save(preview_path, 'PNG')
