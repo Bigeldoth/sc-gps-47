@@ -50,7 +50,10 @@ _RE_POS = re.compile(
 # Identifies a CamDir line even if OCR misses the ':' or leading 'C'.
 _RE_CAMDIR_TAG = re.compile(r'amdir', re.IGNORECASE)
 # Rejects Root/SolarSystem lines (absolute frame ~14 M km, unusable).
-_RE_POS_SYSTEM_FRAME = re.compile(r'(r[o0e]{1,3}t|solar\s*system)', re.IGNORECASE)
+_RE_POS_SYSTEM_FRAME = re.compile(
+    r'(?<![a-zA-Z])r[o0e]{1,3}t(?![a-zA-Z])|solar\s*system',
+    re.IGNORECASE,
+)
 
 # Extracts the zone name before "Pos:" — accepts any format (OOC_, GrimHex, etc.)
 _RE_ZONE_NAME = re.compile(r'^(.*?)\s*[Pp]os:?\s*', re.IGNORECASE)
@@ -198,6 +201,8 @@ _OCR_CORRECTIONS = {
     'Roet_Pos': 'Root_Pos',
     'R0ot': 'Root',
     'Rcot': 'Root',
+    'GGC': 'OOC',
+    'Micratech': 'Microtech',
 }
 
 
@@ -209,10 +214,12 @@ def _normalize_ooc_line(line):
     2. Pos:_ → Pos:  (underscore/multiple spaces after the colon)
     3. lkm/Ikm/kn/KM/kh → km  (OCR variants of the unit, after a digit)
     4. km_-529 → km -529  (underscore between coordinates)
+    5. G/O → 0 in digit contexts (green channel artefact: 586.4G26 → 586.4026)
     """
-    # Insert a space before Pos: if it is glued to a non-space character.
     line = re.sub(r'(?<=[^\s])([Pp]os:)', r' \1', line)
     line = re.sub(r'(Pos:?)[\s_]+', r'\1 ', line)
+    line = re.sub(r'(?<=[\d.])[GO](?=[\d.])', '0', line)
+    line = re.sub(r'(?<=\d)[GO](?=\s*km)', '0', line)
     line = re.sub(r'(?<=[\d.])[lLiI1]?[kK][mMnNhH](?=[\s_\-\d]|$)', 'km', line)
     line = re.sub(r'km[\s_]+(-?\d)', r'km \1', line)
     return line

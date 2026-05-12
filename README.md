@@ -188,6 +188,40 @@ Detailed OCR optimization plan: [`docs/OCR_OPTIMIZATION_PLAN.md`](docs/OCR_OPTIM
 
 ---
 
+## Known bugs
+
+### OCR pipeline
+
+| # | Severity | Description |
+|---|----------|-------------|
+| 1 | **High** | **Tesseract `0 → 6` digit confusion on bright backgrounds.** When the green channel is selected (daylight scenes, e.g. MicroTech atmosphere), Tesseract occasionally reads `0` as `6` in the integer part of coordinates (e.g. `580` → `586`). This causes ~6 km position errors on affected frames. Not fixable by post-processing; relies on multi-frame consensus to average out. |
+| 2 | **Medium** | **NCC/ONNX glyph classifier fails on green-channel frames.** Templates were trained on max_RGB (night/space) preprocessing. When the pipeline selects the green channel (G − R > 15), glyph appearance differs and confidence drops below threshold — nearly all glyphs return `?`. The pipeline falls back to Tesseract-only, losing the accuracy benefit of the custom classifier. |
+| 3 | **Low** | **Trailing zero truncation on Z coordinate.** `815.8260` is extracted as `815.826` (3 decimals instead of 4). The strict regex accepts 3-4 decimals so the reading passes, but precision is reduced from 10 cm to 1 m. |
+
+### Navigation
+
+| # | Severity | Description |
+|---|----------|-------------|
+| 4 | **High** | **Cross-OOC distance check not enforced.** `NavigationEngine.calculate_distance()` returns a numeric distance even when target and player are in different ObjectContainers (e.g. Hurston vs MicroTech). Should return `None`. Related: `is_target_in_same_ooc()` always returns `True`. |
+| 5 | **High** | **Velocity bearing sign inverted on X-axis.** `calculate_velocity_bearing()` and `calculate_absolute_bearing()` return inverted yaw when the target is along the X-axis (right/left swapped). The SC X-axis inversion (`-dx`) may be applied incorrectly or doubled. |
+| 6 | **Medium** | **Legacy POIs without `ooc` field still navigable.** POIs saved before the OOC-aware update (missing `ooc` key) should be rejected, but `calculate_distance()` still computes a distance for them. |
+
+### Test suite
+
+| # | Severity | Description |
+|---|----------|-------------|
+| 7 | **Medium** | **`test_bearing.py` broken — stale import.** Imports `calculate_relative_bearing` which was renamed to `calculate_velocity_bearing`. Tests do not collect. |
+| 8 | **Medium** | **`test_ocr_camdir.py` broken — stale import.** Imports `_RE_OOC_TAG` which no longer exists in `ocr.py`. Tests do not collect. |
+
+### Documentation
+
+| # | Severity | Description |
+|---|----------|-------------|
+| 9 | **Low** | **README Roadmap outdated.** Phases A–D are described as "Coming" but are already implemented (channel isolation, range validation, decimal recovery, NCC/ONNX classifiers). |
+| 10 | **Low** | **README states 4 thresholding passes.** The pipeline now uses 3 passes (Otsu, Otsu-inv, adaptive). The HSV pass was removed. |
+
+---
+
 ## Contributing
 
 1. Fork → branch `feat/...` or `fix/...`
