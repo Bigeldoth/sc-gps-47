@@ -10,20 +10,20 @@ from difflib import SequenceMatcher
 logger = logging.getLogger(__name__)
 
 
-# Durée pendant laquelle on tolère que l'OCR ne retrouve pas le nom de zone
-# avant de considérer que le joueur a quitté la zone de la cible.
+# Duration during which we tolerate OCR failing to find the zone name
+# before considering that the player has left the target zone.
 _ZONE_GRACE_PERIOD_S = 180.0  # 3 minutes
 
-# Seuil de similarité pour considérer deux noms de zone comme identiques
-# (tolérance aux variations OCR : OOC_Stanton1 vs 0OC_Stanton1 vs OOC Stanton1).
+# Similarity threshold to consider two zone names identical
+# (tolerance for OCR variations: OOC_Stanton1 vs 0OC_Stanton1 vs OOC Stanton1).
 _ZONE_MATCH_THRESHOLD = 0.85
 
 
 def _normalize_zone(name):
-    """Normalise un nom de zone pour comparaison robuste aux variations OCR.
+    """Normalize a zone name for robust comparison against OCR variations.
 
-    Lowercase + retire tout caractère non-alphanumérique.
-    Ex: ``OOC_Stanton1_Hurston`` et ``OOC Stanton1-Hurston`` → ``oocstanton1hurston``.
+    Lowercase + strip all non-alphanumeric characters.
+    E.g.: ``OOC_Stanton1_Hurston`` and ``OOC Stanton1-Hurston`` → ``oocstanton1hurston``.
     """
     if not name:
         return ""
@@ -31,10 +31,10 @@ def _normalize_zone(name):
 
 
 def _zones_match(a, b, threshold=_ZONE_MATCH_THRESHOLD):
-    """True si deux noms de zone sont considérés comme la même zone.
+    """True if two zone names are considered the same zone.
 
-    Tolérance aux confusions OCR (O/0, I/1, espaces/underscores) via
-    SequenceMatcher de difflib.
+    Tolerates OCR confusions (O/0, I/1, spaces/underscores) via
+    difflib SequenceMatcher.
     """
     if not a or not b:
         return False
@@ -48,10 +48,10 @@ def _zones_match(a, b, threshold=_ZONE_MATCH_THRESHOLD):
 
 
 def format_distance(distance_km):
-    """Formate une distance (en km) pour l'affichage.
+    """Format a distance (in km) for display.
 
-    Retourne une chaîne en mètres sous 1 km (sans décimale), en kilomètres
-    au-delà (deux décimales). ``None`` devient ``"---"``.
+    Returns a string in metres below 1 km (no decimal), in kilometres
+    above (two decimals). ``None`` becomes ``"---"``.
     """
     if distance_km is None:
         return "---"
@@ -61,14 +61,14 @@ def format_distance(distance_km):
 
 
 def normalize_angle_signed(deg):
-    """Ramène un angle (degrés) dans l'intervalle ]-180, +180]."""
+    """Map an angle (degrees) into the interval ]-180, +180]."""
     if deg is None:
         return None
     return ((deg + 180.0) % 360.0) - 180.0
 
 
 def ema_angle(prev, new, alpha):
-    """EMA sur des angles avec gestion correcte du wrap-around ±180°."""
+    """EMA over angles with correct ±180° wrap-around handling."""
     if prev is None:
         return new
     diff = normalize_angle_signed(new - prev)
@@ -76,18 +76,18 @@ def ema_angle(prev, new, alpha):
 
 
 def calculate_absolute_bearing(current_pos, target):
-    """Cap absolu (repère monde) entre la position courante et la cible.
+    """Absolute heading (world frame) from the current position to the target.
 
-    À utiliser quand le joueur est stationnaire : on ne connaît pas son
-    orientation mais on peut indiquer le vecteur monde à atteindre.
+    Use when the player is stationary: the player's orientation is unknown
+    but the world vector to reach can still be indicated.
 
     Args:
-        current_pos: dict avec ``x/y/z`` (km).
-        target: dict avec ``x/y/z`` (km).
+        current_pos: dict with ``x/y/z`` (km).
+        target: dict with ``x/y/z`` (km).
 
     Returns:
-        Dict ``{dx, dy, dz, yaw_deg, pitch_deg, distance_km}`` en repère
-        monde, ou ``None`` si impossible.
+        Dict ``{dx, dy, dz, yaw_deg, pitch_deg, distance_km}`` in world
+        frame, or ``None`` if not computable.
     """
     if not target or current_pos is None:
         return None
@@ -103,7 +103,10 @@ def calculate_absolute_bearing(current_pos, target):
     if dx == 0 and dy == 0:
         yaw = 0.0
     else:
-        yaw = math.degrees(math.atan2(dx, dy))
+        # In SC (OOC frame), the X axis is inverted relative to the standard
+        # navigation convention (X+ points left, X- points right).
+        # We negate dx to get: Y+ = forward (↑), X- = right (→).
+        yaw = math.degrees(math.atan2(-dx, dy))
     if horiz == 0:
         pitch = 90.0 if dz > 0 else (-90.0 if dz < 0 else 0.0)
     else:
@@ -117,9 +120,9 @@ def calculate_absolute_bearing(current_pos, target):
 
 
 def format_axis_delta(km):
-    """Formate un delta d'axe pour affichage compact.
+    """Format an axis delta for compact display.
 
-    < 10 km : 1 décimale ; < 1000 km : entier ; >= 1000 km : 'k' notation.
+    < 10 km: 1 decimal; < 1000 km: integer; >= 1000 km: 'k' notation.
     """
     if km is None:
         return "?"
@@ -131,20 +134,20 @@ def format_axis_delta(km):
 
 
 def calculate_velocity_bearing(velocity, current_pos, target):
-    """Offsets (yaw, pitch) en degrés signés entre la direction de
-    déplacement et la cible.
+    """Signed (yaw, pitch) offsets in degrees between the movement direction
+    and the target.
 
     Args:
-        velocity: tuple ``(vx, vy, vz)`` en km/s, ou ``None`` (stationnaire).
-        current_pos: dict avec ``x/y/z`` (km) — position du joueur.
-        target: dict avec ``x/y/z`` (km) — destination.
+        velocity: tuple ``(vx, vy, vz)`` in km/s, or ``None`` (stationary).
+        current_pos: dict with ``x/y/z`` (km) — player position.
+        target: dict with ``x/y/z`` (km) — destination.
 
     Returns:
-        ``(yaw_off, pitch_off)`` dans ]-180, +180], ou ``None`` si la
-        vélocité, la position ou la cible ne sont pas définies.
+        ``(yaw_off, pitch_off)`` in ]-180, +180], or ``None`` if velocity,
+        position, or target are not defined.
 
-        - ``yaw_off`` positif : la cible est à droite du déplacement.
-        - ``pitch_off`` positif : la cible est au-dessus du déplacement.
+        - Positive ``yaw_off``: target is to the right of the movement direction.
+        - Positive ``pitch_off``: target is above the movement direction.
     """
     if velocity is None or target is None or current_pos is None:
         return None
@@ -161,12 +164,13 @@ def calculate_velocity_bearing(velocity, current_pos, target):
     if dx == 0 and dy == 0 and dz == 0:
         return 0.0, 0.0
 
-    # Cap horizontal de la vélocité et de la cible
-    vel_yaw = math.degrees(math.atan2(vx, vy)) if (vx or vy) else 0.0
-    tgt_yaw = math.degrees(math.atan2(dx, dy)) if (dx or dy) else 0.0
+    # Horizontal heading of velocity and target.
+    # SC: X+ = left, X- = right → invert X for standard convention.
+    vel_yaw = math.degrees(math.atan2(-vx, vy)) if (vx or vy) else 0.0
+    tgt_yaw = math.degrees(math.atan2(-dx, dy)) if (dx or dy) else 0.0
     yaw_off = normalize_angle_signed(tgt_yaw - vel_yaw)
 
-    # Pitch (composante verticale)
+    # Pitch (vertical component)
     vel_horiz = math.hypot(vx, vy)
     tgt_horiz = math.hypot(dx, dy)
     vel_pitch = math.degrees(math.atan2(vz, vel_horiz)) if vel_horiz > 0 else 0.0
@@ -176,76 +180,35 @@ def calculate_velocity_bearing(velocity, current_pos, target):
     return yaw_off, pitch_off
 
 
-def calculate_relative_bearing(current_pos, cam_dir, target, yaw_calib):
-    """Offsets (yaw, pitch) en degrés signés vers la cible, dans le repère caméra.
-
-    Args:
-        current_pos: dict avec 'x', 'y', 'z' en km (sortie OCR).
-        cam_dir: dict avec 'pitch', 'yaw' en degrés (sortie OCR CamDir).
-        target: dict avec 'x', 'y', 'z' en km.
-        yaw_calib: tuple ``(sign, offset)`` issu de la calibration. Convertit
-            le yaw monde en yaw caméra : ``cam_yaw = sign * world_yaw + offset``.
-
-    Returns:
-        ``(yaw_off, pitch_off)`` dans ]-180, +180], ou ``None`` si une donnée
-        manque. ``0,0`` signifie « cible droit devant ». Le yaw_off positif =
-        cible à droite du cap, négatif = cible à gauche.
-    """
-    if not target or not cam_dir or not yaw_calib:
-        return None
-    if current_pos is None or current_pos.get("x") is None:
-        return None
-    if cam_dir.get("yaw") is None or cam_dir.get("pitch") is None:
-        return None
-
-    dx = target["x"] - current_pos["x"]
-    dy = target["y"] - current_pos["y"]
-    dz = target["z"] - current_pos["z"]
-
-    horiz = math.hypot(dx, dy)
-    if horiz == 0 and dz == 0:
-        return 0.0, 0.0
-
-    target_world_yaw = math.degrees(math.atan2(dx, dy)) if horiz > 0 else 0.0
-    target_world_pitch = math.degrees(math.atan2(dz, horiz))
-
-    sign, offset = yaw_calib
-    target_cam_yaw = sign * target_world_yaw + offset
-
-    yaw_off = normalize_angle_signed(target_cam_yaw - cam_dir["yaw"])
-    pitch_off = normalize_angle_signed(target_world_pitch - cam_dir["pitch"])
-    return yaw_off, pitch_off
-
-
 class NavigationEngine:
     def __init__(self, poi_file=None):
         if getattr(sys, 'frozen', False):
             self.base_dir = os.path.dirname(sys.executable)
         else:
             self.base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            
+
         if poi_file is None:
             poi_file = os.path.join(self.base_dir, "data", "poi.json")
-            
+
         self.poi_file = poi_file
         self.user_poi_file = os.path.join(self.base_dir, "data", "user_poi.json")
-        
-        # Créer le dossier data s'il n'existe pas
+
+        # Create the data folder if it does not exist
         os.makedirs(os.path.dirname(self.user_poi_file), exist_ok=True)
-        
+
         self.poi_data = self.load_poi(self.poi_file)
         self.user_poi = self.load_user_poi()
         self.target = None
 
-        # Zone tracking (cf. set_target/update_zone_tracking/is_target_in_same_ooc).
-        # On assume au lancement de la navigation que le joueur est dans la zone
-        # de la cible. Si l'OCR confirme au moins une fois la zone, on lock.
-        # Sinon, après _ZONE_GRACE_PERIOD_S sans match, on considère hors zone.
+        # Zone tracking (see set_target/update_zone_tracking/is_target_in_same_ooc).
+        # At navigation start we assume the player is already in the target zone.
+        # If OCR confirms the zone at least once, we lock permanently.
+        # Otherwise, after _ZONE_GRACE_PERIOD_S without a match, we consider out-of-zone.
         self._zone_match_locked = False
         self._zone_last_match_ts = None
 
     def load_user_poi(self):
-        """Charge les points enregistrés par l'utilisateur"""
+        """Load points saved by the user."""
         if os.path.exists(self.user_poi_file):
             try:
                 with open(self.user_poi_file, 'r') as f:
@@ -255,7 +218,7 @@ class NavigationEngine:
         return []
 
     def save_user_poi(self):
-        """Sauvegarde les points utilisateur"""
+        """Save user points."""
         try:
             with open(self.user_poi_file, 'w') as f:
                 json.dump(self.user_poi, f, indent=4)
@@ -264,11 +227,11 @@ class NavigationEngine:
             return False
 
     def add_user_point(self, name, x, y, z, location="Unknown", ooc=None):
-        """Ajoute un nouveau point personnalisé.
+        """Add a new custom point.
 
-        ``ooc`` (ObjectContainer name, ex: ``Stanton_1_Hurston``) identifie
-        le repère planet-relative. Indispensable pour la navigation : la
-        distance et le bearing ne sont calculables qu'au sein du même OOC.
+        ``ooc`` (ObjectContainer name, e.g. ``Stanton_1_Hurston``) identifies
+        the planet-relative frame. Required for navigation: distance and
+        bearing can only be computed within the same OOC.
         """
         point = {
             "name": name,
@@ -283,7 +246,7 @@ class NavigationEngine:
         return point
 
     def export_points(self, export_path):
-        """Exporte les points utilisateur vers un fichier JSON"""
+        """Export user points to a JSON file."""
         try:
             with open(export_path, 'w') as f:
                 json.dump(self.user_poi, f, indent=4)
@@ -292,7 +255,7 @@ class NavigationEngine:
             return False
 
     def import_points(self, import_path):
-        """Importe des points depuis un fichier JSON"""
+        """Import points from a JSON file."""
         try:
             with open(import_path, 'r') as f:
                 new_points = json.load(f)
@@ -307,48 +270,48 @@ class NavigationEngine:
     def load_poi(self, file_path):
         try:
             if not os.path.exists(file_path):
-                print(f"Fichier POI non trouvé: {file_path}")
+                print(f"POI file not found: {file_path}")
                 return []
             with open(file_path, 'r') as f:
                 return json.load(f)
         except Exception as e:
-            print(f"Erreur chargement POI : {e}")
+            print(f"Error loading POI: {e}")
             return []
 
     def set_target(self, x, y, z, name="Destination", ooc=None):
-        """Définit la destination et démarre le tracking de zone.
+        """Set the destination and start zone tracking.
 
-        ``ooc`` est le nom de zone attendu. On part du principe que l'utilisateur
-        est déjà dans cette zone — la navigation démarre immédiatement.
+        ``ooc`` is the expected zone name. It is assumed the user is already
+        in that zone — navigation starts immediately.
 
-        Le tracking de zone (``update_zone_tracking`` + ``is_target_in_same_ooc``)
-        confirme cette hypothèse au premier match OCR. Si aucun match dans les
-        ``_ZONE_GRACE_PERIOD_S`` secondes, on considère que le joueur n'est plus
-        dans la zone.
+        Zone tracking (``update_zone_tracking`` + ``is_target_in_same_ooc``)
+        confirms this assumption on the first OCR match. If no match occurs
+        within ``_ZONE_GRACE_PERIOD_S`` seconds, the player is considered
+        out-of-zone.
         """
         self.target = {"x": x, "y": y, "z": z, "name": name, "ooc": ooc}
         self._zone_match_locked = False
         self._zone_last_match_ts = time.monotonic()
         if ooc:
-            logger.info(f"Navigation vers '{name}' (zone attendue: {ooc!r}) — assume in-zone")
+            logger.info(f"Navigating to '{name}' (expected zone: {ooc!r}) — assuming in-zone")
 
     def clear_target(self):
-        """Annule la navigation et reset le zone tracking."""
+        """Cancel navigation and reset zone tracking."""
         self.target = None
         self._zone_match_locked = False
         self._zone_last_match_ts = None
 
     def update_zone_tracking(self, current_pos):
-        """Met à jour le tracking de zone selon le scan OCR courant.
+        """Update zone tracking based on the current OCR scan result.
 
-        À appeler à chaque résultat OCR. Si le nom de zone courant correspond
-        (au sens de ``_zones_match``) à celui de la cible, on lock définitif.
-        Sinon, on laisse courir le grace period.
+        Call on each OCR result. If the current zone name matches
+        (per ``_zones_match``) the target zone, lock permanently.
+        Otherwise, let the grace period run.
         """
         if not self.target or current_pos is None:
             return
         if self._zone_match_locked:
-            return  # déjà verrouillé, plus besoin de comparer
+            return  # already locked, no further comparison needed
         cur_ooc = current_pos.get("ooc")
         tgt_ooc = self.target.get("ooc")
         if not cur_ooc or not tgt_ooc:
@@ -357,17 +320,17 @@ class NavigationEngine:
             self._zone_match_locked = True
             self._zone_last_match_ts = time.monotonic()
             logger.info(
-                f"Zone confirmée par OCR : '{cur_ooc}' ≈ '{tgt_ooc}' — lock définitif"
+                f"Zone confirmed by OCR: '{cur_ooc}' ≈ '{tgt_ooc}' — permanent lock"
             )
 
     def is_target_in_same_ooc(self, current_pos):
-        """True si on considère que le joueur est dans la zone de la cible.
+        """True if the player is considered to be in the target zone.
 
-        Logique :
-          1. Lock définitif après le 1er match OCR confirmé via ``update_zone_tracking``.
-          2. Sinon : tolérance pendant ``_ZONE_GRACE_PERIOD_S`` (3 min) à partir
-             de ``set_target`` — on assume in-zone.
-          3. Au-delà sans aucun match : on considère hors zone.
+        Logic:
+          1. Permanent lock after the first OCR-confirmed match via ``update_zone_tracking``.
+          2. Otherwise: tolerance for ``_ZONE_GRACE_PERIOD_S`` (3 min) from
+             ``set_target`` — assume in-zone.
+          3. Beyond that with no match: considered out-of-zone.
         """
         if not self.target:
             return False
@@ -378,9 +341,9 @@ class NavigationEngine:
         return (time.monotonic() - self._zone_last_match_ts) <= _ZONE_GRACE_PERIOD_S
 
     def time_until_zone_expired(self):
-        """Secondes restantes avant que la zone expire.
+        """Seconds remaining before the zone expires.
 
-        Retourne ``None`` si lock définitif ou si pas de cible.
+        Returns ``None`` if permanently locked or if there is no active target.
         """
         if self._zone_match_locked or self.target is None or self._zone_last_match_ts is None:
             return None
@@ -388,12 +351,12 @@ class NavigationEngine:
         return max(0.0, _ZONE_GRACE_PERIOD_S - elapsed)
 
     def calculate_distance(self, current_pos):
-        """Distance euclidienne entre la position courante et la cible.
+        """Euclidean distance between the current position and the target.
 
-        Coordonnées en km dans le repère **planet-relative** (OOC). Renvoie
-        ``None`` si la cible n'est pas définie, si la position courante est
-        manquante, OU si le joueur et la cible sont dans des OOC différents
-        (la distance n'a alors pas de sens sans transformation cross-zone).
+        Coordinates in km in the **planet-relative** frame (OOC). Returns
+        ``None`` if the target is not set, the current position is missing,
+        OR the player and target are in different OOCs (distance has no
+        meaning without a cross-zone transform).
         """
         if not self.target or current_pos.get("x") is None:
             return None
@@ -407,30 +370,30 @@ class NavigationEngine:
         return math.sqrt(dx * dx + dy * dy + dz * dz)
 
     def calculate_bearing(self, current_pos):
-        """Calcul simple du vecteur de direction (Pitch/Yaw)"""
+        """Simple direction vector computation (Pitch/Yaw)."""
         if not self.target or current_pos["x"] is None:
             return None
-            
+
         dx = self.target["x"] - current_pos["x"]
         dy = self.target["y"] - current_pos["y"]
         dz = self.target["z"] - current_pos["z"]
-        
-        # En navigation spatiale SC, on utilise souvent l'alignement visuel
-        # Ce moteur retournera les deltas pour aider l'overlay à placer un curseur
+
+        # In SC space navigation, visual alignment is typically used.
+        # This engine returns deltas to help the overlay place a cursor.
         return {"dx": dx, "dy": dy, "dz": dz}
 
     def get_all_poi_for_location(self, location_name):
-        """Retourne la liste des POI (système + utilisateur) pour une planète donnée"""
+        """Return the list of POIs (system + user) for a given planet."""
         pois = []
-        # Points du système
+        # System points
         for system in self.poi_data:
             for body in system["bodies"]:
                 if body["name"].lower() in location_name.lower():
                     pois.extend(body["poi"])
-        
-        # Points utilisateur
+
+        # User points
         for upoi in self.user_poi:
             if upoi.get("location", "").lower() in location_name.lower() or location_name == "All":
                 pois.append(upoi)
-                
+
         return pois

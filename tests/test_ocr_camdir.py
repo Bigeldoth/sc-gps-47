@@ -1,4 +1,4 @@
-"""Tests d'extraction CamDir tolérante aux variantes OCR + filtre Pos."""
+"""Tests for CamDir extraction tolerant to OCR variants + Pos filtering."""
 import os
 import sys
 
@@ -14,10 +14,9 @@ from ocr import (
 
 
 def _parse_text(text):
-    """Reproduit la logique de _ocr_single_pass sur du texte brut."""
-    proc = OCRProcessor.__new__(OCRProcessor)  # bypass __init__ (pas de Tesseract)
+    """Reproduces the logic of _ocr_single_pass on raw text."""
+    proc = OCRProcessor.__new__(OCRProcessor)  # bypass __init__ (no Tesseract)
     proc.engine = "tesseract"
-    proc.paddle_ocr = None
     proc.tesseract_config = ""
 
     text = proc._correct_ocr_errors(text)
@@ -80,14 +79,14 @@ def test_camdir_negative_values():
 
 
 def test_camdir_ocr_error_carndir():
-    text = "CarnDir: 12 5 90 FOV: 60"  # n→m typo OCR
+    text = "CarnDir: 12 5 90 FOV: 60"  # OCR typo: n→m
     d = _parse_text(text)
     assert d["cam_pitch"] == 12
     assert d["cam_yaw"] == 90
 
 
 def test_camdir_ocr_error_cam0ir():
-    text = "Cam0ir: 12 5 90 FOV: 60"  # D→0 typo OCR
+    text = "Cam0ir: 12 5 90 FOV: 60"  # OCR typo: D→0
     d = _parse_text(text)
     assert d["cam_pitch"] == 12
     assert d["cam_yaw"] == 90
@@ -101,35 +100,35 @@ def test_camdir_missing():
 
 
 def test_camdir_with_lost_c():
-    text = "amdir: 27 27 112 FOV: 60"  # le 'C' initial perdu par OCR
+    text = "amdir: 27 27 112 FOV: 60"  # Initial 'C' lost by OCR
     d = _parse_text(text)
     assert d["cam_yaw"] == 112
 
 
-# ---- Cas réels du log : OCR colle les valeurs ----
+# ---- Real log cases: OCR merges values ----
 
 def test_camdir_concat_negatives():
-    # 'CamDir:-15-32-92_FOV' : tous négatifs cascadés
+    # 'CamDir:-15-32-92_FOV': all cascaded negatives
     assert _parse_camdir_values("CamDir:-15-32-92_FOV:59") == [-15, -32, -92]
 
 
 def test_camdir_pos_then_negs():
-    # 'CamDir:18-7-179FOV:59' : 18, -7, -179
+    # 'CamDir:18-7-179FOV:59': 18, -7, -179
     assert _parse_camdir_values("CamDir:18-7-179FOV:59") == [18, -7, -179]
 
 
 def test_camdir_split_neg_run_5177():
-    # 'CamDir:25-5177FOV:59' : -5177 doit être splitté en -5 + 177
+    # 'CamDir:25-5177FOV:59': -5177 must be split into -5 + 177
     assert _parse_camdir_values("CamDir:25-5177FOV:59") == [25, -5, 177]
 
 
 def test_camdir_partial_space():
-    # 'CamDir: 8-29-128FOV' : 8 -29 -128
+    # 'CamDir: 8-29-128FOV': 8 -29 -128
     assert _parse_camdir_values("CamDir: 8-29-128FOV:59") == [8, -29, -128]
 
 
 def test_camdir_3pos_no_separator_unrecoverable():
-    # '2727112' purement positifs collés : ambigu, on retourne None
+    # '2727112' purely positive and merged: ambiguous, return None
     assert _parse_camdir_values("CamDir:2727112FOV:59") is None
 
 
@@ -139,7 +138,7 @@ def test_camdir_canonical_via_parser():
 
 
 def test_camdir_negative_first_positives_after():
-    # 'CamDir:-90 45 90' : tous valides
+    # 'CamDir:-90 45 90': all valid
     assert _parse_camdir_values("CamDir:-90 45 90 FOV:60") == [-90, 45, 90]
 
 
@@ -151,18 +150,18 @@ def test_camdir_no_tag():
     assert _parse_camdir_values("Zone:Root Pos: 14 -1 0") is None
 
 
-# ---- Filtre Pos: priorise les lignes OOC (planet-relative) ----
+# ---- Pos filter: prioritizes OOC lines (planet-relative) ----
 
 def test_pos_objectcontainer_rejected():
-    # Habs : sous-conteneur en mètres, pas une ligne OOC → ignoré
+    # Habs: sub-container in meters, not an OOC line → ignored
     text = "Zone:ObjectContainer_HabsPos:21.61m-11.39m57.98s"
     d = _parse_text(text)
     assert d["x"] is None
 
 
 def test_pos_mixed_only_root_kept():
-    # Avec le refactor OOC, on garde la ligne OOC (pas Root) — la dernière OOC
-    # match écrase. Ici on n'a qu'une OOC: Stanton1_L2 (4133km).
+    # After OOC refactor, we keep OOC lines (not Root) — last OOC match wins.
+    # Here we have only one OOC: Stanton1_L2 (4133km).
     text = "\n".join([
         "Zone:ObjectContainer_HabsPos:21.61m-11.39m57.98s",
         "Zone:OOC_Stanton1_L2Pos:4133.5658km-1964.1279km-529.8936km",
@@ -170,13 +169,13 @@ def test_pos_mixed_only_root_kept():
         "Zone:RootPos:14139636.4135km-1964.1304km-529.892km",
     ])
     d = _parse_text(text)
-    # Zone OOC capturée → valeurs ~4133 (planet-relative), pas 14M
+    # OOC zone captured → values ~4133 (planet-relative), not 14M
     assert d["x"] is not None
     assert abs(d["x"] - 4133.5658) < 1e-3
     assert d["ooc"] == "Stanton1_L2"
 
 
-# ---- OCR : extraction OOC name + coords ----
+# ---- OCR: OOC name + coords extraction ----
 
 def test_ooc_hurston_extracted():
     text = "Zone: OOC_Stanton_1_Hurston Pos: 130.9362km 52.8723km 990.0499km"
@@ -195,7 +194,7 @@ def test_ooc_no_underscore_in_oocname_compact():
 
 
 def test_ooc_objectcontainer_rejected_no_ooc_tag():
-    # ObjectContainer_Habs n'est pas une OOC line → ignoré
+    # ObjectContainer_Habs is not an OOC line → ignored
     text = "Zone:ObjectContainer_HabsPos:21.61m-11.39m57.98s"
     d = _parse_text(text)
     assert d["x"] is None
@@ -203,8 +202,8 @@ def test_ooc_objectcontainer_rejected_no_ooc_tag():
 
 
 def test_ooc_root_only_no_ooc_rejected():
-    # Pas de ligne OOC, juste Root → on n'extrait rien (Root est instable
-    # pour les POI planet-bound)
+    # No OOC line, only Root → nothing extracted (Root is unstable
+    # for planet-bound POIs)
     text = "Zone:RootPos:14139636.4135km-1964.1304km-529.892km"
     d = _parse_text(text)
     assert d["x"] is None

@@ -1,0 +1,7 @@
+# SpaceDrive GPS — development dependencies
+# (ONNX model training — not required at runtime)
+
+torch>=2.2
+torchvision>=0.17
+onnx>=1.15
+onnxruntime>=1.17

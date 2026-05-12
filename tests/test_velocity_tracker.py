@@ -1,4 +1,4 @@
-"""Tests pour VelocityTracker et calculate_velocity_bearing."""
+"""Tests for VelocityTracker and calculate_velocity_bearing."""
 import math
 import os
 import sys
@@ -21,14 +21,14 @@ def test_initial_state():
 def test_first_sample_no_velocity():
     vt = VelocityTracker()
     vt.add_sample(0.0, 0.0, 0.0, t=0.0)
-    # Avec un seul sample, pas de vélocité encore
+    # With single sample, no velocity yet
     assert vt.velocity is None
 
 
 def test_second_sample_basic_velocity():
     vt = VelocityTracker()
     vt.add_sample(0.0, 0.0, 0.0, t=0.0)
-    vt.add_sample(1.0, 0.0, 0.0, t=1.0)  # 1 km en 1 s = 1 km/s
+    vt.add_sample(1.0, 0.0, 0.0, t=1.0)  # 1 km in 1 s = 1 km/s
     vx, vy, vz = vt.velocity
     assert abs(vx - 1.0) < 1e-6
     assert vy == 0.0
@@ -38,16 +38,16 @@ def test_second_sample_basic_velocity():
 
 
 def test_diagonal_velocity():
-    vt = VelocityTracker(smoothing_alpha=1.0)  # pas de lissage pour test simple
+    vt = VelocityTracker(smoothing_alpha=1.0)  # no smoothing for simple test
     vt.add_sample(0.0, 0.0, 0.0, t=0.0)
-    vt.add_sample(3.0, 4.0, 0.0, t=1.0)  # vitesse 5 km/s (3-4-5 triangle)
+    vt.add_sample(3.0, 4.0, 0.0, t=1.0)  # speed 5 km/s (3-4-5 triangle)
     assert abs(vt.speed_km_s - 5.0) < 1e-6
 
 
 def test_stationary_below_threshold():
     vt = VelocityTracker()
     vt.add_sample(0.0, 0.0, 0.0, t=0.0)
-    vt.add_sample(0.001, 0.0, 0.0, t=1.0)  # 1 m/s = 0.001 km/s, sous 0.05
+    vt.add_sample(0.001, 0.0, 0.0, t=1.0)  # 1 m/s = 0.001 km/s, below 0.05
     assert vt.is_moving is False
 
 
@@ -55,7 +55,7 @@ def test_dt_too_large_resets():
     vt = VelocityTracker()
     vt.add_sample(0.0, 0.0, 0.0, t=0.0)
     vt.add_sample(100.0, 0.0, 0.0, t=10.0)  # dt=10 > MAX_DT_S=3 → reset
-    # Après un reset, un seul sample → vélocité None
+    # After reset, single sample → velocity None
     assert vt.velocity is None
 
 
@@ -64,18 +64,18 @@ def test_dt_zero_or_negative_ignored():
     vt.add_sample(0.0, 0.0, 0.0, t=1.0)
     vt.add_sample(1.0, 0.0, 0.0, t=2.0)
     v_before = vt.velocity
-    vt.add_sample(2.0, 0.0, 0.0, t=2.0)  # même t → ignoré
+    vt.add_sample(2.0, 0.0, 0.0, t=2.0)  # same t → ignored
     assert vt.velocity == v_before
 
 
 def test_smoothing_ema():
-    # alpha=0.5 : nouveau sample compte pour 50%
+    # alpha=0.5: new sample accounts for 50%
     vt = VelocityTracker(smoothing_alpha=0.5)
     vt.add_sample(0.0, 0.0, 0.0, t=0.0)
-    vt.add_sample(2.0, 0.0, 0.0, t=1.0)  # vel inst = 2
-    # Premier vel : pas lissé encore (initialisé direct)
+    vt.add_sample(2.0, 0.0, 0.0, t=1.0)  # inst vel = 2
+    # First vel: not smoothed yet (initialized directly)
     assert abs(vt.velocity[0] - 2.0) < 1e-6
-    vt.add_sample(2.0, 0.0, 0.0, t=2.0)  # vel inst = 0, lissé = 0.5*0 + 0.5*2 = 1
+    vt.add_sample(2.0, 0.0, 0.0, t=2.0)  # inst vel = 0, smoothed = 0.5*0 + 0.5*2 = 1
     assert abs(vt.velocity[0] - 1.0) < 1e-6
 
 
@@ -127,7 +127,7 @@ def test_bearing_target_to_right():
 
 
 def test_bearing_target_to_left():
-    # On va vers +Y, cible à -X → cible à gauche (yaw_off négatif)
+    # We move toward +Y, target at -X → target to left (negative yaw_off)
     yaw, _ = calculate_velocity_bearing(
         (0, 1, 0), {"x": 0, "y": 0, "z": 0}, {"x": -10, "y": 0, "z": 0}
     )
@@ -135,7 +135,7 @@ def test_bearing_target_to_left():
 
 
 def test_bearing_target_above():
-    # On va horizontal, cible plus haute → pitch_off positif
+    # We move horizontally, target higher → positive pitch_off
     _, pitch = calculate_velocity_bearing(
         (0, 1, 0), {"x": 0, "y": 0, "z": 0}, {"x": 0, "y": 10, "z": 10}
     )
@@ -143,7 +143,7 @@ def test_bearing_target_above():
 
 
 def test_bearing_180_behind():
-    # On va vers +Y, cible à -Y (derrière) → yaw_off ±180
+    # We move toward +Y, target at -Y (behind) → yaw_off ±180
     yaw, _ = calculate_velocity_bearing(
         (0, 1, 0), {"x": 0, "y": 0, "z": 0}, {"x": 0, "y": -10, "z": 0}
     )
@@ -182,7 +182,7 @@ def test_absolute_bearing_returns_deltas():
 
 
 def test_absolute_bearing_yaw_pitch():
-    # Cible droit devant +Y → yaw ≈ 0, cible plus haute → pitch positif
+    # Target straight ahead +Y → yaw ≈ 0, target higher → positive pitch
     res = calculate_absolute_bearing(
         {"x": 0, "y": 0, "z": 0}, {"x": 0, "y": 10, "z": 10}
     )
@@ -191,7 +191,7 @@ def test_absolute_bearing_yaw_pitch():
 
 
 def test_absolute_bearing_target_to_right():
-    # Cible à +X (droite en convention atan2(dx, dy)) → yaw = +90°
+    # Target at +X (right in atan2(dx, dy) convention) → yaw = +90°
     res = calculate_absolute_bearing(
         {"x": 0, "y": 0, "z": 0}, {"x": 10, "y": 0, "z": 0}
     )
@@ -207,7 +207,7 @@ def test_absolute_bearing_no_target():
 
 
 def test_absolute_bearing_pure_vertical():
-    # Cible directement au-dessus → pitch = 90°
+    # Target directly above → pitch = 90°
     res = calculate_absolute_bearing(
         {"x": 0, "y": 0, "z": 0}, {"x": 0, "y": 0, "z": 5}
     )

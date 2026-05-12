@@ -1,17 +1,17 @@
-"""Module sc_ocr — NCC template matching pour OCR HUD Star Citizen.
+"""sc_ocr — NCC / ONNX glyph pipeline for Star Citizen HUD OCR.
 
-Phase D : remplacer Tesseract pour les coordonnées numériques par un classifieur
-NCC pur NumPy, latence ~10 ms/frame vs ~100 ms Tesseract.
+Phase D: replaces Tesseract for numeric coordinates with a custom
+glyph classifier (NCC pure NumPy or ONNX CNN), ~10 ms/frame vs ~100 ms.
 
-Architecture :
-  - preprocess : canal isolé, seuillage Otsu, débruitage conditionnel (~0.3 ms)
-  - segment : projection horizontale → glyphes, composantes connexes (~0.5 ms)
-  - classify : NCC shift-invariant ±2×±1 px sur templates (~1 ms / 12 glyphes)
-  - templates : chargement/cache de la bibliothèque de templates
+Architecture:
+  - preprocess : channel isolation, Otsu thresholding, conditional denoising (~0.3 ms)
+  - segment    : horizontal projection → glyph bounding boxes (~0.5 ms)
+  - classify   : shift-invariant NCC ±2×±1 px on 16×24 templates (~1 ms / 12 glyphs)
+                 OR ONNX CNN inference (TinyGlyphCNN, ~25k params)
+  - templates  : template library load + cache
 """
-from .preprocess import preprocess_image
 from .segment import find_glyph_regions
 from .classify import classify_batch
 from .templates import TemplateLibrary
 
-__all__ = ["preprocess_image", "find_glyph_regions", "classify_batch", "TemplateLibrary"]
+__all__ = ["find_glyph_regions", "classify_batch", "TemplateLibrary"]

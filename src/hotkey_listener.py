@@ -1,3 +1,9 @@
+"""Global hotkey listener for SpaceDrive GPS.
+
+Listens for key combinations in a background thread (pynput) and emits
+PyQt6 signals for: toggle overlay, open options, save position, open POI manager.
+Hot-reload of hotkey bindings via reload_hotkeys().
+"""
 import logging
 from pynput import keyboard as pynput_keyboard
 from PyQt6.QtCore import QObject, pyqtSignal
@@ -65,8 +71,8 @@ class HotkeyListener(QObject):
             signal = getattr(self, signal_name)
             modifiers, key = self._parse_hotkey(hotkey_str)
             self._bindings.append((modifiers, key, signal))
-            logger.debug(f"Hotkey enregistré : {action} -> {hotkey_str}")
-        logger.info(f"Hotkeys configurés : {list(hotkeys.keys())}")
+            logger.debug(f"Hotkey registered: {action} -> {hotkey_str}")
+        logger.info(f"Hotkeys configured: {list(hotkeys.keys())}")
 
     def _start_listener(self):
         def on_press(key):
@@ -85,7 +91,7 @@ class HotkeyListener(QObject):
     def update_hotkey(self, action, new_hotkey):
         self.config_manager.set_hotkey(action, new_hotkey)
         self._setup_hotkeys()
-        logger.info(f"Hotkey mis à jour : {action} -> {new_hotkey}")
+        logger.info(f"Hotkey updated: {action} -> {new_hotkey}")
 
     def reload_hotkeys(self):
         self._setup_hotkeys()
@@ -93,4 +99,4 @@ class HotkeyListener(QObject):
     def cleanup(self):
         if self._listener:
             self._listener.stop()
-        logger.info("HotkeyListener nettoyé")
+        logger.info("HotkeyListener cleaned up")

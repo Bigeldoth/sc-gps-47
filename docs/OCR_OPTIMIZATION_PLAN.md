@@ -1,12 +1,12 @@
-# Plan d'optimisation OCR — SpaceDrive GPS
+# OCR Optimization Plan — SpaceDrive GPS
 
-## Contexte
+## Context
 
-La fiabilité de la lecture OCR du HUD `r_DisplayInfo 3` est le facteur critique du logiciel. Une lecture imprécise (perte de décimales, valeurs aberrantes) cause des erreurs de navigation jusqu'à 17 m sur un POI sauvegardé.
+The reliability of OCR reading from the HUD `r_DisplayInfo 3` is the critical factor for the software. Imprecise reading (loss of decimals, aberrant values) causes navigation errors of up to 17 m on a saved POI.
 
-Ce plan adopte une approche **template matching NCC pure NumPy**, latence ~1 ms, sans dépendance ML lourde.
+This plan adopts a **pure NumPy NCC template matching** approach, ~1 ms latency, without heavy ML dependencies.
 
-## État actuel (v0.5.0)
+## Current state (v0.5.0)
 
 ```
 Capture (mss, 600×150)
@@ -14,75 +14,75 @@ Capture (mss, 600×150)
   → upscale ×2 (INTER_LINEAR)
   → GaussianBlur 3×3
   → CLAHE clipLimit=3.0
-  → 4 passes parallèles (seuil 180, Otsu, adaptatif, masque HSV blanc)
-  → Tesseract OEM3 PSM6 sur chaque passe
-  → Score → meilleure passe gagne
-  → Regex stricte 3-4 décimales sur Pos
+  → 4 parallel passes (threshold 180, Otsu, adaptive, white HSV mask)
+  → Tesseract OEM3 PSM6 on each pass
+  → Score → best pass wins
+  → Strict 3-4 decimal regex on Pos
 ```
 
-**Forces :**
-- Regex stricte rejette les lectures dégradées (correctif majeur du bug 17 m).
-- Couleur progressive (vert→rouge) signale visuellement la fraîcheur.
-- 4 passes couvrent espace/cockpit/pièce éclairée.
+**Strengths:**
+- Strict regex rejects degraded readings (major fix for 17 m bug).
+- Progressive color (green→red) visually signals freshness.
+- 4 passes cover space/cockpit/lit room.
 
-**Faiblesses identifiées :**
-- Conversion grayscale jette l'info couleur — perte de contraste sur HUD blanc.
-- 4 passes parallèles, dont la passe HSV produit du bruit dans ~50 % des cas (logs).
-- Aucune validation cross-pass : 1 passe aberrante (~14 M km vs ~4 k km) peut gagner sur le score.
-- Aucune validation physique (vitesse impossible entre deux scans).
-- Aucun système de templates pour les caractères du HUD SC.
+**Identified weaknesses:**
+- Grayscale conversion discards color info — loss of contrast on white HUD.
+- 4 parallel passes, HSV pass produces noise in ~50% of cases (logs).
+- No cross-pass validation: 1 aberrant pass (~14 M km vs ~4 k km) can win on score.
+- No physical validation (impossible velocity between scans).
+- No template system for SC HUD characters.
 
-## Architecture retenue
+## Chosen architecture
 
-| Composant | Approche | Latence |
+| Component | Approach | Latency |
 |---|---|---|
-| `preprocess.isolate_channel("auto")` | Choisit le canal R/G/B/max selon stats du fond | ~0.1 ms |
-| `preprocess.otsu_threshold` | Otsu pure NumPy sur canal isolé | ~0.3 ms |
-| `preprocess.denoise_if_needed` | Open 3×3 **seulement si** `std > 45` | ~0.5 ms (rare) |
-| `segment.find_rows` | Projection horizontale → bandes de texte | ~0.2 ms |
-| `segment.split_glyphs_in_row` | Composantes connexes + fusion proximité 2 px | ~0.5 ms |
-| `classify.classify_batch` | NCC shift-invariant ±2×±1 px sur templates | ~1 ms / 12 glyphes |
-| `validate.validate_*` | Plage + récup décimal manquant via confidence | ~0.05 ms |
+| `preprocess.isolate_channel("auto")` | Choose R/G/B/max channel based on background stats | ~0.1 ms |
+| `preprocess.otsu_threshold` | Pure NumPy Otsu on isolated channel | ~0.3 ms |
+| `preprocess.denoise_if_needed` | Open 3×3 **only if** `std > 45` | ~0.5 ms (rare) |
+| `segment.find_rows` | Horizontal projection → text bands | ~0.2 ms |
+| `segment.split_glyphs_in_row` | Connected components + 2 px proximity merge | ~0.5 ms |
+| `classify.classify_batch` | Shift-invariant NCC ±2×±1 px on templates | ~1 ms / 12 glyphs |
+| `validate.validate_*` | Range + decimal recovery via confidence | ~0.05 ms |
 
-**Surprise principale** : malgré le branding "CNN-based", c'est **uniquement du NumPy**, pas de deep learning. Le shift-invariant matching absorbe le wiggle subpixel du HUD en une seule frame.
+**Main surprise**: despite "CNN-based" branding, it's **pure NumPy only**, no deep learning. Shift-invariant matching absorbs HUD subpixel wiggle in a single frame.
 
-## Plan en 4 phases
+## 4-phase plan
 
-### Phase A — Pré-traitement intelligent (1-2 h, ~25 % gain)
+### Phase A — Smart preprocessing (1-2 h, ~25% gain)
 
-Adapter le pré-traitement à la couleur du fond, sans toucher à Tesseract.
+Adapt preprocessing to background color, without touching Tesseract.
 
-**Tâches :**
+**Tasks:**
 
-1. **`src/capture.py`** : remplacer `cv2.cvtColor(BGR2GRAY)` par une fonction `_isolate_channel_auto(bgr)` :
-   - Si `lum > 140` → invert grayscale (pièce éclairée)
-   - Si `R - G > 15` → canal R (texte rouge)
-   - Si `G - R > 15` → canal G (texte vert)
-   - Sinon → `max(R, G, B)` (texte blanc — notre cas par défaut)
-2. **Réduire à 2 passes seuillage** : Otsu sur canal isolé + Otsu inversé (texte sombre sur fond clair).
-3. **Conditionner `GaussianBlur` à `std(channel) > 45`** (fast-path en conditions normales).
-4. **Supprimer la passe HSV** (couvert par `isolate_channel` en mode auto).
-5. **Garder pass3 (adaptatif)** uniquement comme backup pour fonds uniformes très clairs.
+1. **`src/capture.py`**: replace `cv2.cvtColor(BGR2GRAY)` with `_isolate_channel_auto(bgr)` function:
+   - If `lum > 140` → invert grayscale (lit room)
+   - If `R - G > 15` → R channel (red text)
+   - If `G - R > 15` → G channel (green text)
+   - Otherwise → `max(R, G, B)` (white text — our default case)
+2. **Reduce to 2 thresholding passes**: Otsu on isolated channel + inverted Otsu (dark text on light background).
+3. **Condition `GaussianBlur` on `std(channel) > 45`** (fast-path in normal conditions).
+4. **Remove HSV pass** (covered by `isolate_channel` in auto mode).
+5. **Keep pass3 (adaptive)** only as backup for very light uniform backgrounds.
 
-**Impact attendu :** précision sur fonds variés, élimination du bruit pass4.
+**Expected impact:** accuracy on varied backgrounds, elimination of pass4 noise.
 
 ---
 
-### Phase B — Validation et lissage temporel (1 h, ~10 % gain)
+### Phase B — Validation and temporal smoothing (1 h, ~10% gain)
 
-**Tâches :**
+**Tasks:**
 
-1. **Validation par plage géographique** dans `src/ocr.py` après `_RE_POS.search()` :
-   - OOC plausible : `|X|, |Y|, |Z| < 30000 km` (taille système Stanton ~60k km).
-   - Rejeter sinon.
-2. **Validation par vitesse impossible** dans `src/main.py` `_on_worker_result` :
-   - Calcul `Δpos / Δt` entre deux scans.
-   - Si > 50 km/s (max plausible hors quantum) → rejeter, garder valeur précédente.
-3. **Récupération du `.` manquant** :
-   - Si la regex échoue mais qu'une chaîne `\d{6,8}km` existe, tenter d'insérer un `.` à toutes les positions plausibles et accepter celle dans la plage.
-4. **Consensus multi-pass** : si ≥ 2 passes convergent à ±0.1 km, moyenner ; sinon prendre la meilleure mais marquer faible confiance.
+1. **Geographic range validation** in `src/ocr.py` after `_RE_POS.search()`:
+   - Plausible OOC: `|X|, |Y|, |Z| < 30000 km` (Stanton system size ~60k km).
+   - Reject otherwise.
+2. **Impossible velocity validation** in `src/main.py` `_on_worker_result`:
+   - Calculate `Δpos / Δt` between two scans.
+   - If > 50 km/s (max plausible outside quantum) → reject, keep previous value.
+3. **Missing decimal recovery**:
+   - If regex fails but `\d{6,8}km` string exists, try inserting `.` at all plausible positions and accept the one in range.
+4. **Multi-pass consensus**: if ≥ 2 passes converge within ±0.1 km, average; otherwise take best but mark low confidence.
 
-**Impact attendu :** rejet des hallucinations (lectures à 14 M km), récupération d'OCR partiels.
+**Expected impact:** rejection of hallucinations (14 M km readings), recovery of partial OCR.
 
 ---
 

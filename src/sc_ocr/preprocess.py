@@ -1,9 +1,9 @@
-"""Pré-traitement OCR : isolation canal, seuillage, débruitage.
+"""OCR pre-processing: channel isolation, thresholding, denoising.
 
-Pipeline :
-  1. isolate_channel() → choisit R/G/B/max selon stats
-  2. otsu_threshold() → Otsu pure NumPy ~0.3 ms
-  3. denoise_if_needed() → morphologie 3×3 seulement si std > 45
+Pipeline:
+  1. isolate_channel() → picks R/G/B/max based on stats
+  2. otsu_threshold() → pure NumPy Otsu ~0.3 ms
+  3. denoise_if_needed() → 3×3 morphology only if std > 45
 """
 import numpy as np
 import cv2
@@ -15,13 +15,13 @@ _NOISE_STD_THRESHOLD = 45.0
 
 
 def isolate_channel(image_bgr):
-    """Choisit le meilleur canal pour maximiser la séparation texte/fond.
+    """Picks the best channel to maximise text/background separation.
 
-    Stratégie (cf. capture.py isolate_channel_auto) :
-      - Luminance > 140 → invert grayscale (pièce éclairée)
-      - R - G > 15 → canal R (texte rouge)
-      - G - R > 15 → canal G (texte vert)
-      - Sinon → max(R, G, B) (texte blanc — cas SC)
+    Strategy (cf. capture.py isolate_channel_auto):
+      - Luminance > 140 → invert grayscale (bright room)
+      - R - G > 15 → R channel (red text)
+      - G - R > 15 → G channel (green text)
+      - Otherwise → max(R, G, B) (white text — SC case)
     """
     if image_bgr.ndim == 2:
         return image_bgr
@@ -45,7 +45,7 @@ def isolate_channel(image_bgr):
 
 
 def otsu_threshold(image_gray):
-    """Seuillage Otsu pur NumPy (pas OpenCV) pour reproducibilité.
+    """Pure NumPy Otsu thresholding (not OpenCV) for reproducibility.
 
     Returns:
         binary image (0/255)
@@ -85,13 +85,13 @@ def otsu_threshold(image_gray):
 
 
 def denoise_if_needed(binary_image, std_threshold=_NOISE_STD_THRESHOLD):
-    """Applique un open (érosion + dilatation) 3×3 si std élevée.
+    """Applies a 3×3 open (erosion + dilation) if std is high.
 
-    Économise CPU en conditions normales (skip le débruitage).
+    Saves CPU under normal conditions (skips denoising).
 
     Args:
-        binary_image : image binaire 0/255
-        std_threshold : seuil d'écart-type pour activer le débruitage
+        binary_image : binary image 0/255
+        std_threshold : standard deviation threshold to activate denoising
 
     Returns:
         denoised binary image
@@ -104,15 +104,15 @@ def denoise_if_needed(binary_image, std_threshold=_NOISE_STD_THRESHOLD):
 
 
 def preprocess_image(image_bgr):
-    """Pipeline complet pré-traitement.
+    """Full pre-processing pipeline.
 
     Args:
-        image_bgr : image BGR (H, W, 3) uint8
+        image_bgr : BGR image (H, W, 3) uint8
 
     Returns:
-        dict avec :
-            - 'binary' : image binaire seuillée 0/255
-            - 'channel' : canal isolé avant seuillage (pour debug)
+        dict with:
+            - 'binary' : thresholded binary image 0/255
+            - 'channel' : isolated channel before thresholding (for debug)
     """
     channel = isolate_channel(image_bgr)
     binary = otsu_threshold(channel)

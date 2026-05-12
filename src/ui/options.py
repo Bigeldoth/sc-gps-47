@@ -1,6 +1,6 @@
 """
-Fenêtre d'options pour SpaceDrive GPS.
-Permet de configurer la fréquence OCR et les hotkeys.
+Options window for SpaceDrive GPS.
+Allows configuring OCR scan frequency and hotkeys.
 """
 import logging
 import sys
@@ -15,43 +15,43 @@ logger = logging.getLogger(__name__)
 
 class OptionsWindow(QDialog):
     """
-    Fenêtre d'options avec style sombre minimaliste.
-    Permet de configurer :
-    - La fréquence de scan OCR (curseur)
-    - Les hotkeys (tableau éditable)
+    Options window with minimalist dark theme.
+    Allows configuring:
+    - OCR scan frequency (slider)
+    - Hotkeys (editable table)
     """
-    
-    # Signal émis quand les options sont sauvegardées
+
+    # Signal emitted when options are saved
     options_saved = pyqtSignal()
-    
+
     def __init__(self, config_manager, hotkey_listener, parent=None):
         """
-        Initialise la fenêtre d'options.
-        
+        Initializes the options window.
+
         Args:
-            config_manager: Instance de ConfigManager
-            hotkey_listener: Instance de HotkeyListener
-            parent: Widget parent (optionnel)
+            config_manager: ConfigManager instance
+            hotkey_listener: HotkeyListener instance
+            parent: Parent widget (optional)
         """
         super().__init__(parent)
         self.config_manager = config_manager
         self.hotkey_listener = hotkey_listener
-        
-        self.setWindowTitle("Paramètres GPS Star Citizen")
+
+        self.setWindowTitle("Star Citizen GPS Settings")
         self.setMinimumWidth(600)
         self.setMinimumHeight(400)
-        
-        # Appliquer le thème sombre
+
+        # Apply dark theme
         self._apply_dark_theme()
-        
-        # Créer l'interface
+
+        # Create UI
         self._create_ui()
-        
-        # Charger les valeurs actuelles
+
+        # Load current values
         self._load_current_values()
-    
+
     def _apply_dark_theme(self):
-        """Applique un thème sombre minimaliste à la fenêtre"""
+        """Applies minimalist dark theme to the window"""
         palette = QPalette()
         palette.setColor(QPalette.ColorRole.Window, QColor(30, 30, 30))
         palette.setColor(QPalette.ColorRole.WindowText, QColor(220, 220, 220))
@@ -62,10 +62,10 @@ class OptionsWindow(QDialog):
         palette.setColor(QPalette.ColorRole.ButtonText, QColor(220, 220, 220))
         palette.setColor(QPalette.ColorRole.Highlight, QColor(70, 130, 180))
         palette.setColor(QPalette.ColorRole.HighlightedText, QColor(255, 255, 255))
-        
+
         self.setPalette(palette)
-        
-        # Style CSS pour les widgets
+
+        # CSS styling for widgets
         self.setStyleSheet("""
             QDialog {
                 background-color: #1e1e1e;
@@ -136,240 +136,240 @@ class OptionsWindow(QDialog):
         """)
     
     def _create_ui(self):
-        """Crée l'interface utilisateur"""
+        """Creates the user interface"""
         layout = QVBoxLayout()
-        
-        # Section 1 : Fréquence OCR
+
+        # Section 1: OCR frequency
         ocr_section = self._create_ocr_section()
         layout.addWidget(ocr_section)
-        
-        # Section 2 : Hotkeys
+
+        # Section 2: Hotkeys
         hotkey_section = self._create_hotkey_section()
         layout.addWidget(hotkey_section)
-        
-        # Bouton Enregistrer & Fermer
+
+        # Save & Close button
         button_layout = QHBoxLayout()
         button_layout.addStretch()
-        
-        self.save_button = QPushButton("Enregistrer & Fermer")
+
+        self.save_button = QPushButton("Save & Close")
         self.save_button.clicked.connect(self._save_and_close)
         button_layout.addWidget(self.save_button)
-        
+
         layout.addLayout(button_layout)
-        
+
         self.setLayout(layout)
-    
+
     def _create_ocr_section(self):
-        """Crée la section de configuration OCR"""
+        """Creates the OCR configuration section"""
         widget = QWidget()
         layout = QVBoxLayout()
-        
-        # Titre
-        title = QLabel("Fréquence de scan OCR")
+
+        # Title
+        title = QLabel("OCR Scan Frequency")
         title.setStyleSheet("font-size: 12pt; font-weight: bold; color: #4682b4;")
         layout.addWidget(title)
-        
-        # Curseur avec label de valeur
+
+        # Slider with value label
         slider_layout = QHBoxLayout()
-        
+
         self.ocr_slider = QSlider(Qt.Orientation.Horizontal)
         self.ocr_slider.setMinimum(50)
         self.ocr_slider.setMaximum(2000)
         self.ocr_slider.setSingleStep(10)
         self.ocr_slider.setPageStep(100)
         self.ocr_slider.valueChanged.connect(self._update_ocr_label)
-        
+
         self.ocr_value_label = QLabel("200 ms")
         self.ocr_value_label.setMinimumWidth(80)
         self.ocr_value_label.setStyleSheet("font-size: 11pt; color: #4682b4;")
-        
+
         slider_layout.addWidget(self.ocr_slider)
         slider_layout.addWidget(self.ocr_value_label)
-        
+
         layout.addLayout(slider_layout)
-        
+
         # Description
-        desc = QLabel("Intervalle entre chaque scan OCR (50-2000 ms)")
+        desc = QLabel("Interval between each OCR scan (50-2000 ms)")
         desc.setStyleSheet("font-size: 9pt; color: #999;")
         layout.addWidget(desc)
-        
+
         widget.setLayout(layout)
         return widget
     
     def _create_hotkey_section(self):
-        """Crée la section de configuration des hotkeys"""
+        """Creates the hotkey configuration section"""
         widget = QWidget()
         layout = QVBoxLayout()
-        
-        # Titre
-        title = QLabel("Raccourcis clavier")
+
+        # Title
+        title = QLabel("Keyboard Shortcuts")
         title.setStyleSheet("font-size: 12pt; font-weight: bold; color: #4682b4;")
         layout.addWidget(title)
-        
-        # Tableau des hotkeys
+
+        # Hotkey table
         self.hotkey_table = QTableWidget()
         self.hotkey_table.setColumnCount(3)
-        self.hotkey_table.setHorizontalHeaderLabels(["Action", "Raccourci", "Modifier"])
-        
-        # Configurer les colonnes
+        self.hotkey_table.setHorizontalHeaderLabels(["Action", "Shortcut", "Modify"])
+
+        # Configure columns
         header = self.hotkey_table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        
+
         self.hotkey_table.verticalHeader().setVisible(False)
-        
+
         layout.addWidget(self.hotkey_table)
-        
+
         # Description
-        desc = QLabel("Cliquez sur 'Modifier' pour changer un raccourci")
+        desc = QLabel("Click 'Modify' to change a shortcut")
         desc.setStyleSheet("font-size: 9pt; color: #999;")
         layout.addWidget(desc)
-        
+
         widget.setLayout(layout)
         return widget
-    
+
     def _update_ocr_label(self, value):
-        """Met à jour le label de la valeur OCR"""
+        """Updates the OCR value label"""
         self.ocr_value_label.setText(f"{value} ms")
-    
+
     def _load_current_values(self):
-        """Charge les valeurs actuelles depuis la configuration"""
-        # Charger la fréquence OCR
+        """Loads current values from configuration"""
+        # Load OCR frequency
         scan_interval = self.config_manager.get_scan_interval()
         self.ocr_slider.setValue(scan_interval)
-        
-        # Charger les hotkeys
+
+        # Load hotkeys
         hotkeys = self.config_manager.get_all_hotkeys()
-        
-        # Noms d'actions lisibles
+
+        # Human-readable action names
         action_names = {
-            'toggle_overlay': 'Afficher/Masquer l\'overlay',
-            'open_options': 'Ouvrir les options',
-            'save_position': 'Enregistrer la position',
-            'open_poi_manager': 'Ouvrir la gestion des POI'
+            'toggle_overlay': 'Show/Hide overlay',
+            'open_options': 'Open options',
+            'save_position': 'Save position',
+            'open_poi_manager': 'Open POI manager'
         }
         
         self.hotkey_table.setRowCount(len(hotkeys))
-        
+
         for row, (action, hotkey) in enumerate(hotkeys.items()):
-            # Colonne Action
+            # Action column
             action_item = QTableWidgetItem(action_names.get(action, action))
             action_item.setFlags(action_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.hotkey_table.setItem(row, 0, action_item)
-            
-            # Colonne Raccourci
+
+            # Shortcut column
             hotkey_item = QTableWidgetItem(hotkey)
             hotkey_item.setFlags(hotkey_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            hotkey_item.setData(Qt.ItemDataRole.UserRole, action)  # Stocker l'action
+            hotkey_item.setData(Qt.ItemDataRole.UserRole, action)  # Store action
             self.hotkey_table.setItem(row, 1, hotkey_item)
-            
-            # Colonne Modifier (bouton)
-            modify_button = QPushButton("Modifier")
+
+            # Modify column (button)
+            modify_button = QPushButton("Modify")
             modify_button.clicked.connect(lambda checked, r=row: self._modify_hotkey(r))
             self.hotkey_table.setCellWidget(row, 2, modify_button)
-    
+
     def _modify_hotkey(self, row):
-        """Ouvre un dialogue pour modifier un hotkey"""
+        """Opens a dialog to modify a hotkey"""
         action_item = self.hotkey_table.item(row, 1)
         action = action_item.data(Qt.ItemDataRole.UserRole)
         current_hotkey = action_item.text()
-        
-        # Créer un dialogue simple pour capturer le nouveau hotkey
+
+        # Create simple dialog to capture new hotkey
         dialog = HotkeyEditDialog(current_hotkey, self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             new_hotkey = dialog.get_hotkey()
             if new_hotkey and new_hotkey != current_hotkey:
-                # Mettre à jour le tableau
+                # Update table
                 action_item.setText(new_hotkey)
-                logger.info(f"Hotkey modifié : {action} -> {new_hotkey}")
-    
+                logger.info(f"Hotkey modified: {action} -> {new_hotkey}")
+
     def _save_and_close(self):
-        """Sauvegarde les paramètres et ferme la fenêtre"""
+        """Saves settings and closes the window"""
         try:
-            # Sauvegarder la fréquence OCR
+            # Save OCR frequency
             scan_interval = self.ocr_slider.value()
             self.config_manager.set_scan_interval(scan_interval)
-            
-            # Sauvegarder les hotkeys
+
+            # Save hotkeys
             for row in range(self.hotkey_table.rowCount()):
                 action_item = self.hotkey_table.item(row, 1)
                 action = action_item.data(Qt.ItemDataRole.UserRole)
                 new_hotkey = action_item.text()
-                
-                # Mettre à jour le hotkey dans le listener
+
+                # Update hotkey in listener
                 self.hotkey_listener.update_hotkey(action, new_hotkey)
-            
-            # Sauvegarder la configuration
+
+            # Save configuration
             if self.config_manager.save():
-                logger.info("Configuration sauvegardée avec succès")
-                
-                # Émettre le signal
+                logger.info("Configuration saved successfully")
+
+                # Emit signal
                 self.options_saved.emit()
-                
-                # Afficher un message de confirmation
+
+                # Show confirmation message
                 QMessageBox.information(
                     self,
-                    "Succès",
-                    "Les paramètres ont été sauvegardés avec succès."
+                    "Success",
+                    "Settings have been saved successfully."
                 )
-                
-                # Fermer la fenêtre
+
+                # Close window
                 self.accept()
             else:
                 QMessageBox.warning(
                     self,
-                    "Erreur",
-                    "Impossible de sauvegarder la configuration."
+                    "Error",
+                    "Failed to save configuration."
                 )
         except Exception as e:
-            logger.error(f"Erreur lors de la sauvegarde des options : {e}")
+            logger.error(f"Error saving options: {e}")
             QMessageBox.critical(
                 self,
-                "Erreur",
-                f"Une erreur est survenue : {str(e)}"
+                "Error",
+                f"An error occurred: {str(e)}"
             )
 
 
 class HotkeyEditDialog(QDialog):
-    """Dialogue simple pour éditer un hotkey"""
-    
+    """Simple dialog for editing a hotkey"""
+
     def __init__(self, current_hotkey, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Modifier le raccourci")
+        self.setWindowTitle("Modify Shortcut")
         self.setModal(True)
-        
+
         layout = QVBoxLayout()
-        
-        # Label d'instruction
-        label = QLabel("Appuyez sur la nouvelle combinaison de touches :")
+
+        # Instruction label
+        label = QLabel("Press the new key combination:")
         layout.addWidget(label)
-        
-        # Éditeur de séquence de touches
+
+        # Key sequence editor
         self.key_edit = QKeySequenceEdit(current_hotkey)
         layout.addWidget(self.key_edit)
-        
-        # Boutons
+
+        # Buttons
         button_layout = QHBoxLayout()
-        
+
         ok_button = QPushButton("OK")
         ok_button.clicked.connect(self.accept)
         button_layout.addWidget(ok_button)
-        
-        cancel_button = QPushButton("Annuler")
+
+        cancel_button = QPushButton("Cancel")
         cancel_button.clicked.connect(self.reject)
         button_layout.addWidget(cancel_button)
-        
+
         layout.addLayout(button_layout)
-        
+
         self.setLayout(layout)
-        
-        # Appliquer le même thème sombre
+
+        # Apply same dark theme
         self.setPalette(parent.palette())
         self.setStyleSheet(parent.styleSheet())
-    
+
     def get_hotkey(self):
-        """Retourne le hotkey saisi au format pynput (ex: 'cmd+shift+p')"""
+        """Returns the entered hotkey in pynput format (e.g., 'cmd+shift+p')"""
         sequence = self.key_edit.keySequence()
         if sequence.isEmpty():
             return ""

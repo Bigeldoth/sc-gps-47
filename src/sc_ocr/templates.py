@@ -1,15 +1,15 @@
-"""Chargement et gestion de la bibliothèque de templates pour NCC.
+"""Loading and management of template library for NCC.
 
-Templates stockés dans data/templates/ organisés par caractère :
+Templates stored in data/templates/ organized by character:
   data/templates/0/, data/templates/1/, ... data/templates/9/
   data/templates/-/, data/templates/k/, data/templates/m/
 
-Chaque template est une image PNG uint8 grayscale.
+Each template is a grayscale uint8 PNG image.
 
-Au chargement :
-  1. Tous les PNG d'un dossier sont redimensionnés à 16×24
-  2. Moyennés pour produire un template synthétique stable
-  3. Centrés (mean=0) et L2-normalisés pour accélérer le NCC vectorisé
+On loading:
+  1. All PNGs in a folder are resized to 16×24
+  2. Averaged to produce a stable synthetic template
+  3. Centered (mean=0) and L2-normalized to accelerate vectorized NCC
 """
 import os
 import cv2
@@ -18,8 +18,8 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Caractères attendus pour les coordonnées numériques
-# (le '.' est optionnel : si absent, l'heuristique de classify.py le détecte)
+# Expected characters for numeric coordinates
+# (the '.' is optional: if absent, the heuristic in classify.py detects it)
 EXPECTED_CHARS = set('0123456789.-km')
 
 GLYPH_TARGET_WIDTH = 16
@@ -27,7 +27,7 @@ GLYPH_TARGET_HEIGHT = 24
 
 
 def _is_safe_char_dir(name):
-    """Vérifie qu'un nom de dossier est un caractère valide (gère Windows)."""
+    """Checks that a folder name is a valid character (handles Windows)."""
     return len(name) == 1 and name in EXPECTED_CHARS
 
 
@@ -42,7 +42,7 @@ class TemplateLibrary:
 
     def _load_templates(self):
         if not os.path.exists(self.template_dir):
-            logger.warning(f"Répertoire templates non trouvé : {self.template_dir}")
+            logger.warning(f"Template directory not found: {self.template_dir}")
             return
 
         for char in sorted(EXPECTED_CHARS):
@@ -59,31 +59,32 @@ class TemplateLibrary:
                     img = cv2.imread(filepath, cv2.IMREAD_GRAYSCALE)
                     if img is None or img.size == 0:
                         continue
-                    # Redimensionner à la taille standard avant moyenne
+                    # Resize to standard size before averaging
                     resized = cv2.resize(
                         img, (GLYPH_TARGET_WIDTH, GLYPH_TARGET_HEIGHT),
                         interpolation=cv2.INTER_LINEAR,
                     )
                     images.append(resized)
                 except Exception as e:
-                    logger.warning(f"Erreur chargement template {filepath} : {e}")
+                    logger.warning(f"Error loading template {filepath}: {e}")
 
             if images:
                 stacked = np.stack(images, axis=0).astype(np.float32)
                 avg = np.mean(stacked, axis=0).astype(np.uint8)
                 self.templates[char] = avg
-                logger.debug(f"Char '{char}': {len(images)} templates moyennés")
+                logger.debug(f"Char '{char}': {len(images)} templates averaged")
             else:
-                logger.warning(f"Aucun template valide pour '{char}'")
+                # '.' is handled by heuristic in classify.py, not by template → debug only.
+                logger.debug(f"No valid templates for '{char}'")
 
         if not self.templates:
             logger.warning(
-                "Aucun template chargé. Vérifie que data/templates/{0-9,-,k,m}/ "
-                "contiennent des PNG."
+                "No templates loaded. Verify that data/templates/{0-9,-,k,m}/ "
+                "contain PNG files."
             )
 
     def _build_stack(self):
-        """Pré-calcule le tenseur centré+normalisé pour NCC batch."""
+        """Pre-computes the centered+normalized tensor for batch NCC."""
         if not self.templates:
             self.char_list = []
             self.centered_stack = None
@@ -103,7 +104,7 @@ class TemplateLibrary:
                 stack[i] = t_centered
 
         self.centered_stack = stack
-        logger.info(f"Stack NCC pré-calculé : {n} templates {GLYPH_TARGET_HEIGHT}x{GLYPH_TARGET_WIDTH}")
+        logger.info(f"NCC stack pre-computed: {n} templates {GLYPH_TARGET_HEIGHT}x{GLYPH_TARGET_WIDTH}")
 
     def get_template(self, char):
         return self.templates.get(char)
