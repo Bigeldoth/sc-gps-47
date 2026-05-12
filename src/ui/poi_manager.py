@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                              QHeaderView, QMessageBox, QLineEdit, QWidget,
                              QAbstractItemView, QInputDialog)
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QPalette, QColor
+from PyQt6.QtGui import QPalette, QColor, QFontDatabase, QFont
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +58,13 @@ class POIManagerWindow(QDialog):
 
     def _apply_dark_theme(self):
         """Applies minimalist dark theme to the window"""
+        # Load Electrolize font
+        font_id = QFontDatabase.addApplicationFont("tools/fonts/Electrolize-Regular.ttf")
+        if font_id >= 0:
+            font_family = QFontDatabase.applicationFontFamilies(font_id)[0]
+            app_font = QFont(font_family, 10)
+            self.setFont(app_font)
+
         palette = QPalette()
         palette.setColor(QPalette.ColorRole.Window, QColor(30, 30, 30))
         palette.setColor(QPalette.ColorRole.WindowText, QColor(220, 220, 220))
@@ -177,6 +184,9 @@ class POIManagerWindow(QDialog):
         # Single row selection at a time
         self.poi_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.poi_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+
+        # Disable in-place editing — editing only via Edit button + dialog
+        self.poi_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
 
         # Double-click to set as destination
         self.poi_table.doubleClicked.connect(self._set_as_destination)
