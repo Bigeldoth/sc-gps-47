@@ -403,6 +403,10 @@ class OCRProcessor:
         # NCC/ONNX classification uses this; Tesseract uses the binary passes.
         self._enhanced_image = None
 
+        # Per-frame cached NCC coords, populated by extract_data() once and
+        # reused across the parallel Tesseract passes in _ocr_single_pass.
+        self._frame_ncc_coords = None
+
     def _build_glyph_classifier(self, onnx_model_path, onnx_classes_path, onnx_threshold):
         """Builds the classification callable (classify_batch signature)."""
         if self.glyph_engine == "onnx":
@@ -481,10 +485,48 @@ class OCRProcessor:
             logger.debug("Identical frame — cached OCR result reused (Tesseract skipped)")
             return self._last_result
 
+        # NCC-first: run glyph classification ONCE per frame (segment on otsu,
+        # classify on enhanced). Cache the coords so _ocr_single_pass can reuse
+        # them across the parallel Tesseract passes instead of re-running NCC.
+        # If a full HUD reconstruction succeeds (coords + zone), we can skip
+        # Tesseract entirely — gated on NCC actually producing a complete dict
+        # (requires alphabetic templates, see commit 5).
+        self._frame_ncc_coords = None
+        otsu_image = tesseract_images.get('otsu')
+        if otsu_image is not None:
+            ncc_full = self._try_ncc_full_extraction(otsu_image, self._enhanced_image)
+            if ncc_full is not None:
+                self._frame_ncc_coords = (ncc_full["x"], ncc_full["y"], ncc_full["z"])
+                if ncc_full.get("ooc") is not None:
+                    logger.info("[ncc-first] Full HUD reconstructed via NCC, Tesseract skipped")
+                    self._last_frame_hash = frame_hash
+                    self._last_result = ncc_full
+                    return ncc_full
+                logger.debug("[ncc-first] NCC coords cached, Tesseract still needed for zone/CamDir")
+
         result = self._parse_images_parallel(tesseract_images)
         self._last_frame_hash = frame_hash
         self._last_result = result
         return result
+
+    def _try_ncc_full_extraction(self, binary_image, enhanced_image):
+        """One-shot NCC pass per frame. Segments on binary, classifies on enhanced.
+
+        Returns a partial data dict (always with `x`, `y`, `z` if coords were
+        found; `ooc` / `location` / `cam_*` are populated only once alphabetic
+        templates are available — see commit 5). Returns None if NCC could not
+        recover coordinates.
+        """
+        coords = self._extract_coords_via_ncc(binary_image, enhanced_image, "ncc-first")
+        if coords is None:
+            return None
+        x, y, z = coords
+        return {
+            "location": "Unknown",
+            "x": x, "y": y, "z": z,
+            "ooc": None,
+            "cam_pitch": None, "cam_roll": None, "cam_yaw": None,
+        }
 
     def _ocr_single_pass(self, pass_name, img):
         ocr_text = self._ocr_image_to_text(img)
@@ -541,12 +583,10 @@ class OCRProcessor:
                 zone_name = zone_match.group(1).strip() if zone_match else ""
                 logger.debug(f"[{pass_name}] Zone line: zone={zone_name!r} | {line[:120]}")
 
-                # Phase D: try NCC first (faster + more accurate if templates available)
-                # Segment on the binary pass `img`, classify on the CLAHE-enhanced
-                # grayscale (stored by extract_data) to preserve gradient detail.
-                coords = self._extract_coords_via_ncc(img, self._enhanced_image, pass_name)
-
-                # Fallback: Tesseract on the normalized line if NCC did not work
+                # Phase D: prefer the once-per-frame NCC result cached by
+                # extract_data() (NCC-first pipeline). Falls back to Tesseract
+                # parsing of the normalized line if NCC found nothing.
+                coords = self._frame_ncc_coords
                 if coords is None:
                     normalized = _normalize_ooc_line(line)
                     coords = self._extract_coords_from_line(normalized, pass_name)
