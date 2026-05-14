@@ -1,13 +1,19 @@
 """OCR pipeline for the Star Citizen HUD debug overlay.
 
-Pipeline:
-  1. Capture (see capture.py) → 3 binary passes
-  2. Tesseract OEM3 PSM6 on each pass (parallel, ThreadPoolExecutor)
-  3. Post-OCR normalization (Pos:_, lkm/Km, stray underscores)
-  4. Strict Pos regex with 3-4 decimal places
-  5. If the regex fails: attempt to recover the missing '.'
-  6. Geographic range validation (|coord| < 30000 km)
-  7. Multi-pass consensus: if ≥2 passes converge within ±0.1 km, average;
+Pipeline (NCC-first since Phase E):
+  1. Capture (see capture.py) → 2 binary passes (otsu, adaptive) + CLAHE
+     enhanced grayscale
+  2. NCC/ONNX (once per frame): segment glyphs on 'otsu', classify crops on
+     'enhanced' grayscale. If the reconstruction yields valid coords (and
+     eventually zone/CamDir once alphabetic templates exist), Tesseract is
+     skipped entirely.
+  3. Tesseract fallback OEM3 PSM6 on the binary passes in parallel
+     (ThreadPoolExecutor). NCC coords are reused if available.
+  4. Post-OCR normalization (Pos:_, lkm/Km, stray underscores)
+  5. Strict Pos regex with 3-4 decimal places
+  6. If the regex fails: attempt to recover the missing '.'
+  7. Geographic range validation (|coord| < 30000 km)
+  8. Multi-pass consensus: if ≥2 passes converge within ±0.1 km, average;
      otherwise, best score
 
 HUD r_DisplayInfo 3 structure (3 Pos: lines):
@@ -19,9 +25,11 @@ The 3rd line is always scanned without filtering on the zone name prefix:
 OOC_Hurston, GrimHex, StantonIV-9, etc. are all accepted.
 Only Root/SolarSystem are rejected (absolute frame ~14 M km).
 
-Phase D: Hybrid NCC custom pipeline
-  - Tesseract for names (Zone:SolarSystem)
-  - Custom NCC for numeric coordinates (if templates available)
+Phase E architecture:
+  - Segmentation: binary 'otsu' (good at locating bounding boxes even when
+    characters are thickened).
+  - Classification: CLAHE-enhanced grayscale (preserves the gradient detail
+    that binary thresholding destroys).
 """
 import pytesseract
 import re
@@ -399,6 +407,14 @@ class OCRProcessor:
         self._last_frame_hash: int | None = None
         self._last_result: dict | None = None
 
+        # Per-frame CLAHE-enhanced grayscale, populated by extract_data().
+        # NCC/ONNX classification uses this; Tesseract uses the binary passes.
+        self._enhanced_image = None
+
+        # Per-frame cached NCC coords, populated by extract_data() once and
+        # reused across the parallel Tesseract passes in _ocr_single_pass.
+        self._frame_ncc_coords = None
+
     def _build_glyph_classifier(self, onnx_model_path, onnx_classes_path, onnx_threshold):
         """Builds the classification callable (classify_batch signature)."""
         if self.glyph_engine == "onnx":
@@ -459,20 +475,66 @@ class OCRProcessor:
     def extract_data(self, images):
         logger.debug(f"OCR extraction from {len(images)} passes with engine {self.engine}")
 
+        # Separate the CLAHE-enhanced grayscale (used by NCC/ONNX for
+        # classification) from the binary passes (used by Tesseract).
+        # The enhanced image is NOT a Tesseract input.
+        images = dict(images)  # avoid mutating caller's dict
+        self._enhanced_image = images.pop('enhanced', None)
+        tesseract_images = {k: v for k, v in images.items() if k in ('otsu', 'adaptive')}
+
         # Frame deduplication: fast hash on downsampled pixels.
         # If the HUD is identical to the previous tick, return the cached result
         # without re-running Tesseract (~0.1 ms instead of ~150 ms).
-        frame_hash = hash(
-            b''.join(img[::4, ::4].tobytes() for img in images.values())
-        )
+        hash_sources = list(tesseract_images.values())
+        if self._enhanced_image is not None:
+            hash_sources.append(self._enhanced_image)
+        frame_hash = hash(b''.join(img[::4, ::4].tobytes() for img in hash_sources))
         if frame_hash == self._last_frame_hash and self._last_result is not None:
             logger.debug("Identical frame — cached OCR result reused (Tesseract skipped)")
             return self._last_result
 
-        result = self._parse_images_parallel(images)
+        # NCC-first: run glyph classification ONCE per frame (segment on otsu,
+        # classify on enhanced). Cache the coords so _ocr_single_pass can reuse
+        # them across the parallel Tesseract passes instead of re-running NCC.
+        # If a full HUD reconstruction succeeds (coords + zone), we can skip
+        # Tesseract entirely — gated on NCC actually producing a complete dict
+        # (requires alphabetic templates, see commit 5).
+        self._frame_ncc_coords = None
+        otsu_image = tesseract_images.get('otsu')
+        if otsu_image is not None:
+            ncc_full = self._try_ncc_full_extraction(otsu_image, self._enhanced_image)
+            if ncc_full is not None:
+                self._frame_ncc_coords = (ncc_full["x"], ncc_full["y"], ncc_full["z"])
+                if ncc_full.get("ooc") is not None:
+                    logger.info("[ncc-first] Full HUD reconstructed via NCC, Tesseract skipped")
+                    self._last_frame_hash = frame_hash
+                    self._last_result = ncc_full
+                    return ncc_full
+                logger.debug("[ncc-first] NCC coords cached, Tesseract still needed for zone/CamDir")
+
+        result = self._parse_images_parallel(tesseract_images)
         self._last_frame_hash = frame_hash
         self._last_result = result
         return result
+
+    def _try_ncc_full_extraction(self, binary_image, enhanced_image):
+        """One-shot NCC pass per frame. Segments on binary, classifies on enhanced.
+
+        Returns a partial data dict (always with `x`, `y`, `z` if coords were
+        found; `ooc` / `location` / `cam_*` are populated only once alphabetic
+        templates are available — see commit 5). Returns None if NCC could not
+        recover coordinates.
+        """
+        coords = self._extract_coords_via_ncc(binary_image, enhanced_image, "ncc-first")
+        if coords is None:
+            return None
+        x, y, z = coords
+        return {
+            "location": "Unknown",
+            "x": x, "y": y, "z": z,
+            "ooc": None,
+            "cam_pitch": None, "cam_roll": None, "cam_yaw": None,
+        }
 
     def _ocr_single_pass(self, pass_name, img):
         ocr_text = self._ocr_image_to_text(img)
@@ -529,10 +591,10 @@ class OCRProcessor:
                 zone_name = zone_match.group(1).strip() if zone_match else ""
                 logger.debug(f"[{pass_name}] Zone line: zone={zone_name!r} | {line[:120]}")
 
-                # Phase D: try NCC first (faster + more accurate if templates available)
-                coords = self._extract_coords_via_ncc(img, pass_name)
-
-                # Fallback: Tesseract on the normalized line if NCC did not work
+                # Phase D: prefer the once-per-frame NCC result cached by
+                # extract_data() (NCC-first pipeline). Falls back to Tesseract
+                # parsing of the normalized line if NCC found nothing.
+                coords = self._frame_ncc_coords
                 if coords is None:
                     normalized = _normalize_ooc_line(line)
                     coords = self._extract_coords_from_line(normalized, pass_name)
@@ -561,20 +623,27 @@ class OCRProcessor:
 
         return score, data
 
-    def _extract_coords_via_ncc(self, binary_image, pass_name):
+    def _extract_coords_via_ncc(self, binary_image, enhanced_image, pass_name):
         """Extracts coordinates via custom NCC (Phase D).
 
+        Segmentation and classification are decoupled:
+          - `binary_image` is used only to locate glyph bounding boxes
+            (find_glyph_regions). Otsu thickens characters but keeps the
+            connected components separate, making it good at segmentation.
+          - `enhanced_image` (CLAHE grayscale) is used to crop glyphs for
+            classification — it preserves the fine gradient detail that
+            binary thresholding destroys.
+
+        If `enhanced_image` is None, falls back to cropping from
+        `binary_image` (backward-compat behavior).
+
         Line-by-line strategy:
-          1. Segment into text bands (rows)
-          2. For each row, classify glyphs via NCC
+          1. Segment into text bands (rows) on binary
+          2. For each row, classify glyphs (NCC/ONNX) from the enhanced crop
           3. Reconstruct the string and apply the Pos regex
           4. Geographic range validation (implicitly rejects Root/SolarSystem
              which have coords ~14 M km)
           5. Return the first row that yields valid coordinates
-
-        Args:
-            binary_image: binary image 0/255
-            pass_name: pass name (for logs)
 
         Returns:
             tuple (x, y, z) or None
@@ -597,7 +666,7 @@ class OCRProcessor:
             # Process each row in order, return the first with valid coordinates
             for row_idx in sorted(glyphs_by_row.keys()):
                 coords = self._extract_coords_from_row_ncc(
-                    binary_image, glyphs_by_row[row_idx], row_idx, pass_name
+                    binary_image, enhanced_image, glyphs_by_row[row_idx], row_idx, pass_name
                 )
                 if coords is not None and _coords_in_range(*coords):
                     return coords
@@ -608,15 +677,21 @@ class OCRProcessor:
             logger.error(f"[{pass_name}] NCC error: {e}")
             return None
 
-    def _extract_coords_from_row_ncc(self, binary_image, row_glyphs, row_idx, pass_name):
-        """Classifies glyphs in a row and attempts to extract (x, y, z)."""
+    def _extract_coords_from_row_ncc(self, binary_image, enhanced_image, row_glyphs, row_idx, pass_name):
+        """Classifies glyphs in a row and attempts to extract (x, y, z).
+
+        Crops are taken from `enhanced_image` when available (grayscale, rich
+        in gradient detail) and fall back to `binary_image` otherwise.
+        """
         row_glyphs = sorted(row_glyphs, key=lambda g: g['x'])
+
+        classify_source = enhanced_image if enhanced_image is not None else binary_image
 
         # Prepare crops in x order
         glyph_images = []
         for g in row_glyphs:
             x, y, w, h = g['x'], g['y'], g['w'], g['h']
-            crop = binary_image[y:y+h, x:x+w]
+            crop = classify_source[y:y+h, x:x+w]
             if crop.size > 0:
                 glyph_images.append((g['id'], crop))
 
@@ -646,8 +721,13 @@ class OCRProcessor:
 
         logger.debug(f"[{pass_name}] NCC row{row_idx}: {reconstructed!r}")
 
-        # Virtually prepend "Pos: " for the regex (NCC does not read letters)
-        candidate = "Pos: " + reconstructed
+        # If NCC already recognized "Pos:" (letter templates available), use
+        # the reconstructed string as-is; otherwise virtually prepend "Pos: "
+        # so the coords regex can still match a digits-only reconstruction.
+        if "Pos:" in reconstructed or "pos:" in reconstructed.lower():
+            candidate = reconstructed
+        else:
+            candidate = "Pos: " + reconstructed
         normalized = _normalize_ooc_line(candidate)
 
         # Strict match only: NCC + heuristic '.' must reconstruct the decimal

@@ -81,6 +81,10 @@ class ConfigManager:
             self.config.set('Overlay', 'default_position_x', '50')
             self.config.set('Overlay', 'default_position_y', '50')
 
+        if not self.config.has_section('Navigation'):
+            self.config.add_section('Navigation')
+            self.config.set('Navigation', 'arrival_radius_m', '100')
+
         if not self.config.has_section('Hotkeys'):
             self.config.add_section('Hotkeys')
             self.config.set('Hotkeys', 'toggle_overlay', 'shift+f1')
@@ -138,6 +142,25 @@ class ConfigManager:
             return self.config.getfloat('OCR', 'onnx_confidence_threshold', fallback=0.85)
         except Exception:
             return 0.85
+
+    def get_arrival_radius_m(self):
+        """Return the arrival precision radius in meters.
+
+        When the smoothed distance to target drops below this radius, the EMA
+        is bypassed and the raw OCR distance is shown directly — avoids the
+        common ~1-2 s display lag at touchdown.
+        """
+        try:
+            value = self.config.getfloat('Navigation', 'arrival_radius_m', fallback=100.0)
+        except Exception:
+            return 100.0
+        return max(1.0, value)
+
+    def set_arrival_radius_m(self, radius_m):
+        """Set the arrival precision radius (meters). Minimum 1 m."""
+        if not self.config.has_section('Navigation'):
+            self.config.add_section('Navigation')
+        self.config.set('Navigation', 'arrival_radius_m', str(max(1.0, float(radius_m))))
 
     def get_hotkey(self, action):
         """

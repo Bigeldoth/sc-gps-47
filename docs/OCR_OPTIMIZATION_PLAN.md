@@ -155,6 +155,42 @@ C'est l'aboutissement : remplacer Tesseract pour les chiffres par un classifieur
 2. **Phase B** (validation) — élimine les hallucinations résiduelles.
 3. **Phase C** (Tesseract tuning) — quick wins triviaux.
 4. **Phase D** (NCC custom) — long terme, vise la précision 99 %+.
+5. **Phase E** (NCC-first + enhanced classification) — voir section dédiée ci-dessous.
+
+## Phase E — NCC-first with enhanced classification
+
+**Idée centrale** : découpler segmentation et classification.
+
+- **Segmentation** : sur la passe binaire `otsu`. Otsu épaissit les caractères
+  mais les composantes connexes restent séparées : les bounding boxes sont
+  fiables même quand le texte est dégradé.
+- **Classification** : sur l'image grayscale `enhanced` (sortie CLAHE).
+  Préserve les gradients fins que le seuillage binaire détruit ; améliore
+  significativement la corrélation NCC et les confidences ONNX.
+
+**Pipeline** :
+1. `capture()` retourne `{otsu, adaptive, enhanced}` (passe `otsu_inv`
+   supprimée : elle détruisait les caractères dans tous les cas observés).
+2. `ocr.extract_data()` exécute NCC **une seule fois** par frame :
+   - segmente sur `otsu` via `find_glyph_regions`
+   - classifie chaque crop découpé dans `enhanced`
+   - reconstruit chaque ligne et applique la regex `Pos:`
+3. Le résultat est mis en cache sur `self._frame_ncc_coords` et réutilisé
+   par les workers Tesseract parallèles (plus de NCC dupliqué par passe).
+4. Si NCC reconstruit l'intégralité du HUD (coords + zone), Tesseract est
+   complètement court-circuité (chemin `[ncc-first]`).
+5. Sinon, Tesseract tourne sur `{otsu, adaptive}` en parallèle pour
+   récupérer `Zone:` / `CamDir:` / `OOC_*`.
+
+**Charset NCC étendu** (`templates.EXPECTED_CHARS`) :
+chiffres + unités + A-Z/a-z + `:` / `_` / espace. Le court-circuit total
+Tesseract ne s'active qu'une fois les templates alphabétiques collectés via
+`tools/dataset_builder.py`.
+
+**Latences attendues** :
+- NCC sur enhanced : ~10 ms (8 lignes max, ~30 glyphes, einsum vectorisé).
+- Tesseract parallel (2 passes) : ~150 ms.
+- Frame-dedup hash : ~0.1 ms si HUD inchangé.
 
 ## Métriques de succès
 

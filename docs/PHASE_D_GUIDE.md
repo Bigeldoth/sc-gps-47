@@ -5,7 +5,60 @@
 Remplacer Tesseract pour les **coordonnées numériques** par un classifieur **NCC pur NumPy** :
 - **Latence** : ~10 ms/frame (vs ~100 ms Tesseract)
 - **Précision** : 99 %+ sur coordonnées (avec vrais templates)
-- **Architecture hybride** : Tesseract reste pour noms (Zone, OOC)
+- **Architecture hybride** : Tesseract reste pour noms (Zone, OOC) **jusqu'à ce
+  que les templates alphabétiques soient collectés** (voir Phase E).
+
+## 🔀 Phase E — Segmentation / classification découplées
+
+Depuis Phase E, la segmentation s'exécute sur la passe binaire `otsu` (fiable
+pour les bounding boxes même quand le texte est épaissi) et la classification
+sur l'image grayscale `enhanced` (sortie CLAHE — gradients préservés).
+NCC tourne **une fois par frame** dans `extract_data()` ; ses coords sont
+réutilisées par les workers Tesseract parallèles, et Tesseract est
+court-circuité dès que NCC reconstruit le HUD complet (coords + zone).
+
+`EXPECTED_CHARS` couvre désormais chiffres + unités + A-Z/a-z + `:`/`_`/`espace`.
+Pour activer la reconnaissance complète du HUD par NCC, il faut donc collecter
+des templates de **lettres** en plus des chiffres :
+
+- les dossiers Windows-illégaux sont mappés via `_PATH_SAFE_MAP` :
+  `:` → `_colon`, ` ` → `_space`, `.` → `_dot`, `-` → `_dash`, etc.
+- `tools/dataset_builder.py` génère automatiquement ces dossiers.
+- Une fois `data/templates/{_upA..Z, a-z, _colon, _space, ...}/` peuplés, le
+  chemin `[ncc-first]` dans `extract_data()` se déclenche et Tesseract est
+  complètement skippé.
+
+> **NTFS case-folding** : `A/` et `a/` se résolvent au même dossier physique
+> sur Windows. Les majuscules sont donc encodées via le préfixe `_up` :
+> `A` → `_upA`, `Z` → `_upZ`, etc. Ce mapping est géré par
+> `_PATH_SAFE_MAP` dans `src/sc_ocr/templates.py` et
+> `tools/dataset_builder.py`.
+
+### Génération synthétique initiale (alphabet A-Z, a-z)
+
+Pour amorcer le NCC avant toute session de jeu, des templates synthétiques
+peuvent être générés depuis une font visuellement proche du HUD SC
+(Electrolize est le meilleur candidat — voir `tools/find_sc_font.py`).
+
+```bash
+# 1. Télécharger Electrolize (OFL — Google Fonts)
+mkdir -p tools/fonts
+curl -fsSL -o tools/fonts/Electrolize-Regular.ttf \
+  "https://github.com/google/fonts/raw/main/ofl/electrolize/Electrolize-Regular.ttf"
+
+# 2. Générer ~60 variantes par lettre (chiffres préservés s'ils existent déjà)
+python tools/dataset_synthetic.py \
+  --font tools/fonts/Electrolize-Regular.ttf \
+  --samples-per-char 60 \
+  --out data/templates \
+  --chars "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+```
+
+Les templates synthétiques sont moins précis que des captures réelles
+(le moyennage des variantes augmentées floute le contour), donc les scores
+NCC sur HUD réel peuvent être proches du seuil `NCC_THRESHOLD = 0.78`.
+Une session de collecte via `dataset_builder.py` reste recommandée pour
+affiner les lettres les plus utilisées (ABCDE OOC_ Pos: Zone: km).
 
 ---
 
