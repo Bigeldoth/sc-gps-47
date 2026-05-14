@@ -110,14 +110,97 @@ class ConfigManager:
         self.config.set('OCR', 'scan_interval_ms', str(interval_ms))
 
     def get_ocr_engine(self):
-        """Return the text OCR engine to use (tesseract)."""
-        return self.config.get('OCR', 'engine', fallback='tesseract').lower()
+        """Return the text OCR engine to use ('tesseract' or 'paddle').
+
+        Reads the new key `text_engine` first, falling back to the legacy
+        `engine` key for backward compatibility with pre-Paddle configs.
+        """
+        value = self.config.get(
+            'OCR', 'text_engine',
+            fallback=self.config.get('OCR', 'engine', fallback='tesseract'),
+        ).lower()
+        return value if value in ('tesseract', 'paddle') else 'tesseract'
 
     def set_ocr_engine(self, engine):
-        """Set the OCR engine to use."""
+        """Set the OCR engine to use. Writes to `text_engine` and clears the
+        legacy `engine` key so the new value is unambiguous."""
         if not self.config.has_section('OCR'):
             self.config.add_section('OCR')
-        self.config.set('OCR', 'engine', engine.lower())
+        self.config.set('OCR', 'text_engine', engine.lower())
+        if self.config.has_option('OCR', 'engine'):
+            self.config.remove_option('OCR', 'engine')
+
+    def get_pipeline_mode(self):
+        """Return the OCR pipeline mode: 'hybrid' (NCC/ONNX + text engine
+        fallback) or 'full_text' (text engine only, bypass glyph stage)."""
+        value = self.config.get('OCR', 'pipeline_mode', fallback='hybrid').lower()
+        return value if value in ('hybrid', 'full_text') else 'hybrid'
+
+    def set_pipeline_mode(self, mode):
+        if not self.config.has_section('OCR'):
+            self.config.add_section('OCR')
+        self.config.set('OCR', 'pipeline_mode', mode.lower())
+
+    def get_paddle_device(self):
+        """Return the device PaddleOCR should run on ('cpu' or 'gpu')."""
+        value = self.config.get('OCR', 'paddle_device', fallback='cpu').lower()
+        return value if value in ('cpu', 'gpu') else 'cpu'
+
+    def set_paddle_device(self, device):
+        if not self.config.has_section('OCR'):
+            self.config.add_section('OCR')
+        self.config.set('OCR', 'paddle_device', device.lower())
+
+    def get_paddle_model_dir(self):
+        """Return the fine-tuned PaddleOCR recognition model dir (empty = use
+        the official pretrained model)."""
+        return self.config.get('OCR', 'paddle_model_dir', fallback='')
+
+    def set_paddle_model_dir(self, path):
+        if not self.config.has_section('OCR'):
+            self.config.add_section('OCR')
+        self.config.set('OCR', 'paddle_model_dir', path or '')
+
+    def get_paddle_lang(self):
+        return self.config.get('OCR', 'paddle_lang', fallback='en')
+
+    def set_paddle_lang(self, lang):
+        if not self.config.has_section('OCR'):
+            self.config.add_section('OCR')
+        self.config.set('OCR', 'paddle_lang', lang)
+
+    # ── PaddleOCR-VL sidecar ────────────────────────────────────────────
+
+    def get_paddle_vl_endpoint(self):
+        return self.config.get(
+            'OCR', 'paddle_vl_endpoint', fallback='http://127.0.0.1:8118',
+        )
+
+    def set_paddle_vl_endpoint(self, endpoint):
+        if not self.config.has_section('OCR'):
+            self.config.add_section('OCR')
+        self.config.set('OCR', 'paddle_vl_endpoint', endpoint)
+
+    def get_paddle_vl_model(self):
+        return self.config.get(
+            'OCR', 'paddle_vl_model', fallback='PaddleOCR-VL-1.5-0.9B',
+        )
+
+    def set_paddle_vl_model(self, model):
+        if not self.config.has_section('OCR'):
+            self.config.add_section('OCR')
+        self.config.set('OCR', 'paddle_vl_model', model)
+
+    def get_paddle_vl_backend(self):
+        value = self.config.get(
+            'OCR', 'paddle_vl_backend', fallback='transformers',
+        ).lower()
+        return value if value in ('transformers', 'vllm', 'sglang') else 'transformers'
+
+    def set_paddle_vl_backend(self, backend):
+        if not self.config.has_section('OCR'):
+            self.config.add_section('OCR')
+        self.config.set('OCR', 'paddle_vl_backend', backend.lower())
 
     def get_glyph_engine(self):
         """Return the glyph classifier (ncc or onnx)."""

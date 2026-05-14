@@ -52,7 +52,39 @@ _RE_POS = re.compile(
     # Require 3-4 decimal places: SC always displays 4 decimals (10 cm precision).
     # If Tesseract drops digits, the reading is rejected rather than recording
     # an approximate position that would cause ~10 m errors at destination.
-    r'[Pp]os:?\s*(-?\d+\.\d{3,4})\s*km\s*(-?\d+\.\d{3,4})\s*km\s*(-?\d+\.\d{3,4})\s*km',
+    # The trailing 'km' is wrapped in (?:\s*km?)? so it can be missing or
+    # truncated to 'k' — Paddle frequently clips that suffix when the text
+    # touches the right edge of the crop. The 3-4 decimal constraint still
+    # rules out false matches.
+    r'[Pp]os:?\s*(-?\d+\.\d{3,4})\s*km\s*(-?\d+\.\d{3,4})\s*km\s*(-?\d+\.\d{3,4})(?:\s*km?)?',
+    re.IGNORECASE,
+)
+# Fallback regex used only when _RE_POS fails: relaxes the third coordinate
+# to 2-4 decimals to catch paddle's right-edge truncation (e.g. -263.8265
+# → -263.82). Still demands the first two coords at full precision so we
+# never match a noisy partial reading by accident.
+_RE_POS_RELAXED_LAST = re.compile(
+    r'[Pp]os:?\s*(-?\d+\.\d{3,4})\s*km\s*(-?\d+\.\d{3,4})\s*km\s*(-?\d+\.\d{2,4})(?:\s*km?)?',
+    re.IGNORECASE,
+)
+# Headless triple-coord regex: matches three `<num>km <num>km <num>` blocks
+# anywhere in the string, no `Pos:` prefix required. Used ONLY as a last
+# resort on lines that already look like OOC navigation (contains an OOC
+# zone token), to recover frames where Paddle lost the 'Pos:' keyword (or
+# rendered it as digits, e.g. '905').
+_RE_POS_HEADLESS = re.compile(
+    r'(-?\d+\.\d{3,4})\s*km\s*(-?\d+\.\d{3,4})\s*km\s*(-?\d+\.\d{2,4})(?:\s*km?)?',
+    re.IGNORECASE,
+)
+# Heuristic OOC line marker — covers the in-game zone names we know Paddle
+# garbles. Kept loose because Paddle never reads 'OOC' or 'Stanton' clean.
+# Variants observed in diagnostics: 'tanton', 'tantan', '5tanton', '5tantan',
+# '5taatan', '5tant0n', '513nt0n', 'StanT0n', 'cor[orp', 'A5cCorp', 'ArcCorp',
+# 'A5C5050', 'A5cC0r0', 'ArcC0r0', '45C5959', '4555959'. The pattern below
+# accepts any digit-letter-soup with the first letter t-ish and 'n' two
+# chars later, plus the recognizable 'corp/c0r0/c050/c059/5959' suffix.
+_RE_OOC_HINT = re.compile(
+    r'(?:[t5]\w{1,5}t[ao0]\w*?[n0o]|[ao4][r5]c\w?[cC50]\w*|microt|hurst|crusad|cellin|stanton|tanton)',
     re.IGNORECASE,
 )
 # Identifies a CamDir line even if OCR misses the ':' or leading 'C'.
@@ -211,26 +243,184 @@ _OCR_CORRECTIONS = {
     'Rcot': 'Root',
     'GGC': 'OOC',
     'Micratech': 'Microtech',
+    # Paddle frequently confuses '0' with 'O' / 'o' on the OOC zone token,
+    # and emits 'Zane:' / 'Zone;' / 'Zose;' for 'Zone:'.
+    'Ooc ': 'OOC ',
+    '00c ': 'OOC ',
+    'O0c ': 'OOC ',
+    '0oc ': 'OOC ',
+    'Zone;': 'Zone:',
+    'Zane:': 'Zone:',
+    'Zane;': 'Zone:',
+    'Zose;': 'Zone:',
+    'Zaner': 'Zone:',
+    'Zoner': 'Zone:',
 }
 
 
 def _normalize_ooc_line(line):
     """Normalizes an OOC line before applying _RE_POS.
 
-    Fixes common Tesseract artifacts:
-    1. Missing space before Pos: (zone glued: 'OOC_L2Pos:' → 'OOC_L2 Pos:')
-    2. Pos:_ → Pos:  (underscore/multiple spaces after the colon)
-    3. lkm/Ikm/kn/KM/kh → km  (OCR variants of the unit, after a digit)
-    4. km_-529 → km -529  (underscore between coordinates)
-    5. G/O → 0 in digit contexts (green channel artefact: 586.4G26 → 586.4026)
+    Fixes common Tesseract / Paddle artifacts. Empirical evidence comes from
+    `diagnostics/paddle/*/summary.md`. The substitutions are aggressive but
+    scoped — each replacement requires surrounding digits/structure so we
+    don't corrupt normal English text in zone names.
     """
+    # 1. Missing space before Pos: ('OOC_L2Pos:' → 'OOC_L2 Pos:')
     line = re.sub(r'(?<=[^\s])([Pp]os:)', r' \1', line)
+    # 2. Pos:_ → Pos:  (underscore/multiple spaces after the colon)
     line = re.sub(r'(Pos:?)[\s_]+', r'\1 ', line)
+    # 3. Paddle 'Pos' misreads. The HUD font's:
+    #   - 'P' is confused with '9' (similar curve)
+    #   - 'o' is confused with 0/a/9/Q
+    #   - 's' is confused with 5/S/a/6
+    #   - the trailing ':' is dropped or read as i/!/;/,/.
+    # Canonicalise to 'Pos:' whenever the token is followed by ':' or any
+    # close-enough terminator. The lookbehind only blocks letters (not
+    # digits) — paddle frequently glues 'P05' onto a preceding digit run
+    # like 'A5C5059P05', and `9P05` is still a real Pos token.
+    line = re.sub(
+        r'(?<![A-Za-z])[Pp9][0oOaA9qQ][sSa56][:\s;,.!iI|]?',
+        lambda m: 'Pos:' if m.group(0)[-1] in ':;,.!iI|' else (
+            'Pos ' if m.group(0)[-1] in ' \t' else 'Pos'
+        ),
+        line,
+    )
+    # 4. G/O → 0 in digit contexts (green channel artefact: 586.4G26 → 586.4026)
     line = re.sub(r'(?<=[\d.])[GO](?=[\d.])', '0', line)
     line = re.sub(r'(?<=\d)[GO](?=\s*km)', '0', line)
+    # 4b. Z → 2 fix-up RUN EARLY (before km canon) so `-103.597Zk` first
+    # becomes `-103.5972k` and the km rule below can then turn it into 'km'.
+    line = re.sub(r'(?<=[\d.])Z(?=[\dk])', '2', line)
+    line = re.sub(r'(?<=[-\s])Z(?=\d)', '2', line)
+    # 5. Aggressive 'km' fix-up. After a digit, accept 'k' followed by ANY
+    # single non-whitespace char (Paddle hallucinates m/n/h/d/a/1/l/I/R/K/T
+    # and even punctuation like ©/®/}/{), as long as the surrounding context
+    # still looks like a coordinate boundary (next char is whitespace, sign,
+    # digit, or EOL).
+    line = re.sub(
+        r'(?<=\d)k[^\s\-\d](?=[\s\-\d]|$)', 'km', line,
+    )
+    line = re.sub(r'(?<=\d)k(?=[\s\-]|$)', 'km', line)
+    # 5b. Stranded 'k' followed by 'm' on the next side after extra junk:
+    # 'km7' → 'km' (drop trailing alnum hallucinated AFTER a valid km).
+    line = re.sub(r'(?<=\dkm)[a-zA-Z0-9](?=\s|$)', '', line)
+    # Legacy variants (Tesseract) — kept for back-compat.
     line = re.sub(r'(?<=[\d.])[lLiI1]?[kK][mMnNhH](?=[\s_\-\d]|$)', 'km', line)
     line = re.sub(r'km[\s_]+(-?\d)', r'km \1', line)
+    # 6. Comma decimal separator (Paddle French locale): -748,258 → -748.258.
+    line = re.sub(r'(?<=\d),(?=\d)', '.', line)
+    # 7. J ↔ 7 in coord position (after sign / whitespace).
+    line = re.sub(r'(?<=[-\s])J(?=\d)', '7', line)
+    # 8. Z ↔ 2 — also already handled in step 4b but re-run here in case the
+    # Pos canon / G→0 step turned an alnum context into a digit one.
+    line = re.sub(r'(?<=[\d.])Z(?=[\dk])', '2', line)
+    line = re.sub(r'(?<=[-\s])Z(?=\d)', '2', line)
+    # 9. Space inside a coordinate ('-263 .8255' → '-263.8255') — happens
+    # when Paddle's tokenizer splits a number around the decimal point.
+    line = re.sub(r'(\d)\s+\.(\d)', r'\1.\2', line)
+    # 9b. Space WHERE THE DECIMAL POINT WAS: paddle sometimes loses the dot
+    # entirely. We can only safely insert it inside a Pos line where we
+    # expect '<1-3 digit integer>.<3-4 digit fraction>km'. Constraint kept
+    # tight so we don't merge legitimate space-separated tokens.
+    line = re.sub(
+        r'(?<=\d)\s+(\d{3,4})(?=\s*km)', r'.\1', line,
+    )
+    # 9c. Collapse space after a leading negative sign ('- 263' → '-263')
+    # when the next token is clearly a coordinate.
+    line = re.sub(r'(?<=\s)-\s+(?=\d+\.)', '-', line)
+    # 10. Missing space before negative coord ('P05:-748' → 'P05: -748').
+    line = re.sub(r'(?<=[Pp]os:)(-?\d)', r' \1', line)
     return line
+
+
+# Loose detector for ANY paddle-mangled Pos token. Matches the same shapes
+# the Pos canonicalisation in `_normalize_ooc_line` rewrites to 'Pos:', plus
+# the same terminator set. Used by the orphan-join to recognise that a line
+# is "a Pos line" before normalisation has had a chance to canonicalise it.
+# Lookbehind only blocks letters (not digits) so glued tokens like 'A5C5059P05'
+# still trigger.
+_RE_POS_LIKE = re.compile(
+    r'(?<![A-Za-z])[Pp9][0oOaA9qQ][sSa56][:\s;,.!iI|\-]',
+    re.IGNORECASE,
+)
+
+
+def _join_orphan_pos_lines(text: str) -> str:
+    """Glues `Pos:` and its values back together when an OCR detector returns
+    them on consecutive lines.
+
+    Triggered for paddle output like:
+        Zone: Ooc Stanton 3 ArcCord Pos:
+        -747.4760km -104.2975km -265.3238k
+    which we want to coalesce into a single line so `_RE_POS` can fire.
+
+    Also handles the more frequent paddle pattern where Pos already has 1 or
+    2 coords on its line and the remaining 1 or 2 land on the next line(s):
+        ... Pos: -748.2809km
+        -103.5753km -263.8265
+    Up to two continuation lines are absorbed (covers the 3-line split seen
+    in `diagnostics/paddle/20260514_215532/frame_008`).
+    """
+    if not text:
+        return text
+    # Cheap heuristic to count "decimal coordinate-looking" tokens on a line.
+    def _coord_count(s: str) -> int:
+        return len(re.findall(r"-?\d+\.\d{1,4}", s))
+
+    lines = text.split('\n')
+    merged: list[str] = []
+    i = 0
+    while i < len(lines):
+        current = lines[i]
+        stripped = current.rstrip()
+        lower = stripped.lower()
+        # Case 1: line ends with the literal 'Pos:' marker (no values yet).
+        if lower.rstrip().endswith('pos:') and i + 1 < len(lines):
+            nxt = lines[i + 1].strip()
+            if nxt and re.search(r'-?\d', nxt):
+                merged.append(stripped + ' ' + nxt)
+                i += 2
+                continue
+        # Case 2: line contains a Pos-like token AND has fewer than 3 decimal
+        # numbers. Pull continuation lines that look like '<digits>.<digits>km
+        # <…>' until we reach 3 coords or run out.
+        #
+        # IMPORTANT: we *skip* this join when the Pos line is a sub-zone /
+        # interior Pos (meter unit, e.g. 'oc_a18_sp_int Pos: -0.67m -33').
+        # Those values are valid but in meters — they MUST NOT be glued with
+        # the next km-scale OOC Pos. Heuristic: if the line contains 'Pos:'
+        # followed by a number+'m' (with no 'km'), treat it as a sub-zone
+        # and leave it alone.
+        is_pos_line = bool(_RE_POS_LIKE.search(stripped))
+        # detect sub-zone Pos (meter unit, no km on the line yet)
+        is_meter_subzone = bool(
+            re.search(r"[Pp][0oOa9q][sSa56][:\s].*\d+\.?\d*\s*m\b", stripped)
+            and "km" not in lower
+        )
+        if is_pos_line and not is_meter_subzone:
+            current_total = _coord_count(stripped)
+            j = i + 1
+            absorbed: list[str] = []
+            while current_total < 3 and j < len(lines) and len(absorbed) < 2:
+                nxt = lines[j].strip()
+                # Continuation must START with a number (possibly signed) so we
+                # don't accidentally swallow the next zone line.
+                if not re.match(r'-?\d', nxt):
+                    break
+                cnt = _coord_count(nxt)
+                if cnt == 0:
+                    break
+                absorbed.append(nxt)
+                current_total += cnt
+                j += 1
+            if absorbed:
+                merged.append(stripped + ' ' + ' '.join(absorbed))
+                i = j
+                continue
+        merged.append(current)
+        i += 1
+    return '\n'.join(merged)
 
 
 def _is_meter_line(line: str) -> bool:
@@ -377,12 +567,64 @@ class OCRProcessor:
         onnx_model_path="models/spacedrive_ocr.onnx",
         onnx_classes_path="models/spacedrive_ocr.classes.json",
         onnx_confidence_threshold=0.85,
+        pipeline_mode="hybrid",
+        paddle_device="cpu",
+        paddle_model_dir="",
+        paddle_lang="en",
+        paddle_vl_endpoint="http://127.0.0.1:8118",
+        paddle_vl_model="PaddleOCR-VL-1.5-0.9B",
+        paddle_vl_backend="transformers",
     ):
         self.engine = engine.lower()
+        self.pipeline_mode = (pipeline_mode or "hybrid").lower()
+        if self.pipeline_mode not in ("hybrid", "full_text"):
+            logger.warning(
+                "Unknown pipeline_mode '%s', falling back to 'hybrid'", pipeline_mode
+            )
+            self.pipeline_mode = "hybrid"
         self.tesseract_config = _build_tesseract_config()
+        # `_paddle_adapter` is used uniformly for both `paddle` and `paddle-vl`
+        # — only the concrete class behind it differs. `_paddle_vl_service`
+        # is set only in the `paddle-vl` path so shutdown() can stop it.
+        self._paddle_adapter = None
+        self._paddle_vl_service = None
 
         if self.engine == "tesseract":
             self._init_tesseract(tesseract_path)
+        elif self.engine == "paddle":
+            try:
+                self._init_paddle(paddle_device, paddle_model_dir, paddle_lang)
+            except Exception as exc:
+                logger.error(
+                    "PaddleOCR init failed (%s) — falling back to Tesseract", exc
+                )
+                self.engine = "tesseract"
+                self._init_tesseract(tesseract_path)
+        elif self.engine == "paddle-vl":
+            try:
+                self._init_paddle_vl(
+                    endpoint=paddle_vl_endpoint,
+                    model=paddle_vl_model,
+                    backend=paddle_vl_backend,
+                )
+            except Exception as exc:
+                logger.error(
+                    "PaddleOCR-VL init failed (%s) — falling back to paddle (CPU)",
+                    exc,
+                )
+                # Best-effort fallback: try standard paddle on CPU. If that
+                # also fails (no paddle install at all), drop to tesseract.
+                try:
+                    self._init_paddle(
+                        device="cpu", model_dir=paddle_model_dir, lang=paddle_lang,
+                    )
+                    self.engine = "paddle"
+                except Exception as exc2:
+                    logger.error(
+                        "Paddle fallback also failed (%s) — using Tesseract", exc2,
+                    )
+                    self.engine = "tesseract"
+                    self._init_tesseract(tesseract_path)
         else:
             logger.warning(f"Unknown OCR engine '{engine}', falling back to Tesseract")
             self.engine = "tesseract"
@@ -469,18 +711,85 @@ class OCRProcessor:
 
         logger.info("Tesseract OCR initialized")
 
+    def _init_paddle_vl(self, endpoint: str, model: str, backend: str):
+        """Starts the PaddleOCR-VL sidecar (if needed) and points the adapter
+        at its HTTP endpoint.
+
+        The sidecar lives in its own venv (`.venv-paddle-vl/`) and exposes an
+        OpenAI-style chat completions API. We block here for up to 90s so the
+        worker thread can know recognize() will succeed by the time we return.
+        """
+        from paddle_vl_service import get_service
+        from paddle_vl_adapter import PaddleVLAdapter
+
+        # Parse host/port out of the endpoint so the service singleton can be
+        # rebuilt on config changes (different port/backend → new service).
+        from urllib.parse import urlparse
+        parsed = urlparse(endpoint)
+        port = parsed.port or 8118
+
+        self._paddle_vl_service = get_service(
+            model=model, backend=backend, port=port,
+        )
+        started = self._paddle_vl_service.start(blocking=True, timeout=90.0)
+        if not started:
+            raise RuntimeError(
+                "PaddleOCR-VL sidecar did not become ready within 90s"
+            )
+        self._paddle_adapter = PaddleVLAdapter(
+            endpoint=endpoint, model=model,
+        )
+        logger.info(
+            "OCR engine: paddle-vl (endpoint=%s, model=%s, backend=%s)",
+            endpoint, model, backend,
+        )
+
+    def _init_paddle(self, device: str, model_dir: str, lang: str):
+        """Lazily creates the PaddleOCR adapter."""
+        from paddle_adapter import PaddleAdapter
+        self._paddle_adapter = PaddleAdapter(
+            device=device,
+            model_dir=model_dir if model_dir else None,
+            lang=lang,
+        )
+        logger.info(
+            "OCR engine: paddle (device=%s, model_dir=%s, lang=%s)",
+            device, model_dir or "<pretrained>", lang,
+        )
+
     def _ocr_image_to_text(self, img):
+        # Both `paddle` and `paddle-vl` go through the same adapter interface.
+        if self.engine in ("paddle", "paddle-vl") and self._paddle_adapter is not None:
+            return self._paddle_adapter.recognize(img)
         return pytesseract.image_to_string(img, config=self.tesseract_config)
 
     def extract_data(self, images):
-        logger.debug(f"OCR extraction from {len(images)} passes with engine {self.engine}")
+        logger.debug(
+            f"OCR extraction from {len(images)} passes "
+            f"(engine={self.engine}, mode={self.pipeline_mode})"
+        )
 
         # Separate the CLAHE-enhanced grayscale (used by NCC/ONNX for
         # classification) from the binary passes (used by Tesseract).
         # The enhanced image is NOT a Tesseract input.
         images = dict(images)  # avoid mutating caller's dict
         self._enhanced_image = images.pop('enhanced', None)
+        raw_image = images.pop('raw', None)
         tesseract_images = {k: v for k, v in images.items() if k in ('otsu', 'adaptive')}
+
+        # full_text mode: skip NCC/ONNX entirely and run the configured text
+        # engine on whichever image source it prefers. Paddle / paddle-vl get
+        # the raw BGR crop (both have their own detection); Tesseract keeps
+        # the binary passes + multi-pass consensus.
+        if self.pipeline_mode == "full_text":
+            if self.engine in ("paddle", "paddle-vl"):
+                source = raw_image if raw_image is not None else self._enhanced_image
+                if source is None:
+                    logger.warning("full_text/%s: no image source available", self.engine)
+                    return self._empty_data()
+                return self._extract_full_text_paddle(source)
+            self._frame_ncc_coords = None
+            return self._parse_images_parallel(tesseract_images)
 
         # Frame deduplication: fast hash on downsampled pixels.
         # If the HUD is identical to the previous tick, return the cached result
@@ -512,10 +821,96 @@ class OCRProcessor:
                     return ncc_full
                 logger.debug("[ncc-first] NCC coords cached, Tesseract still needed for zone/CamDir")
 
-        result = self._parse_images_parallel(tesseract_images)
+        if self.engine in ("paddle", "paddle-vl"):
+            # Hybrid fallback for any paddle variant: single pass on the raw
+            # BGR crop (paddle/paddle-vl have their own detection — no need
+            # for binary thresholding nor multi-pass consensus).
+            source = raw_image if raw_image is not None else self._enhanced_image
+            if source is not None:
+                result = self._extract_full_text_paddle(source)
+            else:
+                result = self._empty_data()
+        else:
+            result = self._parse_images_parallel(tesseract_images)
         self._last_frame_hash = frame_hash
         self._last_result = result
         return result
+
+    @staticmethod
+    def _empty_data():
+        return {
+            "location": "Unknown",
+            "x": None, "y": None, "z": None,
+            "ooc": None,
+            "cam_pitch": None, "cam_roll": None, "cam_yaw": None,
+        }
+
+    def _extract_full_text_paddle(self, image):
+        """Runs PaddleOCR once on the given image and applies HUD parsing.
+
+        Mirrors the post-processing of `_ocr_single_pass` (line normalization,
+        zone/Pos/CamDir extraction) but on a single image — no multi-pass
+        consensus needed since Paddle's detection handles regions internally.
+        Returns a data dict with the same shape as `_empty_data()`.
+        """
+        if self._paddle_adapter is None:
+            logger.error("Paddle adapter not initialized")
+            return self._empty_data()
+
+        tag = self.engine  # 'paddle' or 'paddle-vl'
+        import time as _time
+        t0 = _time.perf_counter()
+        ocr_text = self._paddle_adapter.recognize(image)
+        dt_ms = (_time.perf_counter() - t0) * 1000.0
+        logger.debug("[%s] inference: %.0f ms", tag, dt_ms)
+        logger.debug("[%s] raw OCR text: %r", tag, ocr_text)
+        ocr_text = self._correct_ocr_errors(ocr_text)
+        # Paddle's detector frequently splits a HUD row across two boxes when
+        # the trailing 'Pos:' is far from the leading 'Zone:' on the same
+        # screen line. Re-attach a line that ends with 'Pos:' (no values)
+        # to the next line, which holds the X/Y/Z values.
+        ocr_text = _join_orphan_pos_lines(ocr_text)
+        lines = [line.strip() for line in ocr_text.split('\n') if line.strip()]
+
+        data = self._empty_data()
+        for line in lines:
+            if _RE_CAMDIR_TAG.search(line):
+                values = _parse_camdir_values(line)
+                if values is not None:
+                    data["cam_pitch"] = float(values[0])
+                    data["cam_roll"] = float(values[1])
+                    data["cam_yaw"] = float(values[2])
+            elif "Zone:" in line and "SolarSystem" in line:
+                zone_match = _RE_ZONE.search(line)
+                if zone_match:
+                    system_id = zone_match.group(1).strip()
+                    matched_name = None
+                    for known_id, name in self.SYSTEM_ID_MAP.items():
+                        if known_id in system_id or system_id in known_id:
+                            matched_name = name
+                            break
+                    data["location"] = matched_name if matched_name else "Unknown"
+            elif "Pos:" in line or "pos:" in line.lower():
+                if _is_meter_line(line):
+                    continue
+                if _RE_POS_SYSTEM_FRAME.search(line):
+                    continue
+                zone_match = _RE_ZONE_NAME.match(line)
+                zone_name = zone_match.group(1).strip() if zone_match else ""
+                normalized = _normalize_ooc_line(line)
+                coords = self._extract_coords_from_line(normalized, tag)
+                if coords is None:
+                    continue
+                x, y, z = coords
+                if not _coords_in_range(x, y, z):
+                    continue
+                data["x"], data["y"], data["z"] = x, y, z
+                data["ooc"] = zone_name or "Unknown"
+                logger.info(
+                    "[%s] Position extracted: zone=%r X=%s Y=%s Z=%s",
+                    tag, zone_name, x, y, z,
+                )
+        return data
 
     def _try_ncc_full_extraction(self, binary_image, enhanced_image):
         """One-shot NCC pass per frame. Segments on binary, classifies on enhanced.
@@ -765,6 +1160,46 @@ class OCRProcessor:
             except ValueError as e:
                 logger.error(f"[{pass_name}] Coordinate conversion error: {e}")
                 return None
+        # Fallback: relaxed third-coord (2-4 decimals) for paddle truncation
+        # cases like `... -103.5786km -263.82` where the right edge of the
+        # detection box clipped the trailing decimals.
+        relaxed = _RE_POS_RELAXED_LAST.search(normalized_line)
+        if relaxed:
+            try:
+                coords = (
+                    float(relaxed.group(1)),
+                    float(relaxed.group(2)),
+                    float(relaxed.group(3)),
+                )
+                logger.info(
+                    f"[{pass_name}] Position recovered via relaxed last-coord regex: "
+                    f"X={coords[0]} Y={coords[1]} Z={coords[2]}"
+                )
+                return coords
+            except ValueError:
+                pass
+        # Last resort: paddle sometimes loses the 'Pos:' keyword entirely
+        # (e.g. reads it as '905' or simply drops it). If the line still
+        # looks like an OOC line (zone-name hint) AND we can match three
+        # consecutive '<num>km' blocks, accept that as the position. Gated
+        # on the OOC hint so random number triples elsewhere can't poison it.
+        if _RE_OOC_HINT.search(normalized_line):
+            head = _RE_POS_HEADLESS.search(normalized_line)
+            if head:
+                try:
+                    coords = (
+                        float(head.group(1)),
+                        float(head.group(2)),
+                        float(head.group(3)),
+                    )
+                    if _coords_in_range(*coords):
+                        logger.info(
+                            f"[{pass_name}] Position recovered via headless triple-coord "
+                            f"regex (Pos keyword was lost): X={coords[0]} Y={coords[1]} Z={coords[2]}"
+                        )
+                        return coords
+                except ValueError:
+                    pass
         # Attempt to recover the missing '.' (Phase B).
         recovered = _try_recover_pos_line(normalized_line)
         if recovered is not None:
@@ -773,7 +1208,11 @@ class OCRProcessor:
                 f"X={recovered[0]} Y={recovered[1]} Z={recovered[2]}"
             )
             return recovered
-        logger.warning(f"[{pass_name}] Pos regex not matched: {normalized_line[:120]!r}")
+        # Lowered to debug: paddle frequently returns partial coord sets
+        # (1 or 2 of 3 numbers detected) which legitimately fail the strict
+        # regex. Logging every miss at WARNING level floods the log under
+        # full_text/paddle mode.
+        logger.debug(f"[{pass_name}] Pos regex not matched: {normalized_line[:120]!r}")
         return None
 
     def _parse_images_parallel(self, images):
@@ -828,6 +1267,14 @@ class OCRProcessor:
 
     def shutdown(self):
         self._pool.shutdown(wait=False)
+        # Stop the VL sidecar if this processor owns it. We keep the service
+        # alive on engine switches at runtime (it's expensive to restart), but
+        # on app exit / engine reload we tear it down.
+        if self._paddle_vl_service is not None:
+            try:
+                self._paddle_vl_service.stop()
+            except Exception as exc:
+                logger.warning("paddle-vl: stop() raised: %s", exc)
 
 
 if __name__ == "__main__":

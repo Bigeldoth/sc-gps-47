@@ -9,6 +9,8 @@ Tabbed dialog that surfaces the contents of config.ini:
 """
 import logging
 import sys
+from pathlib import Path
+
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                              QSlider, QPushButton, QTableWidget, QTableWidgetItem,
                              QHeaderView, QMessageBox, QKeySequenceEdit, QWidget,
@@ -239,8 +241,16 @@ class OptionsWindow(QDialog):
         form = QFormLayout()
 
         self.text_engine_combo = QComboBox()
-        self.text_engine_combo.addItems(["tesseract"])
+        self.text_engine_combo.addItems(["tesseract", "paddle", "paddle-vl"])
         form.addRow("Text engine:", self.text_engine_combo)
+
+        self.pipeline_mode_combo = QComboBox()
+        self.pipeline_mode_combo.addItems(["hybrid", "full_text"])
+        form.addRow("Pipeline mode:", self.pipeline_mode_combo)
+
+        self.paddle_device_combo = QComboBox()
+        self.paddle_device_combo.addItems(["cpu", "gpu"])
+        form.addRow("Paddle device:", self.paddle_device_combo)
 
         self.glyph_engine_combo = QComboBox()
         self.glyph_engine_combo.addItems(["ncc", "onnx"])
@@ -253,13 +263,120 @@ class OptionsWindow(QDialog):
         form.addRow("ONNX confidence threshold:", self.onnx_threshold_spin)
 
         layout.addLayout(form)
+
+        # Engine management (install / detect Tesseract & Paddle).
+        button_row = QHBoxLayout()
+        self.manage_engines_button = QPushButton("Manage engines…")
+        self.manage_engines_button.clicked.connect(self._open_engine_manager)
+        button_row.addWidget(self.manage_engines_button)
+        button_row.addStretch()
+        layout.addLayout(button_row)
+
+        # Disable the GPU option if CUDA cannot be detected on this machine.
+        self._apply_gpu_availability()
+        # Grey out 'paddle-vl' in the text engine combo if its venv isn't
+        # provisioned yet (avoids selecting an engine the worker can't load).
+        self._apply_paddle_vl_availability()
+
         layout.addWidget(self._hint(
-            "Glyph engine = ncc → template matching (NumPy, ~3 ms).\n"
-            "Glyph engine = onnx → TinyGlyphCNN model in models/spacedrive_ocr.onnx."
+            "Text engine = tesseract → fast, requires Tesseract-OCR installed.\n"
+            "Text engine = paddle → PaddleOCR (PP-OCRv4), pip-installable.\n"
+            "Pipeline mode = hybrid → NCC/ONNX glyphs first, text engine as "
+            "fallback for zone/CamDir lines.\n"
+            "Pipeline mode = full_text → skip glyph stage, run the text engine "
+            "alone on the full HUD crop."
         ))
         layout.addStretch()
         widget.setLayout(layout)
         return widget
+
+    def _apply_gpu_availability(self):
+        """Greys out the GPU choice when CUDA is missing or the local GPU is
+        too new for the current paddlepaddle build. Tristate-aware:
+          - 'ok'                     → GPU enabled
+          - 'needs_blackwell_wheel'  → GPU disabled, tooltip points at
+                                       Manage engines… → Migrate
+          - 'too_new' / 'no_gpu'     → GPU disabled, generic tooltip
+        """
+        cuda_available = False
+        gpu_status = "no_gpu"
+        gpu_msg = ""
+        try:
+            from engine_installer import detect_cuda, detect_gpu_paddle_status
+            cuda_available = detect_cuda()
+            gpu_status, gpu_msg = detect_gpu_paddle_status()
+        except Exception:
+            pass
+
+        gpu_index = self.paddle_device_combo.findText("gpu")
+        if gpu_index < 0:
+            return
+        model = self.paddle_device_combo.model()
+        item = model.item(gpu_index)
+
+        enable = cuda_available and gpu_status == "ok"
+        if item is not None:
+            item.setEnabled(enable)
+
+        if enable:
+            self.paddle_device_combo.setItemData(
+                gpu_index, "", Qt.ItemDataRole.ToolTipRole,
+            )
+            return
+        if gpu_status == "needs_blackwell_wheel":
+            tooltip = (
+                gpu_msg + "\n\nClick 'Manage engines…' → 'Migrate to Blackwell "
+                "wheel (cu129)' to enable GPU."
+            )
+        elif gpu_status == "too_new":
+            tooltip = gpu_msg
+        else:
+            tooltip = "CUDA runtime not detected on this machine"
+        self.paddle_device_combo.setItemData(
+            gpu_index, tooltip, Qt.ItemDataRole.ToolTipRole,
+        )
+
+    def _apply_paddle_vl_availability(self):
+        """Greys out the 'paddle-vl' text engine entry when its venv is missing.
+
+        Lets the user see the option (so they know it exists) but prevents
+        them from selecting it before the sidecar is installed via
+        Manage engines… → Install Paddle-VL.
+        """
+        vl_index = self.text_engine_combo.findText("paddle-vl")
+        if vl_index < 0:
+            return
+        try:
+            from engine_installer import detect_paddle_vl
+            installed = detect_paddle_vl().installed
+        except Exception:
+            installed = False
+        model = self.text_engine_combo.model()
+        item = model.item(vl_index)
+        if item is not None:
+            item.setEnabled(installed)
+        tooltip = (
+            "" if installed
+            else "Install via Manage engines… → Install Paddle-VL (advanced)"
+        )
+        self.text_engine_combo.setItemData(
+            vl_index, tooltip, Qt.ItemDataRole.ToolTipRole,
+        )
+
+    def _open_engine_manager(self):
+        try:
+            from ui.engine_manager import EngineManagerDialog
+        except ImportError as exc:
+            QMessageBox.warning(
+                self, "Engine manager",
+                f"Engine manager unavailable: {exc}",
+            )
+            return
+        dlg = EngineManagerDialog(self, config_manager=self.config_manager)
+        dlg.exec()
+        # Re-evaluate availability after the user may have installed/migrated.
+        self._apply_gpu_availability()
+        self._apply_paddle_vl_availability()
 
     # ----- Debug tab -----
     def _create_debug_tab(self):
@@ -285,9 +402,149 @@ class OptionsWindow(QDialog):
             "a new template set. They have a noticeable I/O cost — leave off "
             "during normal play."
         ))
+
+        # ── PaddleOCR diagnostic ────────────────────────────────────────
+        layout.addSpacing(12)
+        layout.addWidget(self._section_title("PaddleOCR diagnostic"))
+        layout.addWidget(self._hint(
+            "Captures N live HUD strips, runs paddle on each, and saves the "
+            "raw image + an annotated visualisation + a JSON / Markdown "
+            "summary under diagnostics/paddle/<timestamp>/. The summary is "
+            "designed to be shared back to Claude for targeted improvement."
+        ))
+        diag_row = QHBoxLayout()
+        diag_row.addWidget(QLabel("Max samples:"))
+        self.paddle_diag_samples_spin = QSpinBox()
+        self.paddle_diag_samples_spin.setRange(1, 500)
+        self.paddle_diag_samples_spin.setValue(20)
+        diag_row.addWidget(self.paddle_diag_samples_spin)
+        diag_row.addWidget(QLabel("Interval (ms):"))
+        self.paddle_diag_interval_spin = QSpinBox()
+        self.paddle_diag_interval_spin.setRange(0, 5000)
+        self.paddle_diag_interval_spin.setSingleStep(50)
+        self.paddle_diag_interval_spin.setValue(200)
+        diag_row.addWidget(self.paddle_diag_interval_spin)
+        self.run_paddle_diag_button = QPushButton("Run PaddleOCR diagnostic")
+        self.run_paddle_diag_button.clicked.connect(self._on_run_paddle_diagnostic)
+        diag_row.addWidget(self.run_paddle_diag_button)
+        diag_row.addStretch()
+        layout.addLayout(diag_row)
+
         layout.addStretch()
         widget.setLayout(layout)
         return widget
+
+    def _on_run_paddle_diagnostic(self):
+        """Spawns the diagnostic in a QThread with a progress dialog.
+
+        Output paths are predictable (diagnostics/paddle/<timestamp>/) so the
+        user can share them back; the result message offers to open the
+        folder directly.
+        """
+        try:
+            from paddle_diagnose import run_diagnostic
+            from engine_installer import detect_paddleocr
+        except Exception as exc:
+            QMessageBox.critical(
+                self, "Diagnostic", f"Could not import diagnostic: {exc}",
+            )
+            return
+
+        if not detect_paddleocr().installed:
+            QMessageBox.warning(
+                self, "Diagnostic",
+                "PaddleOCR is not installed in this Python environment.\n"
+                "Use Options → OCR → Manage engines… first.",
+            )
+            return
+
+        max_samples = self.paddle_diag_samples_spin.value()
+        interval_ms = self.paddle_diag_interval_spin.value()
+        device = self.config_manager.get_paddle_device()
+
+        from PyQt6.QtCore import QThread, pyqtSignal
+        from PyQt6.QtWidgets import QProgressDialog
+
+        progress = QProgressDialog(
+            "Initialising PaddleOCR…", "Cancel", 0, max_samples, self,
+        )
+        progress.setWindowTitle("PaddleOCR diagnostic")
+        progress.setMinimumDuration(0)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+        progress.show()
+
+        class _DiagWorker(QThread):
+            tick = pyqtSignal(int, int, str)
+            done = pyqtSignal(str, str)  # (out_dir, error)
+
+            def __init__(self, max_samples, interval_ms, device):
+                super().__init__()
+                self._max = max_samples
+                self._int = interval_ms
+                self._device = device
+                self._cancelled = False
+
+            def cancel(self):
+                self._cancelled = True
+
+            def _on_progress(self, i, n, msg):
+                self.tick.emit(i, n, msg)
+                # Return False to stop the loop when the user clicks Cancel.
+                return not self._cancelled
+
+            def run(self):
+                try:
+                    out_dir = run_diagnostic(
+                        max_samples=self._max,
+                        interval_ms=self._int,
+                        device=self._device,
+                        progress=self._on_progress,
+                    )
+                    self.done.emit(str(out_dir), "")
+                except Exception as exc:
+                    self.done.emit("", str(exc))
+
+        worker = _DiagWorker(max_samples, interval_ms, device)
+
+        def _on_tick(i, n, msg):
+            progress.setValue(i)
+            progress.setLabelText(msg)
+
+        def _on_done(out_dir, error):
+            progress.close()
+            self.run_paddle_diag_button.setEnabled(True)
+            if error:
+                QMessageBox.critical(
+                    self, "Diagnostic failed", error,
+                )
+                return
+            summary_path = Path(out_dir) / "summary.md"
+            text = (
+                f"Diagnostic complete.\n\nOutput:\n{out_dir}\n\n"
+                f"Share `summary.md` + the annotated PNGs with Claude to iterate."
+            )
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Icon.Information)
+            msg.setWindowTitle("Diagnostic complete")
+            msg.setText(text)
+            open_btn = msg.addButton("Open folder", QMessageBox.ButtonRole.AcceptRole)
+            msg.addButton(QMessageBox.StandardButton.Close)
+            msg.exec()
+            if msg.clickedButton() is open_btn:
+                import os, subprocess, sys as _sys
+                if _sys.platform == "win32":
+                    os.startfile(out_dir)
+                else:
+                    subprocess.Popen(["xdg-open", out_dir])
+
+        progress.canceled.connect(worker.cancel)
+        worker.tick.connect(_on_tick)
+        worker.done.connect(_on_done)
+        # Keep a reference so the QThread isn't GC'd mid-run.
+        self._diag_worker = worker
+        self.run_paddle_diag_button.setEnabled(False)
+        worker.start()
 
     # ----- Hotkeys tab -----
     def _create_hotkey_tab(self):
@@ -335,6 +592,21 @@ class OptionsWindow(QDialog):
         idx = self.text_engine_combo.findText(engine)
         if idx >= 0:
             self.text_engine_combo.setCurrentIndex(idx)
+        mode = cfg.get_pipeline_mode()
+        idx = self.pipeline_mode_combo.findText(mode)
+        if idx >= 0:
+            self.pipeline_mode_combo.setCurrentIndex(idx)
+        device = cfg.get_paddle_device()
+        idx = self.paddle_device_combo.findText(device)
+        if idx >= 0:
+            # If the saved device is GPU but it has been disabled, fall back to CPU.
+            model = self.paddle_device_combo.model()
+            item = model.item(idx)
+            if item is not None and not item.isEnabled():
+                cpu_idx = self.paddle_device_combo.findText("cpu")
+                self.paddle_device_combo.setCurrentIndex(cpu_idx if cpu_idx >= 0 else 0)
+            else:
+                self.paddle_device_combo.setCurrentIndex(idx)
         glyph = cfg.get_glyph_engine()
         idx = self.glyph_engine_combo.findText(glyph)
         if idx >= 0:
@@ -408,6 +680,8 @@ class OptionsWindow(QDialog):
 
             # OCR
             cfg.set_ocr_engine(self.text_engine_combo.currentText())
+            cfg.set_pipeline_mode(self.pipeline_mode_combo.currentText())
+            cfg.set_paddle_device(self.paddle_device_combo.currentText())
             cfg.set_glyph_engine(self.glyph_engine_combo.currentText())
             self._set_cfg('OCR', 'onnx_confidence_threshold', f"{self.onnx_threshold_spin.value():.2f}")
 

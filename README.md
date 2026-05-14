@@ -63,6 +63,8 @@ SpaceDrive continuously reads the coordinates displayed by the game's debug HUD 
 - **Python 3.10+** ([python.org](https://www.python.org/downloads/) — check "Add to PATH" at installation)
 - **Tesseract OCR** ([UB-Mannheim build for Windows](https://github.com/UB-Mannheim/tesseract/wiki))
   - Default installation in `C:\Program Files\Tesseract-OCR\` (auto-detected).
+  - Optional alternative: **PaddleOCR** can be installed on demand from
+    Options → OCR → *Manage engines…* (pip-only, no system binary).
 - **Windows 10/11** (Tesseract Windows paths; Linux/macOS not tested).
 
 ### Procedure
@@ -119,7 +121,10 @@ Shortcuts are reconfigurable via `Shift+F2`.
 
 | Section | Key | Default value | Description |
 |---|---|---|---|
-| `[OCR]` | `engine` | `tesseract` | `tesseract` or `paddle` (paddle is more accurate but much slower on CPU — not recommended for real-time scanning) |
+| `[OCR]` | `text_engine` | `tesseract` | `tesseract` or `paddle`. PaddleOCR is more accurate on the HUD font but heavier — installable on demand from the Options dialog. |
+| `[OCR]` | `pipeline_mode` | `hybrid` | `hybrid` = NCC/ONNX glyph stage + text engine fallback (fast). `full_text` = skip glyphs and run the text engine alone. |
+| `[OCR]` | `paddle_device` | `cpu` | `cpu` or `gpu`. GPU requires a CUDA-enabled `paddlepaddle-gpu` build; the Options dialog disables this when no CUDA runtime is detected. |
+| `[OCR]` | `paddle_model_dir` | *(empty)* | Path to a fine-tuned PaddleOCR recognition model (see [tools/train_paddle.py](tools/train_paddle.py)). Empty → use the official PP-OCRv4 weights. |
 | `[OCR]` | `scan_interval_ms` | `50` | Interval between two captures (ms) |
 | `[Logging]` | `level` | `DEBUG` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 | `[Debug]` | `save_ocr_images` | `False` | Saves preprocessed images (`debug_capture_*.png`) on each scan |

@@ -13,6 +13,8 @@ __pycache__/
 venv/
 env/
 .env/
+.venv-paddle/
+.venv-paddle-vl/
 
 # IDE and Editor files
 .vscode/
@@ -36,3 +38,12 @@ Thumbs.db
 # Specific to this project
 spacedrive.log
 user_poi.json
+
+# PaddleOCR diagnostic runs (captured frames + summaries) — local-only
+diagnostics/
+
+# Debug OCR captures dumped by capture.py when save_ocr_images=True
+debug_capture_*.png
+
+# Test screenshot used for paddle_diagnose (~3 MB binary)
+sample.bmp

@@ -37,26 +37,63 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _build_ocr_processor(cfg):
+    """Reads the [OCR] section of `cfg` and returns a fresh OCRProcessor."""
+    ocr_engine = cfg.get(
+        'OCR', 'text_engine',
+        fallback=cfg.get('OCR', 'engine', fallback='tesseract'),
+    )
+    glyph_engine = cfg.get('OCR', 'glyph_engine', fallback='ncc')
+    pipeline_mode = cfg.get('OCR', 'pipeline_mode', fallback='hybrid')
+    paddle_device = cfg.get('OCR', 'paddle_device', fallback='cpu')
+    paddle_model_dir = cfg.get('OCR', 'paddle_model_dir', fallback='')
+    paddle_lang = cfg.get('OCR', 'paddle_lang', fallback='en')
+    paddle_vl_endpoint = cfg.get(
+        'OCR', 'paddle_vl_endpoint', fallback='http://127.0.0.1:8118',
+    )
+    paddle_vl_model = cfg.get(
+        'OCR', 'paddle_vl_model', fallback='PaddleOCR-VL-1.5-0.9B',
+    )
+    paddle_vl_backend = cfg.get(
+        'OCR', 'paddle_vl_backend', fallback='transformers',
+    )
+    ocr = OCRProcessor(
+        engine=ocr_engine,
+        glyph_engine=glyph_engine,
+        onnx_model_path=cfg.get('OCR', 'onnx_model_path',
+                                fallback='models/spacedrive_ocr.onnx'),
+        onnx_classes_path=cfg.get('OCR', 'onnx_classes_path',
+                                  fallback='models/spacedrive_ocr.classes.json'),
+        onnx_confidence_threshold=float(cfg.get(
+            'OCR', 'onnx_confidence_threshold', fallback='0.85')),
+        pipeline_mode=pipeline_mode,
+        paddle_device=paddle_device,
+        paddle_model_dir=paddle_model_dir,
+        paddle_lang=paddle_lang,
+        paddle_vl_endpoint=paddle_vl_endpoint,
+        paddle_vl_model=paddle_vl_model,
+        paddle_vl_backend=paddle_vl_backend,
+    )
+    logger.info(
+        "OCR engine initialized: text=%s glyphs=%s mode=%s device=%s",
+        ocr_engine, glyph_engine, pipeline_mode, paddle_device,
+    )
+    return ocr
+
+
 class GPSWorker(QObject):
     result_ready = pyqtSignal(dict)
+    reload_requested = pyqtSignal()
 
     def __init__(self):
         super().__init__()
         self.capture = ScreenCapture()
-        ocr_engine = config.get('OCR', 'engine', fallback='tesseract')
-        glyph_engine = config.get('OCR', 'glyph_engine', fallback='ncc')
-        self.ocr = OCRProcessor(
-            engine=ocr_engine,
-            glyph_engine=glyph_engine,
-            onnx_model_path=config.get('OCR', 'onnx_model_path',
-                                       fallback='models/spacedrive_ocr.onnx'),
-            onnx_classes_path=config.get('OCR', 'onnx_classes_path',
-                                         fallback='models/spacedrive_ocr.classes.json'),
-            onnx_confidence_threshold=float(config.get(
-                'OCR', 'onnx_confidence_threshold', fallback='0.85')),
-        )
-        logger.info(f"OCR engine initialized: text={ocr_engine}  glyphs={glyph_engine}")
+        self.ocr = _build_ocr_processor(config)
         self._running = True
+        # Cross-thread reload: the UI emits reload_requested after the user
+        # saves Options; the slot runs inside the worker thread (queued
+        # connection) so OCRProcessor (re)init does not block the UI.
+        self.reload_requested.connect(self._reload_ocr)
 
     def process(self):
         if not self._running:
@@ -68,6 +105,25 @@ class GPSWorker(QObject):
         except Exception as e:
             logger.error(f"GPS worker error: {e}")
             self.result_ready.emit({"x": None, "y": None, "z": None, "location": "Unknown", "error": str(e)})
+
+    def _reload_ocr(self):
+        """Rebuilds the OCR processor from the on-disk config.ini.
+
+        Triggered by the `reload_requested` signal so it runs inside the
+        worker thread, off the UI thread.
+        """
+        try:
+            config.read('config.ini')
+            old = self.ocr
+            new_ocr = _build_ocr_processor(config)
+            self.ocr = new_ocr
+            try:
+                old.shutdown()
+            except Exception as exc:
+                logger.warning("Old OCR shutdown failed: %s", exc)
+            logger.info("OCR processor reloaded after Options save")
+        except Exception as exc:
+            logger.error("OCR reload failed: %s", exc)
 
     def stop(self):
         self._running = False
@@ -770,6 +826,13 @@ class GPSOverlay(QMainWindow):
 
         # Refresh hotkeys in case they were modified
         self.hotkey_listener.reload_hotkeys()
+
+        # Hot-reload the OCR processor so an engine/mode/device change in
+        # Options takes effect on the next tick — no app restart needed.
+        try:
+            self._worker.reload_requested.emit()
+        except Exception as exc:
+            logger.error("Could not request OCR reload: %s", exc)
 
     def _on_destination_changed(self, poi):
         self.nav.set_target(poi["x"], poi["y"], poi["z"], poi["name"], ooc=poi.get("ooc"))
