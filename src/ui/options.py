@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                              QSlider, QPushButton, QTableWidget, QTableWidgetItem,
                              QHeaderView, QMessageBox, QKeySequenceEdit, QWidget)
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QPalette, QColor
+from PyQt6.QtGui import QPalette, QColor, QFontDatabase, QFont
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +52,13 @@ class OptionsWindow(QDialog):
 
     def _apply_dark_theme(self):
         """Applies minimalist dark theme to the window"""
+        # Load Electrolize font
+        font_id = QFontDatabase.addApplicationFont("tools/fonts/Electrolize-Regular.ttf")
+        if font_id >= 0:
+            font_family = QFontDatabase.applicationFontFamilies(font_id)[0]
+            app_font = QFont(font_family, 10)
+            self.setFont(app_font)
+
         palette = QPalette()
         palette.setColor(QPalette.ColorRole.Window, QColor(30, 30, 30))
         palette.setColor(QPalette.ColorRole.WindowText, QColor(220, 220, 220))

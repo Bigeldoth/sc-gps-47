@@ -62,14 +62,16 @@ def _isolate_channel_auto(bgr):
     g_mean = g.mean()
 
     if lum > 140:
-        # Globally bright background → relatively dark text. Invert grayscale.
+        logger.debug(f"Channel isolation: lum={lum:.1f} → invert_gray")
         gray = bgr.mean(axis=2)
         return (255 - gray).astype(np.uint8)
     if r_mean - g_mean > 15:
+        logger.debug(f"Channel isolation: R-G={r_mean - g_mean:.1f} → R channel")
         return r.astype(np.uint8)
     if g_mean - r_mean > 15:
+        logger.debug(f"Channel isolation: G-R={g_mean - r_mean:.1f} → G channel")
         return g.astype(np.uint8)
-    # White/mixed text on dark background — default Star Citizen case.
+    logger.debug(f"Channel isolation: lum={lum:.1f} r={r_mean:.1f} g={g_mean:.1f} → max_RGB")
     return bgr.max(axis=2).astype(np.uint8)
 
 
@@ -93,10 +95,27 @@ class ScreenCapture:
             self._test_img = cv2.imread(self._test_screenshot)
             if self._test_img is None:
                 raise FileNotFoundError(f"Screenshot not found: {self._test_screenshot}")
+            h, w = self._test_img.shape[:2]
+            self._region = {
+                "top": 0,
+                "left": max(0, w - CAPTURE_WIDTH),
+                "width": min(CAPTURE_WIDTH, w),
+                "height": min(CAPTURE_HEIGHT, h),
+            }
+            custom_left = config.getint('Debug', 'test_region_left', fallback=-1)
+            custom_top = config.getint('Debug', 'test_region_top', fallback=-1)
+            custom_w = config.getint('Debug', 'test_region_width', fallback=-1)
+            custom_h = config.getint('Debug', 'test_region_height', fallback=-1)
+            if custom_left >= 0 and custom_top >= 0 and custom_w > 0 and custom_h > 0:
+                self._region = {
+                    "top": custom_top,
+                    "left": custom_left,
+                    "width": custom_w,
+                    "height": custom_h,
+                }
+            logger.info(f"Test mode: crop region={self._region} from {w}x{h} image")
         else:
             monitor = self._sct.monitors[self.monitor_index]
-            # The SC debug overlay (r_DisplayInfo 3) starts at pixel 0;
-            # capture from the very top otherwise the CamDir line is cut off.
             self._region = {
                 "top": monitor["top"],
                 "left": monitor["left"] + monitor["width"] - CAPTURE_WIDTH,
@@ -107,7 +126,9 @@ class ScreenCapture:
 
     def capture(self):
         if self._test_screenshot:
-            img = self._test_img
+            r = self._region
+            img = self._test_img[r["top"]:r["top"] + r["height"],
+                                  r["left"]:r["left"] + r["width"]]
         else:
             raw = self._sct.grab(self._region)
             img = np.asarray(raw, dtype=np.uint8)[:, :, :3]
@@ -143,7 +164,9 @@ class ScreenCapture:
         if self._save_debug:
             cv2.imwrite("debug_capture_original.png", img)
             cv2.imwrite("debug_capture_channel.png", channel)
+            cv2.imwrite("debug_capture_enhanced.png", enhanced)
             cv2.imwrite("debug_capture_otsu.png", otsu)
+            cv2.imwrite("debug_capture_otsu_inv.png", otsu_inv)
             cv2.imwrite("debug_capture_adaptive.png", adaptive)
 
         # Phase D: optional glyph segmentation for template collection
