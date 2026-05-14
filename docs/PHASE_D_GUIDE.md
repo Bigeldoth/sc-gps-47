@@ -5,7 +5,28 @@
 Remplacer Tesseract pour les **coordonnées numériques** par un classifieur **NCC pur NumPy** :
 - **Latence** : ~10 ms/frame (vs ~100 ms Tesseract)
 - **Précision** : 99 %+ sur coordonnées (avec vrais templates)
-- **Architecture hybride** : Tesseract reste pour noms (Zone, OOC)
+- **Architecture hybride** : Tesseract reste pour noms (Zone, OOC) **jusqu'à ce
+  que les templates alphabétiques soient collectés** (voir Phase E).
+
+## 🔀 Phase E — Segmentation / classification découplées
+
+Depuis Phase E, la segmentation s'exécute sur la passe binaire `otsu` (fiable
+pour les bounding boxes même quand le texte est épaissi) et la classification
+sur l'image grayscale `enhanced` (sortie CLAHE — gradients préservés).
+NCC tourne **une fois par frame** dans `extract_data()` ; ses coords sont
+réutilisées par les workers Tesseract parallèles, et Tesseract est
+court-circuité dès que NCC reconstruit le HUD complet (coords + zone).
+
+`EXPECTED_CHARS` couvre désormais chiffres + unités + A-Z/a-z + `:`/`_`/`espace`.
+Pour activer la reconnaissance complète du HUD par NCC, il faut donc collecter
+des templates de **lettres** en plus des chiffres :
+
+- les dossiers Windows-illégaux sont mappés via `_PATH_SAFE_MAP` :
+  `:` → `_colon`, ` ` → `_space`, `.` → `_dot`, `-` → `_dash`, etc.
+- `tools/dataset_builder.py` génère automatiquement ces dossiers.
+- Une fois `data/templates/{A-Z, a-z, _colon, _space, ...}/` peuplés, le
+  chemin `[ncc-first]` dans `extract_data()` se déclenche et Tesseract est
+  complètement skippé.
 
 ---
 

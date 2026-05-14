@@ -13,13 +13,13 @@ navigation guidance to user-defined POIs.
 
 ## Architecture
 - `src/main.py` — PyQt6 app, GPSOverlay + GPSWorker (QThread)
-- `src/ocr.py` — OCR pipeline: screen capture → 3 binary passes → Tesseract → regex → consensus
-- `src/capture.py` — mss screen capture + channel isolation + 3-pass thresholding
+- `src/ocr.py` — OCR pipeline: NCC-first on enhanced grayscale, Tesseract fallback on 2 binary passes, regex + consensus
+- `src/capture.py` — mss screen capture + channel isolation; emits 2 binary passes (otsu, adaptive) + CLAHE-enhanced grayscale
 - `src/navigation.py` — bearing/distance calculations (SC coordinate frame: X-axis inverted)
 - `src/velocity_tracker.py` — velocity estimation from successive OCR positions (EMA smoothed)
 - `src/config_manager.py` — config.ini R/W wrapper
 - `src/hotkey_listener.py` — global hotkeys via pynput
-- `src/sc_ocr/` — glyph OCR sub-pipeline: segment → classify (NCC or ONNX CNN)
+- `src/sc_ocr/` — glyph OCR sub-pipeline: segment on otsu → classify (NCC or ONNX CNN) on enhanced grayscale
 
 ## SC coordinate system
 In Star Citizen OOC (planet-relative) frames, the X axis is **inverted** vs. standard

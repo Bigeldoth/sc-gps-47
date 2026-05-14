@@ -1,13 +1,19 @@
 """OCR pipeline for the Star Citizen HUD debug overlay.
 
-Pipeline:
-  1. Capture (see capture.py) → 3 binary passes
-  2. Tesseract OEM3 PSM6 on each pass (parallel, ThreadPoolExecutor)
-  3. Post-OCR normalization (Pos:_, lkm/Km, stray underscores)
-  4. Strict Pos regex with 3-4 decimal places
-  5. If the regex fails: attempt to recover the missing '.'
-  6. Geographic range validation (|coord| < 30000 km)
-  7. Multi-pass consensus: if ≥2 passes converge within ±0.1 km, average;
+Pipeline (NCC-first since Phase E):
+  1. Capture (see capture.py) → 2 binary passes (otsu, adaptive) + CLAHE
+     enhanced grayscale
+  2. NCC/ONNX (once per frame): segment glyphs on 'otsu', classify crops on
+     'enhanced' grayscale. If the reconstruction yields valid coords (and
+     eventually zone/CamDir once alphabetic templates exist), Tesseract is
+     skipped entirely.
+  3. Tesseract fallback OEM3 PSM6 on the binary passes in parallel
+     (ThreadPoolExecutor). NCC coords are reused if available.
+  4. Post-OCR normalization (Pos:_, lkm/Km, stray underscores)
+  5. Strict Pos regex with 3-4 decimal places
+  6. If the regex fails: attempt to recover the missing '.'
+  7. Geographic range validation (|coord| < 30000 km)
+  8. Multi-pass consensus: if ≥2 passes converge within ±0.1 km, average;
      otherwise, best score
 
 HUD r_DisplayInfo 3 structure (3 Pos: lines):
@@ -19,9 +25,11 @@ The 3rd line is always scanned without filtering on the zone name prefix:
 OOC_Hurston, GrimHex, StantonIV-9, etc. are all accepted.
 Only Root/SolarSystem are rejected (absolute frame ~14 M km).
 
-Phase D: Hybrid NCC custom pipeline
-  - Tesseract for names (Zone:SolarSystem)
-  - Custom NCC for numeric coordinates (if templates available)
+Phase E architecture:
+  - Segmentation: binary 'otsu' (good at locating bounding boxes even when
+    characters are thickened).
+  - Classification: CLAHE-enhanced grayscale (preserves the gradient detail
+    that binary thresholding destroys).
 """
 import pytesseract
 import re
