@@ -713,8 +713,13 @@ class OCRProcessor:
 
         logger.debug(f"[{pass_name}] NCC row{row_idx}: {reconstructed!r}")
 
-        # Virtually prepend "Pos: " for the regex (NCC does not read letters)
-        candidate = "Pos: " + reconstructed
+        # If NCC already recognized "Pos:" (letter templates available), use
+        # the reconstructed string as-is; otherwise virtually prepend "Pos: "
+        # so the coords regex can still match a digits-only reconstruction.
+        if "Pos:" in reconstructed or "pos:" in reconstructed.lower():
+            candidate = reconstructed
+        else:
+            candidate = "Pos: " + reconstructed
         normalized = _normalize_ooc_line(candidate)
 
         # Strict match only: NCC + heuristic '.' must reconstruct the decimal

@@ -18,17 +18,51 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Expected characters for numeric coordinates
-# (the '.' is optional: if absent, the heuristic in classify.py detects it)
-EXPECTED_CHARS = set('0123456789.-km')
+# Expected characters for full HUD recognition.
+# Digits and '-' are required for coordinates; '.' is also a coordinate
+# separator (heuristically inserted by classify.py if no template exists).
+# Letters and ':' / '_' / ' ' enable end-to-end NCC parsing of zone names,
+# CamDir labels, and OOC tags — replacing Tesseract for those fields once
+# letter templates are collected via tools/dataset_builder.py.
+NUMERIC_CHARS = set('0123456789.-')
+UNIT_CHARS = set('km')
+ALPHA_CHARS = set('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz')
+SEPARATOR_CHARS = set(':_ ')
+EXPECTED_CHARS = NUMERIC_CHARS | UNIT_CHARS | ALPHA_CHARS | SEPARATOR_CHARS
 
 GLYPH_TARGET_WIDTH = 16
 GLYPH_TARGET_HEIGHT = 24
 
+# Mirror of tools/dataset_builder._PATH_SAFE_MAP so the template loader can
+# resolve folder names for characters that are illegal or ambiguous on
+# Windows filesystems (':' → '_colon', ' ' → '_space', ...).
+_PATH_SAFE_MAP = {
+    "/": "_slash",
+    "\\": "_bslash",
+    ":": "_colon",
+    "*": "_star",
+    "?": "_qmark",
+    '"': "_dquote",
+    "<": "_lt",
+    ">": "_gt",
+    "|": "_pipe",
+    ".": "_dot",
+    "-": "_dash",
+    " ": "_space",
+}
+
+
+def _safe_dir_name(char):
+    """Maps a single character to its on-disk folder name (Windows-safe)."""
+    return _PATH_SAFE_MAP.get(char, char)
+
 
 def _is_safe_char_dir(name):
-    """Checks that a folder name is a valid character (handles Windows)."""
-    return len(name) == 1 and name in EXPECTED_CHARS
+    """Checks that a folder name corresponds to a known character."""
+    if len(name) == 1 and name in EXPECTED_CHARS:
+        return True
+    # Multi-char safe names (e.g. '_colon', '_space').
+    return name in set(_PATH_SAFE_MAP.values())
 
 
 class TemplateLibrary:
@@ -46,7 +80,7 @@ class TemplateLibrary:
             return
 
         for char in sorted(EXPECTED_CHARS):
-            char_dir = os.path.join(self.template_dir, char)
+            char_dir = os.path.join(self.template_dir, _safe_dir_name(char))
             if not os.path.isdir(char_dir):
                 continue
 

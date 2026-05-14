@@ -53,6 +53,7 @@ _PATH_SAFE_MAP: dict[str, str] = {
     "|": "_pipe",
     ".": "_dot",
     "-": "_dash",
+    " ": "_space",
 }
 
 
