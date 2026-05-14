@@ -31,7 +31,7 @@ from sc_ocr.segment import find_glyph_regions, save_glyph_crops
 logger = logging.getLogger(__name__)
 
 CAPTURE_WIDTH = 600
-CAPTURE_HEIGHT = 150
+CAPTURE_HEIGHT = 45
 
 # Threshold above which a GaussianBlur is applied (otherwise fast-path).
 # Metric: standard deviation of the isolated channel. Above ~45, the background

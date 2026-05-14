@@ -124,7 +124,7 @@ def _parse_camdir_values(line, max_abs=180):
     """Extracts (pitch, roll, yaw) from a CamDir line, handles missing spaces.
 
     Strategy:
-      1. Isolate the payload after 'amdir' up to 'FOV' (or end of line).
+      1. Isolate the payload after 'Camdir' up to 'FOV' (or end of line).
       2. Insert a space before any '-' that follows a digit, to separate
          consecutive negative values ('25-5177' → '25 -5177').
       3. Extract tokens via re.findall(r'-?\\d+').
