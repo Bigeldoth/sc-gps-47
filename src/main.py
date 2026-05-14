@@ -169,6 +169,11 @@ class GPSOverlay(QMainWindow):
         self._ema_alpha = 0.4
         self._stale_threshold_s = 2.0
 
+        # Distance below which we consider the target reached: the EMA is
+        # bypassed and the raw OCR distance is shown directly. Configurable
+        # via Navigation.arrival_radius_m in config.ini.
+        self._arrival_radius_m = self.config_manager.get_arrival_radius_m()
+
         # Directional guidance based on velocity (car GPS style).
         # We sample position and derive movement direction,
         # rather than reading camera orientation (CamDir).
@@ -240,6 +245,13 @@ class GPSOverlay(QMainWindow):
         self._color_refresh_timer = QTimer()
         self._color_refresh_timer.timeout.connect(self._tick_visual_refresh)
         self._color_refresh_timer.start(150)
+
+        # Always-on-top safety net: SC borderless fullscreen and some games
+        # steal Z-order despite WindowStaysOnTopHint. Re-raise periodically so
+        # the overlay reappears within at most ~1 second of being hidden.
+        self._stay_on_top_timer = QTimer()
+        self._stay_on_top_timer.timeout.connect(self._reassert_on_top)
+        self._stay_on_top_timer.start(1000)
 
         self.save_point_signal.connect(self.prompt_save_point)
 
@@ -340,6 +352,10 @@ class GPSOverlay(QMainWindow):
                 not self._velocity_tracker.is_moving
                 or self._smoothed_distance_km is None
             ):
+                self._smoothed_distance_km = dist_km
+            elif dist_km * 1000.0 < self._arrival_radius_m:
+                # Within arrival radius: bypass EMA so the readout matches the
+                # raw OCR distance exactly. Configurable via Navigation.arrival_radius_m.
                 self._smoothed_distance_km = dist_km
             else:
                 # Snap-on-large-jump: when arriving at target, tracker takes
@@ -588,6 +604,18 @@ class GPSOverlay(QMainWindow):
         if self.isVisible():
             self.show()
 
+    def _reassert_on_top(self):
+        """Re-raise the overlay so it stays above SC's borderless window.
+
+        WindowStaysOnTopHint is honoured by Qt but some fullscreen game windows
+        push other top-level widgets behind themselves when focused. Calling
+        raise_() periodically is enough to restore the Z-order without
+        stealing input focus (the overlay is WindowTransparentForInput).
+        """
+        if not self.is_visible:
+            return
+        self.raise_()
+
     def _load_app_icon(self):
         """Loads SpaceDrive icon from assets/, or system fallback.
 
@@ -727,6 +755,11 @@ class GPSOverlay(QMainWindow):
         scan_interval = self.config_manager.get_scan_interval()
         self.timer.setInterval(scan_interval)
         logger.info(f"Scan interval updated: {scan_interval} ms")
+
+        # Pick up the new arrival radius for the next OCR tick.
+        self._arrival_radius_m = self.config_manager.get_arrival_radius_m()
+        logger.info(f"Arrival radius updated: {self._arrival_radius_m:.0f} m")
+
         # Refresh hotkeys in case they were modified
         self.hotkey_listener.reload_hotkeys()
 
