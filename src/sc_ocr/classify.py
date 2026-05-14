@@ -86,6 +86,16 @@ def classify_single_glyph(glyph_image, template_library, shift_range_x=2, shift_
         dict with 'char', 'score', 'scores'
     """
     normalized = normalize_glyph(glyph_image)
+
+    # Stretch contrast to the full [0, 255] range. This is a no-op on pure
+    # binary input (templates were collected from binary crops) but maps a
+    # grayscale crop (e.g. CLAHE-enhanced) to the same dynamic range so the
+    # NCC correlation with binary templates stays high.
+    if normalized.size > 0:
+        n_min, n_max = int(normalized.min()), int(normalized.max())
+        if n_max > n_min:
+            normalized = cv2.normalize(normalized, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+
     base_f32 = normalized.astype(np.float32) / 255.0
 
     chars = template_library.char_list

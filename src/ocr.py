@@ -542,7 +542,9 @@ class OCRProcessor:
                 logger.debug(f"[{pass_name}] Zone line: zone={zone_name!r} | {line[:120]}")
 
                 # Phase D: try NCC first (faster + more accurate if templates available)
-                coords = self._extract_coords_via_ncc(img, pass_name)
+                # Segment on the binary pass `img`, classify on the CLAHE-enhanced
+                # grayscale (stored by extract_data) to preserve gradient detail.
+                coords = self._extract_coords_via_ncc(img, self._enhanced_image, pass_name)
 
                 # Fallback: Tesseract on the normalized line if NCC did not work
                 if coords is None:
@@ -573,20 +575,27 @@ class OCRProcessor:
 
         return score, data
 
-    def _extract_coords_via_ncc(self, binary_image, pass_name):
+    def _extract_coords_via_ncc(self, binary_image, enhanced_image, pass_name):
         """Extracts coordinates via custom NCC (Phase D).
 
+        Segmentation and classification are decoupled:
+          - `binary_image` is used only to locate glyph bounding boxes
+            (find_glyph_regions). Otsu thickens characters but keeps the
+            connected components separate, making it good at segmentation.
+          - `enhanced_image` (CLAHE grayscale) is used to crop glyphs for
+            classification — it preserves the fine gradient detail that
+            binary thresholding destroys.
+
+        If `enhanced_image` is None, falls back to cropping from
+        `binary_image` (backward-compat behavior).
+
         Line-by-line strategy:
-          1. Segment into text bands (rows)
-          2. For each row, classify glyphs via NCC
+          1. Segment into text bands (rows) on binary
+          2. For each row, classify glyphs (NCC/ONNX) from the enhanced crop
           3. Reconstruct the string and apply the Pos regex
           4. Geographic range validation (implicitly rejects Root/SolarSystem
              which have coords ~14 M km)
           5. Return the first row that yields valid coordinates
-
-        Args:
-            binary_image: binary image 0/255
-            pass_name: pass name (for logs)
 
         Returns:
             tuple (x, y, z) or None
@@ -609,7 +618,7 @@ class OCRProcessor:
             # Process each row in order, return the first with valid coordinates
             for row_idx in sorted(glyphs_by_row.keys()):
                 coords = self._extract_coords_from_row_ncc(
-                    binary_image, glyphs_by_row[row_idx], row_idx, pass_name
+                    binary_image, enhanced_image, glyphs_by_row[row_idx], row_idx, pass_name
                 )
                 if coords is not None and _coords_in_range(*coords):
                     return coords
@@ -620,15 +629,21 @@ class OCRProcessor:
             logger.error(f"[{pass_name}] NCC error: {e}")
             return None
 
-    def _extract_coords_from_row_ncc(self, binary_image, row_glyphs, row_idx, pass_name):
-        """Classifies glyphs in a row and attempts to extract (x, y, z)."""
+    def _extract_coords_from_row_ncc(self, binary_image, enhanced_image, row_glyphs, row_idx, pass_name):
+        """Classifies glyphs in a row and attempts to extract (x, y, z).
+
+        Crops are taken from `enhanced_image` when available (grayscale, rich
+        in gradient detail) and fall back to `binary_image` otherwise.
+        """
         row_glyphs = sorted(row_glyphs, key=lambda g: g['x'])
+
+        classify_source = enhanced_image if enhanced_image is not None else binary_image
 
         # Prepare crops in x order
         glyph_images = []
         for g in row_glyphs:
             x, y, w, h = g['x'], g['y'], g['w'], g['h']
-            crop = binary_image[y:y+h, x:x+w]
+            crop = classify_source[y:y+h, x:x+w]
             if crop.size > 0:
                 glyph_images.append((g['id'], crop))
 
