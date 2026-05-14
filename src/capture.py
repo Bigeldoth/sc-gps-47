@@ -13,13 +13,20 @@ Pipeline :
   4. CLAHE clipLimit=3.0
   5. Conditional GaussianBlur : only if std(channel) > 45 (fast-path
      under normal conditions — saves CPU + better sharpness)
-  6. 3 thresholding passes :
-       - pass_otsu         : Otsu on isolated channel (text = white, default)
-       - pass_otsu_inv     : inverted Otsu (residual dark-on-bright cases)
-       - pass_adaptive     : local adaptive threshold (fallback for uniform background)
+  6. 2 binary thresholding passes + enhanced grayscale :
+       - pass_otsu         : Otsu on isolated channel (text = white, default).
+                             Used by Tesseract and as the segmentation source
+                             for NCC/ONNX glyph classification.
+       - pass_adaptive     : local adaptive threshold (Tesseract fallback for
+                             uniform background).
+       - enhanced          : CLAHE grayscale (NOT binary). Consumed by NCC/ONNX
+                             for classification on crops located via `otsu`
+                             segmentation — preserves the fine gradient detail
+                             that binary thresholding destroys.
 
-Compared to the old version (4 passes), the HSV pass was removed as it
-produced noise in ~50% of cases — automatic colour channel isolation makes it redundant.
+The previous `otsu_inv` pass was removed: in all observed cases it destroyed
+characters rather than recovering them, and Tesseract performed worst on it.
+The HSV pass was removed earlier as automatic channel isolation made it redundant.
 """
 import mss
 import numpy as np
@@ -115,27 +122,27 @@ class ScreenCapture:
 
         images = {}
 
-        # Pass1: Otsu on isolated channel. Default white HUD case.
+        # Pass1: Otsu on isolated channel. Default white HUD case. Used both
+        # for Tesseract and as the segmentation source for NCC/ONNX.
         _, otsu = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         images['otsu'] = otsu
 
-        # Pass2: inverted Otsu for residual cases where the isolated channel
-        # is insufficient (e.g.: scene transition, mid-luminance).
-        _, otsu_inv = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-        images['otsu_inv'] = otsu_inv
-
-        # Pass3: local adaptive threshold, safety net for uniformly bright background.
+        # Pass2: local adaptive threshold, safety net for uniformly bright background.
         adaptive = cv2.adaptiveThreshold(
             enhanced, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 21, -8
         )
         images['adaptive'] = adaptive
+
+        # CLAHE-enhanced grayscale: used by NCC/ONNX for classification on the
+        # crops located via the binary `otsu` segmentation. Preserves the fine
+        # gradient detail that binary thresholding destroys.
+        images['enhanced'] = enhanced
 
         if self._save_debug:
             cv2.imwrite("debug_capture_original.png", img)
             cv2.imwrite("debug_capture_channel.png", channel)
             cv2.imwrite("debug_capture_enhanced.png", enhanced)
             cv2.imwrite("debug_capture_otsu.png", otsu)
-            cv2.imwrite("debug_capture_otsu_inv.png", otsu_inv)
             cv2.imwrite("debug_capture_adaptive.png", adaptive)
 
         # Phase D: optional glyph segmentation for template collection

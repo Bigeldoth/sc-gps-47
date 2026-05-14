@@ -399,6 +399,10 @@ class OCRProcessor:
         self._last_frame_hash: int | None = None
         self._last_result: dict | None = None
 
+        # Per-frame CLAHE-enhanced grayscale, populated by extract_data().
+        # NCC/ONNX classification uses this; Tesseract uses the binary passes.
+        self._enhanced_image = None
+
     def _build_glyph_classifier(self, onnx_model_path, onnx_classes_path, onnx_threshold):
         """Builds the classification callable (classify_batch signature)."""
         if self.glyph_engine == "onnx":
@@ -459,17 +463,25 @@ class OCRProcessor:
     def extract_data(self, images):
         logger.debug(f"OCR extraction from {len(images)} passes with engine {self.engine}")
 
+        # Separate the CLAHE-enhanced grayscale (used by NCC/ONNX for
+        # classification) from the binary passes (used by Tesseract).
+        # The enhanced image is NOT a Tesseract input.
+        images = dict(images)  # avoid mutating caller's dict
+        self._enhanced_image = images.pop('enhanced', None)
+        tesseract_images = {k: v for k, v in images.items() if k in ('otsu', 'adaptive')}
+
         # Frame deduplication: fast hash on downsampled pixels.
         # If the HUD is identical to the previous tick, return the cached result
         # without re-running Tesseract (~0.1 ms instead of ~150 ms).
-        frame_hash = hash(
-            b''.join(img[::4, ::4].tobytes() for img in images.values())
-        )
+        hash_sources = list(tesseract_images.values())
+        if self._enhanced_image is not None:
+            hash_sources.append(self._enhanced_image)
+        frame_hash = hash(b''.join(img[::4, ::4].tobytes() for img in hash_sources))
         if frame_hash == self._last_frame_hash and self._last_result is not None:
             logger.debug("Identical frame — cached OCR result reused (Tesseract skipped)")
             return self._last_result
 
-        result = self._parse_images_parallel(images)
+        result = self._parse_images_parallel(tesseract_images)
         self._last_frame_hash = frame_hash
         self._last_result = result
         return result
