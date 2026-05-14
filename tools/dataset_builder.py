@@ -31,9 +31,9 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from capture import _isolate_channel_auto, CAPTURE_WIDTH, CAPTURE_HEIGHT  # noqa: E402
+from capture import CAPTURE_WIDTH, CAPTURE_HEIGHT  # noqa: E402
 from sc_ocr.classify import classify_single_glyph, normalize_glyph  # noqa: E402
-from sc_ocr.preprocess import otsu_threshold  # noqa: E402
+from sc_ocr.preprocess import isolate_channel, otsu_threshold  # noqa: E402
 from sc_ocr.segment import find_glyph_regions  # noqa: E402
 from sc_ocr.templates import TemplateLibrary  # noqa: E402
 
@@ -66,7 +66,7 @@ def preprocess_bgr(image_bgr: np.ndarray) -> np.ndarray:
 
     Steps: auto channel isolation → 2× upscale → CLAHE → Otsu thresholding.
     """
-    channel = _isolate_channel_auto(image_bgr)
+    channel = isolate_channel(image_bgr)
     upscaled = cv2.resize(channel, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_LINEAR)
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
     enhanced = clahe.apply(upscaled)

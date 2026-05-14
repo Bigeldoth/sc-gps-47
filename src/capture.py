@@ -27,6 +27,7 @@ import cv2
 import configparser
 import logging
 from sc_ocr.segment import find_glyph_regions, save_glyph_crops
+from sc_ocr.preprocess import isolate_channel
 
 logger = logging.getLogger(__name__)
 
@@ -38,41 +39,9 @@ CAPTURE_HEIGHT = 45
 # is genuinely noisy (asteroid texture, particles), a light blur helps.
 _NOISE_STD_THRESHOLD = 45.0
 
-
-def _isolate_channel_auto(bgr):
-    """Reduces a BGR image (H, W, 3) to a uint8 channel where text is bright.
-
-    Automatic channel selection based on statistics:
-      - Mean luminance > 140 → bright background (lit room). Invert grayscale
-        so that dark text becomes bright.
-      - R - G > 15 → dominant red/orange text: R channel.
-      - G - R > 15 → dominant green/cyan text: G channel.
-      - Otherwise → max(R, G, B), ideal for white text on varied background.
-
-    OpenCV uses BGR (b=0, g=1, r=2). The SC HUD is white → the default
-    is ``max(R, G, B)`` which maximises contrast for bright text.
-    """
-    if bgr.ndim == 2:
-        return bgr  # already single channel
-    b = bgr[..., 0]
-    g = bgr[..., 1]
-    r = bgr[..., 2]
-    lum = bgr.mean()
-    r_mean = r.mean()
-    g_mean = g.mean()
-
-    if lum > 140:
-        logger.debug(f"Channel isolation: lum={lum:.1f} → invert_gray")
-        gray = bgr.mean(axis=2)
-        return (255 - gray).astype(np.uint8)
-    if r_mean - g_mean > 15:
-        logger.debug(f"Channel isolation: R-G={r_mean - g_mean:.1f} → R channel")
-        return r.astype(np.uint8)
-    if g_mean - r_mean > 15:
-        logger.debug(f"Channel isolation: G-R={g_mean - r_mean:.1f} → G channel")
-        return g.astype(np.uint8)
-    logger.debug(f"Channel isolation: lum={lum:.1f} r={r_mean:.1f} g={g_mean:.1f} → max_RGB")
-    return bgr.max(axis=2).astype(np.uint8)
+# Backward-compat alias for external callers (e.g. tools/dataset_builder.py
+# pinned to the previous private name).
+_isolate_channel_auto = isolate_channel
 
 
 class ScreenCapture:
@@ -134,7 +103,7 @@ class ScreenCapture:
             img = np.asarray(raw, dtype=np.uint8)[:, :, :3]
 
         # Phase A: smart colour channel isolation.
-        channel = _isolate_channel_auto(img)
+        channel = isolate_channel(img)
         channel = cv2.resize(channel, None, fx=2, fy=2, interpolation=cv2.INTER_LINEAR)
 
         # Conditional GaussianBlur: only if background is noisy.
