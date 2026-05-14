@@ -54,6 +54,9 @@ _PATH_SAFE_MAP: dict[str, str] = {
     ".": "_dot",
     "-": "_dash",
     " ": "_space",
+    # Uppercase letters need explicit aliases on Windows: NTFS is case-insensitive,
+    # so 'A/' and 'a/' resolve to the same directory and would collide.
+    **{c: f"_up{c}" for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"},
 }
 
 
