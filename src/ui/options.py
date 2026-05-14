@@ -109,10 +109,31 @@ class OptionsWindow(QDialog):
                 border-radius: 3px;
                 min-height: 22px;
             }
+            QComboBox::drop-down {
+                subcontrol-origin: padding;
+                subcontrol-position: top right;
+                width: 18px;
+                border-left: 1px solid #555;
+                background: #3a3a3a;
+            }
+            QComboBox::down-arrow {
+                width: 0; height: 0;
+                border-left: 4px solid transparent;
+                border-right: 4px solid transparent;
+                border-top: 5px solid #dcdcdc;
+                margin-right: 5px;
+            }
             QComboBox QAbstractItemView {
                 background-color: #282828;
                 color: #dcdcdc;
+                border: 1px solid #555;
                 selection-background-color: #4682b4;
+                selection-color: #ffffff;
+                outline: 0;
+            }
+            QComboBox QAbstractItemView::item {
+                min-height: 24px;
+                padding: 2px 6px;
             }
             QCheckBox { color: #dcdcdc; spacing: 6px; }
         """)

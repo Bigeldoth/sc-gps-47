@@ -611,8 +611,16 @@ class GPSOverlay(QMainWindow):
         push other top-level widgets behind themselves when focused. Calling
         raise_() periodically is enough to restore the Z-order without
         stealing input focus (the overlay is WindowTransparentForInput).
+
+        Skip while any of our own modal/dialog windows is active: raising the
+        overlay would defocus combobox popups and similar transient widgets,
+        causing them to close before the user can click.
         """
         if not self.is_visible:
+            return
+        from PyQt6.QtWidgets import QApplication
+        active = QApplication.activeWindow()
+        if active is not None and active is not self:
             return
         self.raise_()
 
