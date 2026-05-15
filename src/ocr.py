@@ -587,8 +587,16 @@ class OCRProcessor:
         paddle_vl_model="PaddleOCR-VL-1.5-0.9B",
         paddle_vl_backend="transformers",
         paddle_min_confidence=0.30,
+        tesseract_lang="eng",
+        tesseract_tessdata_dir="",
     ):
         self.paddle_min_confidence = float(paddle_min_confidence)
+        # Tesseract language pack: 'eng' (stock) or 'spacedrive' (fine-tuned
+        # LSTM produced by tools/train_tesseract.py). `tessdata_dir` lets
+        # the runtime load `models/tessdata/spacedrive.traineddata` without
+        # touching the system tessdata folder. Empty → use the default.
+        self.tesseract_lang = (tesseract_lang or "eng").strip() or "eng"
+        self.tesseract_tessdata_dir = (tesseract_tessdata_dir or "").strip()
         # Rejection counters surfaced via _log_paddle_stats() every N frames.
         # Helps diagnose why the overlay stays red when paddle is active.
         self._paddle_stats = {
@@ -787,7 +795,44 @@ class OCRProcessor:
         # Both `paddle` and `paddle-vl` go through the same adapter interface.
         if self.engine in ("paddle", "paddle-vl") and self._paddle_adapter is not None:
             return self._paddle_adapter.recognize(img)
-        return pytesseract.image_to_string(img, config=self.tesseract_config)
+        return pytesseract.image_to_string(
+            img,
+            lang=self._resolve_tesseract_lang(),
+            config=self._tesseract_config_with_tessdata(),
+        )
+
+    def _resolve_tesseract_lang(self):
+        """Returns the effective lang code, falling back to 'eng' if the
+        configured custom language pack is missing from disk."""
+        lang = self.tesseract_lang
+        if lang == "eng":
+            return lang
+        tessdata = self.tesseract_tessdata_dir
+        if tessdata:
+            candidate = os.path.join(tessdata, f"{lang}.traineddata")
+            if os.path.isfile(candidate):
+                return lang
+            logger.warning(
+                "tesseract_lang='%s' but %s not found — falling back to 'eng'",
+                lang, candidate,
+            )
+            return "eng"
+        # No tessdata_dir override: defer to Tesseract's own search path.
+        return lang
+
+    def _tesseract_config_with_tessdata(self):
+        """Augments the base config string with `--tessdata-dir` when the
+        user pointed us at a custom location (e.g. shipped models/tessdata)."""
+        tessdata = self.tesseract_tessdata_dir
+        if not tessdata:
+            return self.tesseract_config
+        if not os.path.isdir(tessdata):
+            logger.warning(
+                "tesseract_tessdata_dir='%s' does not exist — ignored", tessdata,
+            )
+            return self.tesseract_config
+        # Quote the path to survive spaces ("Program Files", "ProgramData", …).
+        return f'{self.tesseract_config} --tessdata-dir "{tessdata}"'
 
     def extract_data(self, images):
         logger.debug(

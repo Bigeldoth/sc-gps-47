@@ -221,6 +221,31 @@ class ConfigManager:
             self.config.add_section('OCR')
         self.config.set('OCR', 'paddle_vl_backend', backend.lower())
 
+    def get_tesseract_lang(self):
+        """Tesseract language pack to use (`eng` is the stock pretrained
+        English model; `spacedrive` is the project's fine-tuned LSTM —
+        only available if `models/tessdata/spacedrive.traineddata` was
+        shipped or produced by `tools/train_tesseract.py`)."""
+        value = self.config.get('OCR', 'tesseract_lang', fallback='eng')
+        return value.strip() or 'eng'
+
+    def set_tesseract_lang(self, lang):
+        if not self.config.has_section('OCR'):
+            self.config.add_section('OCR')
+        self.config.set('OCR', 'tesseract_lang', (lang or 'eng').strip())
+
+    def get_tesseract_tessdata_dir(self):
+        """Optional override for the tessdata directory passed to Tesseract.
+        Empty = let Tesseract use its system default. Set to e.g.
+        `models/tessdata` to load the fine-tuned `spacedrive.traineddata`
+        shipped with the project."""
+        return self.config.get('OCR', 'tesseract_tessdata_dir', fallback='').strip()
+
+    def set_tesseract_tessdata_dir(self, path):
+        if not self.config.has_section('OCR'):
+            self.config.add_section('OCR')
+        self.config.set('OCR', 'tesseract_tessdata_dir', (path or '').strip())
+
     def get_glyph_engine(self):
         """Return the glyph classifier (ncc or onnx)."""
         value = self.config.get('OCR', 'glyph_engine', fallback='ncc').lower()

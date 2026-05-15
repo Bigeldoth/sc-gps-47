@@ -62,6 +62,9 @@ def _build_ocr_processor(cfg):
             'OCR', 'paddle_min_confidence', fallback='0.30'))
     except ValueError:
         paddle_min_confidence = 0.30
+    tesseract_lang = (cfg.get('OCR', 'tesseract_lang', fallback='eng') or 'eng').strip()
+    tesseract_tessdata_dir = (cfg.get(
+        'OCR', 'tesseract_tessdata_dir', fallback='') or '').strip()
     ocr = OCRProcessor(
         engine=ocr_engine,
         glyph_engine=glyph_engine,
@@ -79,6 +82,8 @@ def _build_ocr_processor(cfg):
         paddle_vl_model=paddle_vl_model,
         paddle_vl_backend=paddle_vl_backend,
         paddle_min_confidence=paddle_min_confidence,
+        tesseract_lang=tesseract_lang,
+        tesseract_tessdata_dir=tesseract_tessdata_dir,
     )
     logger.info(
         "OCR engine initialized: text=%s glyphs=%s mode=%s device=%s",

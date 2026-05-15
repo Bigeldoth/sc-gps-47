@@ -143,6 +143,99 @@ ONNXRuntime sanity check vs the PyTorch checkpoint at the end.
 
 ---
 
+## 4b. Full-line training: Tesseract LSTM fine-tune
+
+Parallel pipeline to §5 but produces a ``.traineddata`` that the Tesseract
+text engine can consume directly (no PaddleOCR install required at runtime).
+
+### One-shot orchestrator
+
+```powershell
+.venv\Scripts\python.exe tools\train_tesseract.py `
+    --video C:\path\to\gameplay.mp4 `
+    --max-frames 1000 --max-iterations 4000
+```
+
+Steps the orchestrator runs:
+
+1. Locate ``tesseract.exe`` / ``lstmtraining.exe`` / ``combine_tessdata.exe``
+   on PATH or under ``C:\Program Files\Tesseract-OCR\``.
+2. Build a Paddle-format dataset (reuses ``scripts/prepare_paddle_dataset.py``).
+3. Convert it to Tesseract pair layout (``scripts/paddle_to_tesseract_dataset.py``).
+4. Auto-download ``eng.traineddata`` from ``tessdata_best`` if the system one
+   is the integer-quantised ``fast`` build (``lstmtraining`` rejects fast models).
+5. For each pair, generate a ``.box`` file (naive even-spacing — CTC alignment
+   refines it) and run ``tesseract <img> <stem> --psm 13 lstm.train`` to
+   produce ``<stem>.lstmf``.
+6. Run ``lstmtraining --continue_from eng.lstm …`` with the configured
+   iteration budget, then ``lstmtraining --stop_training`` to package the
+   final ``models/tessdata/spacedrive.traineddata``.
+
+### Manual two-step (re-use existing dataset)
+
+```powershell
+.venv\Scripts\python.exe scripts\paddle_to_tesseract_dataset.py `
+    --paddle-dir dataset\paddle_rec --output dataset\tesseract
+
+.venv\Scripts\python.exe tools\train_tesseract.py --skip-prepare `
+    --tess-dir dataset\tesseract --max-iterations 4000
+```
+
+### Wiring the fine-tuned model
+
+```ini
+# config.ini
+[OCR]
+text_engine = tesseract
+tesseract_lang = spacedrive
+tesseract_tessdata_dir = models/tessdata
+```
+
+At runtime, ``src/ocr.py`` resolves ``tesseract_lang``: if the
+``<tessdata_dir>/<lang>.traineddata`` file is missing it warns and falls
+back to ``eng``, so the app stays operational on a fresh clone even before
+the model is built.
+
+### Known pitfalls
+
+- **`fast` vs `best` traineddata**: the orchestrator auto-downloads the
+  float build (~15 MB). If you provide your own, it must be ≥ 10 MB.
+- **CRLF line endings in listfiles**: Python's text-mode write promotes
+  ``\n`` to ``\r\n`` on Windows and ``lstmtraining`` keeps the trailing
+  ``\r`` as part of the path → "Deserialize header failed" on every
+  sample. The orchestrator writes listfiles with explicit LF endings;
+  do the same if you handcraft them.
+- **`Compute CTC targets failed`**: the ground truth has more characters
+  than ``image_width / 15`` can fit in the LSTM's downsampled domain.
+  The converter drops samples below that ratio automatically. If you
+  see this error anyway, your dataset has wildly over-labelled rows.
+- **Auto-labelled Paddle dataset is noisy**: the first end-to-end run
+  on ``record2.mp4`` produced 60 usable train pairs after CTC filtering
+  but most labels were paddle hallucinations — BCER stayed at 97 %.
+  Hand-labelling a few hundred rows beats a thousand auto-labelled ones.
+- **Tesseract configs**: ``lstm.train`` is a config keyword resolved via
+  ``<tessdata-dir>/configs/lstm.train``. The orchestrator mirrors the
+  system ``configs/`` directory into the work dir.
+
+### Shipping the trained model
+
+``models/`` is gitignored by default. Once you have a model with a
+satisfactory BCER (target: ≤ 10 %) on a held-out validation clip,
+force-add it so end users get a working GPS out of the box:
+
+```powershell
+git add -f models/tessdata/spacedrive.traineddata
+git commit -m "ship: tesseract LSTM fine-tune (BCER=…%, dataset=…)"
+```
+
+Apache 2.0 derivative of ``eng.traineddata``. ~15 MB.
+
+**Do NOT ship a model with BCER > 50 %** — the runtime auto-falls-back
+to ``eng`` when the custom traineddata is missing, but if it's present
+and bad we silently regress Tesseract for every user.
+
+---
+
 ## 5. Full-line training: PaddleOCR rec fine-tune
 
 Used when `config.ini → [OCR] text_engine = paddle`. The rec model reads an
