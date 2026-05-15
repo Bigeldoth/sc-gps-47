@@ -23,6 +23,10 @@ Pipeline :
                              for classification on crops located via `otsu`
                              segmentation — preserves the fine gradient detail
                              that binary thresholding destroys.
+       - raw               : original BGR crop straight from mss (or test file)
+                             before any channel isolation or thresholding. Used
+                             by full-image OCR engines (e.g. PaddleOCR) that
+                             prefer to run their own detection on natural images.
 
 The previous `otsu_inv` pass was removed: in all observed cases it destroyed
 characters rather than recovering them, and Tesseract performed worst on it.
@@ -121,6 +125,10 @@ class ScreenCapture:
         enhanced = self._clahe.apply(channel)
 
         images = {}
+
+        # Raw BGR crop (no preprocessing). Consumed by engines that run their
+        # own detection on natural images (e.g. PaddleOCR in full_text mode).
+        images['raw'] = img
 
         # Pass1: Otsu on isolated channel. Default white HUD case. Used both
         # for Tesseract and as the segmentation source for NCC/ONNX.
