@@ -73,13 +73,13 @@ def _find_eng_traineddata() -> Path:
     )
 
 
-def _build_paddle_dataset(video: Path, paddle_dir: Path, max_frames: int) -> None:
+def _build_paddle_dataset(videos: list[Path], paddle_dir: Path, max_frames: int) -> None:
     cmd = [
         sys.executable,
         str(ROOT / "scripts" / "prepare_paddle_dataset.py"),
-        "--video", str(video),
         "--output", str(paddle_dir),
         "--max-frames", str(max_frames),
+        "--video", *[str(v) for v in videos],
     ]
     logger.info("Building Paddle dataset: %s", " ".join(cmd))
     subprocess.check_call(cmd)
@@ -324,9 +324,11 @@ def _finalize(
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--video", type=Path, default=None,
-                   help="Gameplay video. Required unless --skip-prepare AND "
-                        "--tess-dir already contain pairs.")
+    p.add_argument("--video", type=Path, nargs="+", default=None,
+                   help="One or more gameplay videos. Required unless "
+                        "--skip-prepare AND --tess-dir already contain pairs.")
+    p.add_argument("--videos-dir", type=Path,
+                   help="Directory of .mp4 files to sample from (auto-discovery).")
     p.add_argument("--paddle-dir", type=Path,
                    default=ROOT / "dataset" / "paddle_rec",
                    help="Intermediate Paddle dataset (built unless reused)")
@@ -352,12 +354,15 @@ def main() -> int:
     )
 
     if not args.skip_prepare:
-        if args.video is None or not args.video.is_file():
-            logger.error("--video required unless --skip-prepare is set.")
+        videos: list[Path] = list(args.video or [])
+        if args.videos_dir:
+            videos.extend(sorted(args.videos_dir.glob("*.mp4")))
+        if not videos:
+            logger.error("Pass at least one --video or --videos-dir (or --skip-prepare).")
             return 2
         if args.paddle_dir.exists():
             shutil.rmtree(args.paddle_dir)
-        _build_paddle_dataset(args.video, args.paddle_dir, args.max_frames)
+        _build_paddle_dataset(videos, args.paddle_dir, args.max_frames)
         if args.tess_dir.exists():
             shutil.rmtree(args.tess_dir)
         _convert_to_tesseract(args.paddle_dir, args.tess_dir)

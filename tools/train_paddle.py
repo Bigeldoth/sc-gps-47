@@ -52,14 +52,14 @@ def _ensure_paddle_installed() -> None:
     ])
 
 
-def _build_dataset(video: Path, dataset_dir: Path, max_frames: int) -> None:
-    """Delegates to scripts/prepare_paddle_dataset.py."""
+def _build_dataset(videos: list[Path], dataset_dir: Path, max_frames: int) -> None:
+    """Delegates to scripts/prepare_paddle_dataset.py with one or more videos."""
     cmd = [
         sys.executable,
         str(ROOT / "scripts" / "prepare_paddle_dataset.py"),
-        "--video", str(video),
         "--output", str(dataset_dir),
         "--max-frames", str(max_frames),
+        "--video", *[str(v) for v in videos],
     ]
     logger.info("Running %s", " ".join(cmd))
     subprocess.check_call(cmd)
@@ -223,8 +223,10 @@ def _write_paddlex_yaml(
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--video", required=True, type=Path,
-                   help="Gameplay video used to build the rec dataset")
+    p.add_argument("--video", type=Path, nargs="+",
+                   help="One or more gameplay video files (passed as separate args).")
+    p.add_argument("--videos-dir", type=Path,
+                   help="Directory of .mp4 files to sample from (auto-discovery).")
     p.add_argument("--output", type=Path,
                    default=ROOT / "models" / "paddle" / "rec_finetuned")
     p.add_argument("--dataset-dir", type=Path,
@@ -242,9 +244,15 @@ def main():
     _ensure_paddle_installed()
 
     if not args.skip_prepare:
+        videos: list[Path] = list(args.video or [])
+        if args.videos_dir:
+            videos.extend(sorted(args.videos_dir.glob("*.mp4")))
+        if not videos:
+            logger.error("Pass at least one --video or --videos-dir (or use --skip-prepare).")
+            sys.exit(2)
         if args.dataset_dir.exists():
             shutil.rmtree(args.dataset_dir)
-        _build_dataset(args.video, args.dataset_dir, args.max_frames)
+        _build_dataset(videos, args.dataset_dir, args.max_frames)
 
     args.output.mkdir(parents=True, exist_ok=True)
     config_path = args.output / "rec_finetune.yml"
