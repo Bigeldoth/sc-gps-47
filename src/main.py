@@ -471,12 +471,19 @@ class GPSOverlay(QMainWindow):
             return None
         return time.monotonic() - self._last_coord_ts
 
-    # Maximum plausible speed between two scans (km/s).
-    # Outside quantum drive, SC vessels do ~1-2 km/s. 50 km/s per-axis gives
-    # margin for quantum exit without accepting OCR jumps. The previous
-    # value (100 km/s on the 3D norm) let many single-axis sign-drops slip
-    # through because the other two axes diluted the norm.
-    _MAX_PLAUSIBLE_SPEED_KM_S = 50.0
+    # Speed caps between two scans (km/s). SC outside-atmosphere top speed
+    # is **1.4 km/s per axis**. The cap is intentionally loose (7× the
+    # physical max) so we let through the common 8↔6 unit-digit OCR
+    # confusion (≈2 km swing → 10 km/s at 200 ms scan) — the rolling-median
+    # buffer (F4, last 7 samples) absorbs those isolated outliers without
+    # us having to reject the frame. The cap still catches:
+    #   • 0↔6 hundreds digit (60 km swing → 300 km/s)
+    #   • Catastrophic digit drops / extra digits (≥ 100 km)
+    #   • Sign drops not already caught by the sign-flip mirror gate
+    # 3D-norm cap stays ~1.5× the per-axis cap for diagonal headroom.
+    # Quantum jumps trigger an OOC change which bypasses these gates.
+    _MAX_PLAUSIBLE_SPEED_KM_S = 10.0
+    _MAX_PLAUSIBLE_3D_SPEED_KM_S = 15.0
     # Tightest gap allowed when a sign flips on one axis. A '-748.27' read
     # as '748.27' produces |new + cur| = 0; we treat anything ≤ 5 km of
     # mirror-equality as a near-certain digit-1 sign drop and reject without
@@ -541,11 +548,12 @@ class GPSOverlay(QMainWindow):
                 )
                 return True
 
-        # Gate 3 — 3D-norm speed cap.
+        # Gate 3 — 3D-norm speed cap (slightly higher than per-axis to
+        # accommodate sqrt(3)× the per-axis maximum on diagonal travel).
         dx, dy, dz = new_x - cur_x, new_y - cur_y, new_z - cur_z
         dist_km = (dx * dx + dy * dy + dz * dz) ** 0.5
         speed = dist_km / dt
-        if speed > self._MAX_PLAUSIBLE_SPEED_KM_S:
+        if speed > self._MAX_PLAUSIBLE_3D_SPEED_KM_S:
             logger.warning(
                 f"OCR rejection: implausible 3D speed {speed:.1f} km/s "
                 f"(Δ={dist_km:.2f} km in {dt:.2f} s)"
