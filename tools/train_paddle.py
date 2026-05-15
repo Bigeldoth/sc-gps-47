@@ -162,30 +162,62 @@ Eval:
 
 
 def _run_training(config_path: Path) -> int:
-    """Invokes PaddleOCR's training entrypoint.
+    """Invokes the PaddleX 3.x training via its Python API.
 
-    Looks for `paddleocr.tools.train` (modern packaged form) and falls back
-    to a cloned PaddleOCR repo if the user has one available via
-    PADDLEOCR_REPO env var.
+    The PaddleX CLI exposes pipeline prediction only; module training has
+    to go through `build_trainer(parse_config(...))`. We import the model
+    register module before parsing so that `'en_PP-OCRv4_mobile_rec'`
+    resolves to a known registered model.
+
+    Requires the PaddleOCR plugin to be installed
+    (`python -m paddlex --install PaddleOCR -y`).
     """
-    import importlib.util
-    if importlib.util.find_spec("paddleocr.tools.train") is not None:
-        cmd = [sys.executable, "-m", "paddleocr.tools.train", "-c", str(config_path)]
-    else:
-        # Fallback: assume the user has cloned the PaddleOCR repo somewhere.
-        import os
-        repo = os.environ.get("PADDLEOCR_REPO")
-        if not repo:
-            logger.error(
-                "paddleocr.tools.train is not importable and PADDLEOCR_REPO "
-                "is not set. Clone https://github.com/PaddlePaddle/PaddleOCR "
-                "and set PADDLEOCR_REPO to its path, then rerun this script."
-            )
-            return 1
-        cmd = [sys.executable, str(Path(repo) / "tools" / "train.py"),
-               "-c", str(config_path)]
-    logger.info("Launching training: %s", " ".join(cmd))
-    return subprocess.call(cmd)
+    try:
+        import paddlex.repo_apis.PaddleOCR_api.text_rec.register  # noqa: F401
+        from paddlex.utils.config import parse_config
+        from paddlex import build_trainer
+    except ImportError as exc:
+        logger.error(
+            "PaddleX text-rec API import failed (%s). Did the PaddleOCR "
+            "plugin install? Run `python -m paddlex --install PaddleOCR -y`.",
+            exc,
+        )
+        return 2
+    logger.info("Launching training from %s", config_path)
+    cfg = parse_config(str(config_path))
+    trainer = build_trainer(cfg)
+    try:
+        trainer.train()
+    except Exception:
+        logger.exception("Training raised an exception")
+        return 1
+    return 0
+
+
+def _write_paddlex_yaml(
+    out_yaml: Path,
+    dataset_dir: Path,
+    output_dir: Path,
+    epochs: int,
+    base_config: Path,
+) -> None:
+    """Builds a PaddleX 3.x rec training yaml from the shipped template.
+
+    Loads the official `en_PP-OCRv4_mobile_rec.yaml` ships inside the paddlex
+    package, overrides dataset_dir / output / mode / device / epochs, and
+    writes the result next to the trained weights so we have a self-contained
+    record of how the model was produced.
+    """
+    import yaml
+    cfg = yaml.safe_load(base_config.read_text(encoding="utf-8"))
+    cfg["Global"]["mode"] = "train"
+    cfg["Global"]["dataset_dir"] = str(dataset_dir)
+    cfg["Global"]["output"] = str(output_dir)
+    cfg["Global"]["device"] = "cpu"
+    cfg["Train"]["epochs_iters"] = epochs
+    cfg["Train"]["batch_size"] = 8
+    # The shipped config pulls the pretrained URL — keep it; PaddleX caches.
+    out_yaml.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
 
 
 def main():
@@ -216,7 +248,19 @@ def main():
 
     args.output.mkdir(parents=True, exist_ok=True)
     config_path = args.output / "rec_finetune.yml"
-    _write_yaml(config_path, args.dataset_dir, args.output, args.pretrain_dir, args.epochs)
+    # Locate the shipped PaddleX template (en_PP-OCRv4_mobile_rec.yaml).
+    import paddlex
+    base_config = (
+        Path(paddlex.__file__).parent
+        / "configs" / "modules" / "text_recognition"
+        / "en_PP-OCRv4_mobile_rec.yaml"
+    )
+    if not base_config.exists():
+        logger.error("PaddleX template not found at %s", base_config)
+        sys.exit(2)
+    _write_paddlex_yaml(
+        config_path, args.dataset_dir, args.output, args.epochs, base_config,
+    )
     logger.info("Wrote training config to %s", config_path)
 
     rc = _run_training(config_path)

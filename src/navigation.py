@@ -44,6 +44,14 @@ def _zones_match(a, b, threshold=_ZONE_MATCH_THRESHOLD):
         return False
     if a_norm == b_norm:
         return True
+    # Containment fallback: paddle frequently truncates noisy zone reads to
+    # the trailing landmark (`Zone:OOC_Stanton_3_ArcCorp` ↔ `ArcCorp`).
+    # If one normalized name is a substring of the other AND that shared
+    # segment is at least 5 chars (avoids spurious 2-char matches), treat
+    # as the same zone. SequenceMatcher would score 0.28 here and miss it.
+    short, long_ = (a_norm, b_norm) if len(a_norm) <= len(b_norm) else (b_norm, a_norm)
+    if len(short) >= 5 and short in long_:
+        return True
     return SequenceMatcher(None, a_norm, b_norm).ratio() >= threshold
 
 

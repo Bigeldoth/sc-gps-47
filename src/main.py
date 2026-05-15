@@ -57,6 +57,11 @@ def _build_ocr_processor(cfg):
     paddle_vl_backend = cfg.get(
         'OCR', 'paddle_vl_backend', fallback='transformers',
     )
+    try:
+        paddle_min_confidence = float(cfg.get(
+            'OCR', 'paddle_min_confidence', fallback='0.30'))
+    except ValueError:
+        paddle_min_confidence = 0.30
     ocr = OCRProcessor(
         engine=ocr_engine,
         glyph_engine=glyph_engine,
@@ -73,6 +78,7 @@ def _build_ocr_processor(cfg):
         paddle_vl_endpoint=paddle_vl_endpoint,
         paddle_vl_model=paddle_vl_model,
         paddle_vl_backend=paddle_vl_backend,
+        paddle_min_confidence=paddle_min_confidence,
     )
     logger.info(
         "OCR engine initialized: text=%s glyphs=%s mode=%s device=%s",
@@ -245,6 +251,14 @@ class GPSOverlay(QMainWindow):
         # None = no save in progress via hotkey.
         self._save_snapshot = None
 
+        # Rolling buffer of the last accepted positions (after velocity check).
+        # The smoothed position used for distance/bearing is the per-axis
+        # MEDIAN over this buffer — kills isolated 8↔6 or 0↔6 misreads on a
+        # single decimal without affecting legitimate motion (median tracks
+        # the cluster, ignores 1-2 outliers). 7 samples ≈ 1.4 s at 200 ms.
+        self._pos_buffer = []  # list[tuple[x, y, z]]
+        self._POS_BUFFER_SIZE = 7
+
         # Temporary message displayed in nav_label: (text, expire_monotonic_ts).
         self._overlay_message = None
 
@@ -385,6 +399,27 @@ class GPSOverlay(QMainWindow):
                 self._refresh_nav_label()
                 return
 
+            # Apply per-axis median smoothing over the last N accepted reads.
+            # Resets on OOC change (legitimate teleport — buffer is stale).
+            if (
+                self.current_data.get("ooc")
+                and data.get("ooc")
+                and not _zones_match(data["ooc"], self.current_data["ooc"])
+            ):
+                self._pos_buffer.clear()
+            self._pos_buffer.append((data["x"], data["y"], data["z"]))
+            if len(self._pos_buffer) > self._POS_BUFFER_SIZE:
+                self._pos_buffer.pop(0)
+            sx = sorted(p[0] for p in self._pos_buffer)
+            sy = sorted(p[1] for p in self._pos_buffer)
+            sz = sorted(p[2] for p in self._pos_buffer)
+            mid = len(self._pos_buffer) // 2
+            smoothed = dict(data)
+            smoothed["x"] = sx[mid]
+            smoothed["y"] = sy[mid]
+            smoothed["z"] = sz[mid]
+            data = smoothed
+
             self.current_data = data
             self.pos_label.setText(
                 f"X: {data['x']:>10.2f}   Y: {data['y']:>10.2f}\n"
@@ -437,26 +472,41 @@ class GPSOverlay(QMainWindow):
         return time.monotonic() - self._last_coord_ts
 
     # Maximum plausible speed between two scans (km/s).
-    # Outside quantum drive, SC vessels do ~1-2 km/s. 100 km/s gives
-    # margin for quantum exit without accepting OCR jumps.
-    _MAX_PLAUSIBLE_SPEED_KM_S = 100.0
+    # Outside quantum drive, SC vessels do ~1-2 km/s. 50 km/s per-axis gives
+    # margin for quantum exit without accepting OCR jumps. The previous
+    # value (100 km/s on the 3D norm) let many single-axis sign-drops slip
+    # through because the other two axes diluted the norm.
+    _MAX_PLAUSIBLE_SPEED_KM_S = 50.0
+    # Tightest gap allowed when a sign flips on one axis. A '-748.27' read
+    # as '748.27' produces |new + cur| = 0; we treat anything ≤ 5 km of
+    # mirror-equality as a near-certain digit-1 sign drop and reject without
+    # even needing the velocity gate.
+    _SIGN_FLIP_MIRROR_TOL_KM = 5.0
 
     def _is_velocity_implausible(self, new_data):
-        """True if new position implies physically impossible jump.
+        """True if new position implies a physically impossible jump.
 
-        Compares current position (`current_data`) to new (`new_data`)
-        using time delta from `_last_coord_ts`. Rejects if
-        implied speed exceeds `_MAX_PLAUSIBLE_SPEED_KM_S`.
+        Three independent gates (any one of which triggers rejection):
+          1. **Sign-flip mirror** — a single axis crosses zero while the
+             reflected magnitude matches the previous reading to within
+             ``_SIGN_FLIP_MIRROR_TOL_KM``. This catches the typical
+             ``-748.27 → 748.27`` sign-drop without needing dt.
+          2. **Per-axis speed cap** — each of dx/dy/dz divided by dt must
+             stay under ``_MAX_PLAUSIBLE_SPEED_KM_S``. Rejecting per-axis
+             prevents a 60 km jump on Y (the classic ``-103 → -163`` 0↔6
+             confusion in the hundreds digit) from being averaged out by
+             two quiet axes the way the 3D norm would.
+          3. **3D-norm speed cap** — kept as a backstop for legitimate
+             diagonal moves that pass per-axis but accumulate fast.
 
         Tolerates:
           - first scan (no reference) → False;
           - OOC change (legitimate teleport via QT) → False;
-          - long time gap (> 5 s, we may have missed jump) → False.
+          - long time gap (> 5 s, we may have missed a jump) → False.
         """
         if self.current_data.get("x") is None or self._last_coord_ts is None:
             return False
         # OOC change: don't compare, frame changed.
-        # Fuzzy comparison to tolerate OCR variations in zone name.
         new_ooc = new_data.get("ooc")
         cur_ooc = self.current_data.get("ooc")
         if new_ooc and cur_ooc and not _zones_match(new_ooc, cur_ooc):
@@ -464,14 +514,40 @@ class GPSOverlay(QMainWindow):
         dt = time.monotonic() - self._last_coord_ts
         if dt <= 0 or dt > 5.0:
             return False
-        dx = new_data["x"] - self.current_data["x"]
-        dy = new_data["y"] - self.current_data["y"]
-        dz = new_data["z"] - self.current_data["z"]
+
+        cur_x, cur_y, cur_z = (
+            self.current_data["x"], self.current_data["y"], self.current_data["z"],
+        )
+        new_x, new_y, new_z = new_data["x"], new_data["y"], new_data["z"]
+
+        # Gate 1 — sign-flip mirror on a single axis.
+        flip_tol = self._SIGN_FLIP_MIRROR_TOL_KM
+        for axis, cur, new in (("X", cur_x, new_x), ("Y", cur_y, new_y), ("Z", cur_z, new_z)):
+            if (cur * new) < 0 and abs(abs(cur) - abs(new)) < flip_tol:
+                logger.warning(
+                    f"OCR rejection: sign-flip on {axis} "
+                    f"({cur:.4f} → {new:.4f}), mirror gap {abs(abs(cur)-abs(new)):.4f} km"
+                )
+                return True
+
+        # Gate 2 — per-axis speed cap.
+        per_axis_cap = self._MAX_PLAUSIBLE_SPEED_KM_S
+        for axis, cur, new in (("X", cur_x, new_x), ("Y", cur_y, new_y), ("Z", cur_z, new_z)):
+            axis_speed = abs(new - cur) / dt
+            if axis_speed > per_axis_cap:
+                logger.warning(
+                    f"OCR rejection: implausible {axis}-axis speed {axis_speed:.1f} km/s "
+                    f"(Δ{axis}={new - cur:+.2f} km in {dt:.2f} s)"
+                )
+                return True
+
+        # Gate 3 — 3D-norm speed cap.
+        dx, dy, dz = new_x - cur_x, new_y - cur_y, new_z - cur_z
         dist_km = (dx * dx + dy * dy + dz * dz) ** 0.5
         speed = dist_km / dt
         if speed > self._MAX_PLAUSIBLE_SPEED_KM_S:
             logger.warning(
-                f"OCR rejection: implausible speed {speed:.1f} km/s "
+                f"OCR rejection: implausible 3D speed {speed:.1f} km/s "
                 f"(Δ={dist_km:.2f} km in {dt:.2f} s)"
             )
             return True

@@ -79,11 +79,23 @@ class PaddleAdapter:
         # hits a `ConvertPirAttribute2RuntimeAttribute not support` runtime
         # crash inside the MKLDNN executor on the text detection model. The
         # fallback path (plain CPU executor) is ~20% slower but stable.
+        # PP-OCRv5 (PaddleOCR 3.5's default) crashes on Windows + Paddle 3.3
+        # inside the new PIR executor (`ConvertPirAttribute2RuntimeAttribute
+        # not support` on `pir::ArrayAttribute<pir::DoubleAttribute>` in
+        # onednn_instruction.cc:118). Forcing the v4 pipeline avoids the
+        # buggy detection model and matches our fine-tuned `en_PP-OCRv4_mobile_rec`
+        # weights, which v5 would reject for model_name mismatch.
         new_api_kwargs: dict = {
             "lang": lang,
             "device": "gpu" if self.device == "gpu" else "cpu",
             "use_textline_orientation": False,
             "enable_mkldnn": False,
+            "ocr_version": "PP-OCRv4",
+            # `ocr_version` alone doesn't always swap the detector — PaddleOCR
+            # 3.5 silently picks PP-OCRv5_server_det on GPU even with v4
+            # requested. Naming the detector explicitly keeps us on the v4
+            # branch end-to-end (and avoids the v5+GPU+MKLDNN PIR crash).
+            "text_detection_model_name": "PP-OCRv4_mobile_det",
         }
         old_api_kwargs: dict = {
             "lang": lang,
@@ -95,6 +107,13 @@ class PaddleAdapter:
         if model_dir and os.path.isdir(model_dir):
             new_api_kwargs["text_recognition_model_dir"] = model_dir
             old_api_kwargs["rec_model_dir"] = model_dir
+            # PaddleOCR 3.x validates `text_recognition_model_dir` against the
+            # pipeline's *default* rec model name (PP-OCRv5_server_rec for the
+            # v5 pipeline, en_PP-OCRv4_mobile_rec for the v4 pipeline). Since
+            # we already pin the pipeline to PP-OCRv4 above, also pin the rec
+            # model name so a v4 fine-tune is accepted instead of triggering
+            # `Model name mismatch: expected 'PP-OCRv5_server_rec' …`.
+            new_api_kwargs["text_recognition_model_name"] = "en_PP-OCRv4_mobile_rec"
             logger.info("PaddleOCR: using fine-tuned rec model at %s", model_dir)
 
         try:

@@ -79,10 +79,32 @@ def _row_bboxes(binary: np.ndarray) -> list[tuple[int, int, int, int]]:
     return bboxes
 
 
+def _ensure_tesseract_cmd() -> None:
+    """Points pytesseract at the tesseract binary on Windows if the PATH
+    lookup fails. Mirrors the search performed by src/ocr.py."""
+    import pytesseract
+    import shutil
+    if shutil.which("tesseract"):
+        return
+    candidates = [
+        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+        r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+    ]
+    import os
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        candidates.append(os.path.join(local, "Tesseract-OCR", "tesseract.exe"))
+    for path in candidates:
+        if Path(path).exists():
+            pytesseract.pytesseract.tesseract_cmd = path
+            return
+
+
 def _transcribe(crop: np.ndarray, engine: str) -> str:
     """Best-effort transcript for a single row crop using the chosen engine."""
     if engine == "tesseract":
         import pytesseract
+        _ensure_tesseract_cmd()
         text = pytesseract.image_to_string(
             crop,
             config=(
@@ -99,6 +121,10 @@ def _transcribe(crop: np.ndarray, engine: str) -> str:
             _PADDLE
         except NameError:
             _PADDLE = PaddleAdapter(device="cpu")
+        # Paddle expects 3-channel BGR. The row crop arrives as 1-channel
+        # grayscale (sliced from the CLAHE-enhanced channel) — convert.
+        if crop.ndim == 2:
+            crop = cv2.cvtColor(crop, cv2.COLOR_GRAY2BGR)
         text = _PADDLE.recognize(crop)
     else:
         raise ValueError(f"Unknown labeling engine: {engine}")
@@ -181,7 +207,10 @@ def build_dataset(
     )
 
     charset = sorted({c for _, t in pairs for c in t})
+    # `labels.txt` kept for backward compat; `dict.txt` is what PaddleX 3.x
+    # rec training actually reads (`Global.character_dict_path`).
     (output_dir / "labels.txt").write_text("\n".join(charset), encoding="utf-8")
+    (output_dir / "dict.txt").write_text("\n".join(charset), encoding="utf-8")
 
     logger.info(
         "Dataset built: %d pairs (%d train / %d val) → %s",

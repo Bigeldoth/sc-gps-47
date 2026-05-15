@@ -164,6 +164,25 @@ class ConfigManager:
     def get_paddle_lang(self):
         return self.config.get('OCR', 'paddle_lang', fallback='en')
 
+    def get_paddle_min_confidence(self):
+        """Per-line Paddle confidence floor. Lines below are dropped before
+        regex parsing. 0.0 disables the filter."""
+        try:
+            value = self.config.getfloat(
+                'OCR', 'paddle_min_confidence', fallback=0.30,
+            )
+        except Exception:
+            return 0.30
+        return max(0.0, min(1.0, value))
+
+    def set_paddle_min_confidence(self, threshold):
+        if not self.config.has_section('OCR'):
+            self.config.add_section('OCR')
+        self.config.set(
+            'OCR', 'paddle_min_confidence',
+            str(max(0.0, min(1.0, float(threshold)))),
+        )
+
     def set_paddle_lang(self, lang):
         if not self.config.has_section('OCR'):
             self.config.add_section('OCR')

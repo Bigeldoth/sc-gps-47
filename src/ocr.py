@@ -495,8 +495,20 @@ def _try_recover_pos_line(line):
 
 # ─── Multi-pass consensus (Phase B) ──────────────────────────────────
 
-# Tolerance to consider two passes converging.
-_CONSENSUS_TOL_KM = 0.1
+# F5 — ONNX sanity tolerance. When Tesseract's best pass disagrees with the
+# ONNX/NCC result by more than this on any axis, we prefer ONNX. Sized to
+# catch sign drops (~1500 km), digit hallucinations (~700 km) and 0↔6 in the
+# hundreds (~60 km) without firing on regular sub-km Tesseract decimal noise.
+_ONNX_SANITY_TOL_KM = 50.0
+
+# Tolerance to consider two passes converging. Raised from 0.1 km to 1.0 km
+# after a video-replay analysis showed the OTSU and ADAPTIVE Tesseract passes
+# almost always agree on the integer and tens digits but disagree on the
+# 3rd-4th decimal (centimeter-millimeter noise). A 0.1 km gate fired on only
+# ~5 % of frames and the rest fell through to the brittle best-score fallback;
+# a 1.0 km gate keeps consensus active while still rejecting the catastrophic
+# misreads we care about (sign drops, lost digits, all > 50 km).
+_CONSENSUS_TOL_KM = 1.0
 
 
 def _consensus_coords(pass_results):
@@ -574,7 +586,21 @@ class OCRProcessor:
         paddle_vl_endpoint="http://127.0.0.1:8118",
         paddle_vl_model="PaddleOCR-VL-1.5-0.9B",
         paddle_vl_backend="transformers",
+        paddle_min_confidence=0.30,
     ):
+        self.paddle_min_confidence = float(paddle_min_confidence)
+        # Rejection counters surfaced via _log_paddle_stats() every N frames.
+        # Helps diagnose why the overlay stays red when paddle is active.
+        self._paddle_stats = {
+            "frames": 0,
+            "accepted": 0,
+            "no_text": 0,
+            "below_conf": 0,
+            "regex_fail": 0,
+            "out_of_range": 0,
+            "consensus_hits": 0,
+        }
+        self._paddle_stats_last_log = 0
         self.engine = engine.lower()
         self.pipeline_mode = (pipeline_mode or "hybrid").lower()
         if self.pipeline_mode not in ("hybrid", "full_text"):
@@ -787,7 +813,7 @@ class OCRProcessor:
                 if source is None:
                     logger.warning("full_text/%s: no image source available", self.engine)
                     return self._empty_data()
-                return self._extract_full_text_paddle(source)
+                return self._extract_full_text_paddle(source, self._enhanced_image)
             self._frame_ncc_coords = None
             return self._parse_images_parallel(tesseract_images)
 
@@ -827,7 +853,7 @@ class OCRProcessor:
             # for binary thresholding nor multi-pass consensus).
             source = raw_image if raw_image is not None else self._enhanced_image
             if source is not None:
-                result = self._extract_full_text_paddle(source)
+                result = self._extract_full_text_paddle(source, self._enhanced_image)
             else:
                 result = self._empty_data()
         else:
@@ -845,24 +871,135 @@ class OCRProcessor:
             "cam_pitch": None, "cam_roll": None, "cam_yaw": None,
         }
 
-    def _extract_full_text_paddle(self, image):
-        """Runs PaddleOCR once on the given image and applies HUD parsing.
+    def _extract_full_text_paddle(self, image, enhanced_image=None):
+        """Runs PaddleOCR (one or two passes) and applies HUD parsing.
 
-        Mirrors the post-processing of `_ocr_single_pass` (line normalization,
-        zone/Pos/CamDir extraction) but on a single image — no multi-pass
-        consensus needed since Paddle's detection handles regions internally.
-        Returns a data dict with the same shape as `_empty_data()`.
+        For the local `paddle` engine, a second pass on the CLAHE-enhanced
+        grayscale crop is run when available and the two passes are fed to
+        the same `_consensus_coords` voting used by Tesseract. This compensates
+        for Paddle's lack of native multi-pass: a single misrecognition
+        (clipped `km`, mangled `Pos:`, etc.) would otherwise drop the frame.
+
+        The remote `paddle-vl` engine is single-pass only — round-tripping
+        through its HTTP sidecar twice per frame would blow the budget.
+
+        Per-line confidences are exposed by `recognize_detailed()`. Lines
+        below `self.paddle_min_confidence` are dropped before regex parsing.
+        Rejection counters feed `_log_paddle_stats()` for diagnostics.
         """
         if self._paddle_adapter is None:
             logger.error("Paddle adapter not initialized")
             return self._empty_data()
 
+        self._paddle_stats["frames"] += 1
         tag = self.engine  # 'paddle' or 'paddle-vl'
+
+        # Single-pass only. The 2nd pass on the CLAHE-enhanced grayscale was
+        # tried but never converged with the raw pass (consensus_hits=0 over
+        # 300 frames in gameplay measurements): CLAHE introduces artifacts
+        # that make the detector hallucinate different regions and the rec
+        # texts disagree by more than _CONSENSUS_TOL_KM. Skipping it halves
+        # the per-frame latency without losing accuracy.
+        passes: list[tuple[str, "np.ndarray"]] = [("raw", image)]
+
+        pass_results = []  # list of (pass_name, score, data) for consensus
+        for pass_name, img in passes:
+            score, data = self._paddle_single_pass(img, f"{tag}/{pass_name}")
+            pass_results.append((pass_name, score, data))
+
+        # Consensus across passes (≥2 within ±0.1 km → average). Reuses the
+        # exact same function Tesseract uses, so the gameplay semantics stay
+        # uniform across engines.
+        if len(pass_results) >= 2:
+            consensus = _consensus_coords(pass_results)
+            if consensus is not None:
+                consensus_data, _ = consensus
+                self._paddle_stats["consensus_hits"] += 1
+                self._paddle_stats["accepted"] += 1
+                logger.info(
+                    "[%s] Multi-pass consensus: X=%.4f Y=%.4f Z=%.4f",
+                    tag,
+                    consensus_data["x"], consensus_data["y"], consensus_data["z"],
+                )
+                self._log_paddle_stats()
+                return consensus_data
+
+        # No consensus → take the pass that actually yielded coordinates,
+        # preferring the higher score. If none did, return empty.
+        valid = [
+            (name, score, data) for name, score, data in pass_results
+            if data.get("x") is not None
+        ]
+        if valid:
+            best = max(valid, key=lambda t: t[1])
+            self._paddle_stats["accepted"] += 1
+            self._log_paddle_stats()
+            return best[2]
+
+        # All passes failed — merge any zone/camdir partial info so the UI
+        # at least keeps the location label even when coords were lost.
+        merged = self._empty_data()
+        for _, _, data in pass_results:
+            if data.get("location") and data["location"] != "Unknown":
+                merged["location"] = data["location"]
+            for key in ("cam_pitch", "cam_roll", "cam_yaw"):
+                if data.get(key) is not None and merged.get(key) is None:
+                    merged[key] = data[key]
+        self._log_paddle_stats()
+        return merged
+
+    def _paddle_single_pass(self, image, tag):
+        """One Paddle inference + line parsing. Returns (score, data).
+
+        `score` is the mean per-line confidence (0..1) across the lines that
+        contributed to the parse — fed to `_consensus_coords` to break ties
+        when multiple passes vote.
+        """
+        if self._paddle_adapter is None:
+            return 0.0, self._empty_data()
+
         import time as _time
         t0 = _time.perf_counter()
-        ocr_text = self._paddle_adapter.recognize(image)
+        # Prefer recognize_detailed() (confidences exposed). Fall back to
+        # recognize() if the adapter pre-dates it (e.g. paddle-vl adapter).
+        if hasattr(self._paddle_adapter, "recognize_detailed"):
+            detailed = self._paddle_adapter.recognize_detailed(image)
+            texts = detailed.get("texts", []) or []
+            scores = detailed.get("scores", []) or []
+        else:
+            raw_text = self._paddle_adapter.recognize(image)
+            texts = [t for t in (raw_text or "").split("\n") if t]
+            scores = [1.0] * len(texts)  # unknown — treat as fully confident
         dt_ms = (_time.perf_counter() - t0) * 1000.0
-        logger.debug("[%s] inference: %.0f ms", tag, dt_ms)
+        logger.debug("[%s] inference: %.0f ms, %d region(s)", tag, dt_ms, len(texts))
+
+        if not texts:
+            self._paddle_stats["no_text"] += 1
+            return 0.0, self._empty_data()
+
+        # Drop low-confidence regions before parsing. Keeps the line count
+        # but reduces the noise the regex / normalizer have to fight.
+        threshold = self.paddle_min_confidence
+        filtered_texts: list[str] = []
+        filtered_scores: list[float] = []
+        dropped_below = 0
+        for text, score in zip(texts, scores + [0.0] * max(0, len(texts) - len(scores))):
+            if score < threshold:
+                dropped_below += 1
+                logger.debug(
+                    "[%s] drop low-conf region (%.2f<%.2f): %r",
+                    tag, score, threshold, text,
+                )
+                continue
+            filtered_texts.append(text)
+            filtered_scores.append(score)
+        if dropped_below:
+            self._paddle_stats["below_conf"] += dropped_below
+
+        if not filtered_texts:
+            return 0.0, self._empty_data()
+
+        ocr_text = "\n".join(filtered_texts)
         logger.debug("[%s] raw OCR text: %r", tag, ocr_text)
         ocr_text = self._correct_ocr_errors(ocr_text)
         # Paddle's detector frequently splits a HUD row across two boxes when
@@ -870,9 +1007,10 @@ class OCRProcessor:
         # screen line. Re-attach a line that ends with 'Pos:' (no values)
         # to the next line, which holds the X/Y/Z values.
         ocr_text = _join_orphan_pos_lines(ocr_text)
-        lines = [line.strip() for line in ocr_text.split('\n') if line.strip()]
+        lines = [line.strip() for line in ocr_text.split("\n") if line.strip()]
 
         data = self._empty_data()
+        coords_found = False
         for line in lines:
             if _RE_CAMDIR_TAG.search(line):
                 values = _parse_camdir_values(line)
@@ -900,17 +1038,43 @@ class OCRProcessor:
                 normalized = _normalize_ooc_line(line)
                 coords = self._extract_coords_from_line(normalized, tag)
                 if coords is None:
+                    self._paddle_stats["regex_fail"] += 1
                     continue
                 x, y, z = coords
                 if not _coords_in_range(x, y, z):
+                    self._paddle_stats["out_of_range"] += 1
                     continue
                 data["x"], data["y"], data["z"] = x, y, z
                 data["ooc"] = zone_name or "Unknown"
+                coords_found = True
                 logger.info(
                     "[%s] Position extracted: zone=%r X=%s Y=%s Z=%s",
                     tag, zone_name, x, y, z,
                 )
-        return data
+
+        mean_score = (
+            sum(filtered_scores) / len(filtered_scores) if filtered_scores else 0.0
+        )
+        # Reward passes that actually produced coordinates so consensus
+        # voting picks a coord-bearing pass over a coord-less one on a tie.
+        score = mean_score + (0.1 if coords_found else 0.0)
+        return score, data
+
+    def _log_paddle_stats(self):
+        """Logs cumulative Paddle accept/reject counters every 50 frames."""
+        if self._paddle_stats["frames"] - self._paddle_stats_last_log < 50:
+            return
+        self._paddle_stats_last_log = self._paddle_stats["frames"]
+        s = self._paddle_stats
+        denom = max(1, s["frames"])
+        accept_pct = 100.0 * s["accepted"] / denom
+        logger.info(
+            "[paddle-stats] frames=%d accepted=%d (%.1f%%) "
+            "consensus=%d no_text=%d below_conf=%d regex_fail=%d out_of_range=%d",
+            s["frames"], s["accepted"], accept_pct,
+            s["consensus_hits"], s["no_text"], s["below_conf"],
+            s["regex_fail"], s["out_of_range"],
+        )
 
     def _try_ncc_full_extraction(self, binary_image, enhanced_image):
         """One-shot NCC pass per frame. Segments on binary, classifies on enhanced.
@@ -1219,10 +1383,14 @@ class OCRProcessor:
         """Runs OCR in parallel and applies multi-pass consensus.
 
         Strategy:
-          1. All passes run in parallel.
-          2. Collect all results (pass_name, score, data).
-          3. If ≥2 passes converge within ±0.1 km → use the average.
-          4. Otherwise → take the pass with the best score (previous behavior).
+          1. All passes run in parallel (otsu + adaptive Tesseract).
+          2. Inject the cached ONNX/NCC coords as a synthetic third vote when
+             available — so a single bad source can never propagate alone.
+          3. If ≥2 sources converge within ±_CONSENSUS_TOL_KM → average.
+          4. Otherwise → take the source with the best score.
+          5. ONNX sanity gate: if the chosen result disagrees with the ONNX
+             reading by > 50 km on any axis, prefer ONNX (more constrained
+             classifier than free-form Tesseract regex).
         """
         futures = {
             self._pool.submit(self._ocr_single_pass, pass_name, img): pass_name
@@ -1233,6 +1401,21 @@ class OCRProcessor:
             pass_name = futures[future]
             score, data = future.result()
             pass_results.append((pass_name, score, data))
+
+        # F5 — add ONNX/NCC as a third vote when it produced coords this frame.
+        # The score (0.85) is above the typical Tesseract-pass score so that on
+        # disagreement it tips the consensus toward ONNX. Other fields (ooc,
+        # location, camdir) are pulled from the best Tesseract pass so we
+        # don't lose them.
+        ncc_data_for_vote = None
+        if self._frame_ncc_coords is not None:
+            best_tess = max(pass_results, key=lambda t: t[1], default=None)
+            template = dict(best_tess[2]) if best_tess else self._empty_data()
+            ncc_data_for_vote = dict(template)
+            ncc_data_for_vote["x"], ncc_data_for_vote["y"], ncc_data_for_vote["z"] = (
+                self._frame_ncc_coords
+            )
+            pass_results.append(("onnx_vote", 0.85, ncc_data_for_vote))
 
         # Attempt multi-pass consensus (Phase B).
         consensus = _consensus_coords(pass_results)
@@ -1251,6 +1434,29 @@ class OCRProcessor:
             if score > best_score:
                 best_score = score
                 best_data = data
+
+        # F5 — ONNX sanity gate. If best_data exists and ncc_data is available
+        # and they disagree by > _ONNX_SANITY_TOL_KM on any axis, prefer ONNX.
+        if (
+            best_data is not None
+            and ncc_data_for_vote is not None
+            and best_data.get("x") is not None
+            and best_data is not ncc_data_for_vote
+        ):
+            disagreement = max(
+                abs(best_data["x"] - ncc_data_for_vote["x"]),
+                abs(best_data["y"] - ncc_data_for_vote["y"]),
+                abs(best_data["z"] - ncc_data_for_vote["z"]),
+            )
+            if disagreement > _ONNX_SANITY_TOL_KM:
+                logger.warning(
+                    "ONNX sanity gate: tesseract best disagrees by %.2f km — "
+                    "preferring ONNX (%.4f, %.4f, %.4f) over (%.4f, %.4f, %.4f)",
+                    disagreement,
+                    ncc_data_for_vote["x"], ncc_data_for_vote["y"], ncc_data_for_vote["z"],
+                    best_data["x"], best_data["y"], best_data["z"],
+                )
+                best_data = ncc_data_for_vote
         if best_data is None:
             best_data = {
                 "location": "Unknown",
