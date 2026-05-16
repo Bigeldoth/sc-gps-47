@@ -115,7 +115,13 @@ class ScreenCapture:
 
         # Phase A: smart colour channel isolation.
         channel = isolate_channel(img)
-        channel = cv2.resize(channel, None, fx=2, fy=2, interpolation=cv2.INTER_LINEAR)
+        # ×3 upscale brings the average HUD char height from ~16 px native to
+        # ~48 px — right in the sweet spot for Tesseract's LSTM (trained around
+        # 36 px line height). ×2 left us at 32 px which is just below and
+        # measurably mis-discriminates 8↔6 / 0↔6 where the difference is 1-2 px
+        # of stroke thickness. Costs ~+25 % per-frame latency, still well under
+        # scan_interval_ms=200.
+        channel = cv2.resize(channel, None, fx=3, fy=3, interpolation=cv2.INTER_LINEAR)
 
         # Conditional GaussianBlur: only if background is noisy.
         # Preserves sharpness of fine text under normal conditions.

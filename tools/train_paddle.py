@@ -52,14 +52,14 @@ def _ensure_paddle_installed() -> None:
     ])
 
 
-def _build_dataset(video: Path, dataset_dir: Path, max_frames: int) -> None:
-    """Delegates to scripts/prepare_paddle_dataset.py."""
+def _build_dataset(videos: list[Path], dataset_dir: Path, max_frames: int) -> None:
+    """Delegates to scripts/prepare_paddle_dataset.py with one or more videos."""
     cmd = [
         sys.executable,
         str(ROOT / "scripts" / "prepare_paddle_dataset.py"),
-        "--video", str(video),
         "--output", str(dataset_dir),
         "--max-frames", str(max_frames),
+        "--video", *[str(v) for v in videos],
     ]
     logger.info("Running %s", " ".join(cmd))
     subprocess.check_call(cmd)
@@ -162,37 +162,73 @@ Eval:
 
 
 def _run_training(config_path: Path) -> int:
-    """Invokes PaddleOCR's training entrypoint.
+    """Invokes the PaddleX 3.x training via its Python API.
 
-    Looks for `paddleocr.tools.train` (modern packaged form) and falls back
-    to a cloned PaddleOCR repo if the user has one available via
-    PADDLEOCR_REPO env var.
+    The PaddleX CLI exposes pipeline prediction only; module training has
+    to go through `build_trainer(parse_config(...))`. We import the model
+    register module before parsing so that `'en_PP-OCRv4_mobile_rec'`
+    resolves to a known registered model.
+
+    Requires the PaddleOCR plugin to be installed
+    (`python -m paddlex --install PaddleOCR -y`).
     """
-    import importlib.util
-    if importlib.util.find_spec("paddleocr.tools.train") is not None:
-        cmd = [sys.executable, "-m", "paddleocr.tools.train", "-c", str(config_path)]
-    else:
-        # Fallback: assume the user has cloned the PaddleOCR repo somewhere.
-        import os
-        repo = os.environ.get("PADDLEOCR_REPO")
-        if not repo:
-            logger.error(
-                "paddleocr.tools.train is not importable and PADDLEOCR_REPO "
-                "is not set. Clone https://github.com/PaddlePaddle/PaddleOCR "
-                "and set PADDLEOCR_REPO to its path, then rerun this script."
-            )
-            return 1
-        cmd = [sys.executable, str(Path(repo) / "tools" / "train.py"),
-               "-c", str(config_path)]
-    logger.info("Launching training: %s", " ".join(cmd))
-    return subprocess.call(cmd)
+    try:
+        import paddlex.repo_apis.PaddleOCR_api.text_rec.register  # noqa: F401
+        from paddlex.utils.config import parse_config
+        from paddlex import build_trainer
+    except ImportError as exc:
+        logger.error(
+            "PaddleX text-rec API import failed (%s). Did the PaddleOCR "
+            "plugin install? Run `python -m paddlex --install PaddleOCR -y`.",
+            exc,
+        )
+        return 2
+    logger.info("Launching training from %s", config_path)
+    cfg = parse_config(str(config_path))
+    trainer = build_trainer(cfg)
+    try:
+        trainer.train()
+    except Exception:
+        logger.exception("Training raised an exception")
+        return 1
+    return 0
+
+
+def _write_paddlex_yaml(
+    out_yaml: Path,
+    dataset_dir: Path,
+    output_dir: Path,
+    epochs: int,
+    base_config: Path,
+    device: str = "cpu",
+) -> None:
+    """Builds a PaddleX 3.x rec training yaml from the shipped template.
+
+    Loads the official `en_PP-OCRv4_mobile_rec.yaml` ships inside the paddlex
+    package, overrides dataset_dir / output / mode / device / epochs, and
+    writes the result next to the trained weights so we have a self-contained
+    record of how the model was produced.
+    """
+    import yaml
+    cfg = yaml.safe_load(base_config.read_text(encoding="utf-8"))
+    cfg["Global"]["mode"] = "train"
+    cfg["Global"]["dataset_dir"] = str(dataset_dir)
+    cfg["Global"]["output"] = str(output_dir)
+    # PaddleX accepts ``gpu`` (single GPU), ``gpu:0,1,2`` (multi), or ``cpu``.
+    cfg["Global"]["device"] = device
+    cfg["Train"]["epochs_iters"] = epochs
+    cfg["Train"]["batch_size"] = 8
+    # The shipped config pulls the pretrained URL — keep it; PaddleX caches.
+    out_yaml.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
 
 
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--video", required=True, type=Path,
-                   help="Gameplay video used to build the rec dataset")
+    p.add_argument("--video", type=Path, nargs="+",
+                   help="One or more gameplay video files (passed as separate args).")
+    p.add_argument("--videos-dir", type=Path,
+                   help="Directory of .mp4 files to sample from (auto-discovery).")
     p.add_argument("--output", type=Path,
                    default=ROOT / "models" / "paddle" / "rec_finetuned")
     p.add_argument("--dataset-dir", type=Path,
@@ -205,18 +241,39 @@ def main():
                         "(skip → train from scratch). Download from " + DEFAULT_PRETRAIN_URL)
     p.add_argument("--skip-prepare", action="store_true",
                    help="Re-use an existing dataset in --dataset-dir")
+    p.add_argument("--device", default="cpu",
+                   help="PaddleX training device: 'cpu', 'gpu', or 'gpu:0,1,…'.")
     args = p.parse_args()
 
     _ensure_paddle_installed()
 
     if not args.skip_prepare:
+        videos: list[Path] = list(args.video or [])
+        if args.videos_dir:
+            videos.extend(sorted(args.videos_dir.glob("*.mp4")))
+        if not videos:
+            logger.error("Pass at least one --video or --videos-dir (or use --skip-prepare).")
+            sys.exit(2)
         if args.dataset_dir.exists():
             shutil.rmtree(args.dataset_dir)
-        _build_dataset(args.video, args.dataset_dir, args.max_frames)
+        _build_dataset(videos, args.dataset_dir, args.max_frames)
 
     args.output.mkdir(parents=True, exist_ok=True)
     config_path = args.output / "rec_finetune.yml"
-    _write_yaml(config_path, args.dataset_dir, args.output, args.pretrain_dir, args.epochs)
+    # Locate the shipped PaddleX template (en_PP-OCRv4_mobile_rec.yaml).
+    import paddlex
+    base_config = (
+        Path(paddlex.__file__).parent
+        / "configs" / "modules" / "text_recognition"
+        / "en_PP-OCRv4_mobile_rec.yaml"
+    )
+    if not base_config.exists():
+        logger.error("PaddleX template not found at %s", base_config)
+        sys.exit(2)
+    _write_paddlex_yaml(
+        config_path, args.dataset_dir, args.output, args.epochs, base_config,
+        device=args.device,
+    )
     logger.info("Wrote training config to %s", config_path)
 
     rc = _run_training(config_path)

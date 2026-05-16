@@ -57,6 +57,14 @@ def _build_ocr_processor(cfg):
     paddle_vl_backend = cfg.get(
         'OCR', 'paddle_vl_backend', fallback='transformers',
     )
+    try:
+        paddle_min_confidence = float(cfg.get(
+            'OCR', 'paddle_min_confidence', fallback='0.30'))
+    except ValueError:
+        paddle_min_confidence = 0.30
+    tesseract_lang = (cfg.get('OCR', 'tesseract_lang', fallback='eng') or 'eng').strip()
+    tesseract_tessdata_dir = (cfg.get(
+        'OCR', 'tesseract_tessdata_dir', fallback='') or '').strip()
     ocr = OCRProcessor(
         engine=ocr_engine,
         glyph_engine=glyph_engine,
@@ -73,6 +81,9 @@ def _build_ocr_processor(cfg):
         paddle_vl_endpoint=paddle_vl_endpoint,
         paddle_vl_model=paddle_vl_model,
         paddle_vl_backend=paddle_vl_backend,
+        paddle_min_confidence=paddle_min_confidence,
+        tesseract_lang=tesseract_lang,
+        tesseract_tessdata_dir=tesseract_tessdata_dir,
     )
     logger.info(
         "OCR engine initialized: text=%s glyphs=%s mode=%s device=%s",
@@ -245,6 +256,14 @@ class GPSOverlay(QMainWindow):
         # None = no save in progress via hotkey.
         self._save_snapshot = None
 
+        # Rolling buffer of the last accepted positions (after velocity check).
+        # The smoothed position used for distance/bearing is the per-axis
+        # MEDIAN over this buffer — kills isolated 8↔6 or 0↔6 misreads on a
+        # single decimal without affecting legitimate motion (median tracks
+        # the cluster, ignores 1-2 outliers). 7 samples ≈ 1.4 s at 200 ms.
+        self._pos_buffer = []  # list[tuple[x, y, z]]
+        self._POS_BUFFER_SIZE = 7
+
         # Temporary message displayed in nav_label: (text, expire_monotonic_ts).
         self._overlay_message = None
 
@@ -385,6 +404,27 @@ class GPSOverlay(QMainWindow):
                 self._refresh_nav_label()
                 return
 
+            # Apply per-axis median smoothing over the last N accepted reads.
+            # Resets on OOC change (legitimate teleport — buffer is stale).
+            if (
+                self.current_data.get("ooc")
+                and data.get("ooc")
+                and not _zones_match(data["ooc"], self.current_data["ooc"])
+            ):
+                self._pos_buffer.clear()
+            self._pos_buffer.append((data["x"], data["y"], data["z"]))
+            if len(self._pos_buffer) > self._POS_BUFFER_SIZE:
+                self._pos_buffer.pop(0)
+            sx = sorted(p[0] for p in self._pos_buffer)
+            sy = sorted(p[1] for p in self._pos_buffer)
+            sz = sorted(p[2] for p in self._pos_buffer)
+            mid = len(self._pos_buffer) // 2
+            smoothed = dict(data)
+            smoothed["x"] = sx[mid]
+            smoothed["y"] = sy[mid]
+            smoothed["z"] = sz[mid]
+            data = smoothed
+
             self.current_data = data
             self.pos_label.setText(
                 f"X: {data['x']:>10.2f}   Y: {data['y']:>10.2f}\n"
@@ -436,27 +476,49 @@ class GPSOverlay(QMainWindow):
             return None
         return time.monotonic() - self._last_coord_ts
 
-    # Maximum plausible speed between two scans (km/s).
-    # Outside quantum drive, SC vessels do ~1-2 km/s. 100 km/s gives
-    # margin for quantum exit without accepting OCR jumps.
-    _MAX_PLAUSIBLE_SPEED_KM_S = 100.0
+    # Speed caps between two scans (km/s). SC outside-atmosphere top speed
+    # is **1.4 km/s per axis**. The cap is intentionally loose (7× the
+    # physical max) so we let through the common 8↔6 unit-digit OCR
+    # confusion (≈2 km swing → 10 km/s at 200 ms scan) — the rolling-median
+    # buffer (F4, last 7 samples) absorbs those isolated outliers without
+    # us having to reject the frame. The cap still catches:
+    #   • 0↔6 hundreds digit (60 km swing → 300 km/s)
+    #   • Catastrophic digit drops / extra digits (≥ 100 km)
+    #   • Sign drops not already caught by the sign-flip mirror gate
+    # 3D-norm cap stays ~1.5× the per-axis cap for diagonal headroom.
+    # Quantum jumps trigger an OOC change which bypasses these gates.
+    _MAX_PLAUSIBLE_SPEED_KM_S = 10.0
+    _MAX_PLAUSIBLE_3D_SPEED_KM_S = 15.0
+    # Tightest gap allowed when a sign flips on one axis. A '-748.27' read
+    # as '748.27' produces |new + cur| = 0; we treat anything ≤ 5 km of
+    # mirror-equality as a near-certain digit-1 sign drop and reject without
+    # even needing the velocity gate.
+    _SIGN_FLIP_MIRROR_TOL_KM = 5.0
 
     def _is_velocity_implausible(self, new_data):
-        """True if new position implies physically impossible jump.
+        """True if new position implies a physically impossible jump.
 
-        Compares current position (`current_data`) to new (`new_data`)
-        using time delta from `_last_coord_ts`. Rejects if
-        implied speed exceeds `_MAX_PLAUSIBLE_SPEED_KM_S`.
+        Three independent gates (any one of which triggers rejection):
+          1. **Sign-flip mirror** — a single axis crosses zero while the
+             reflected magnitude matches the previous reading to within
+             ``_SIGN_FLIP_MIRROR_TOL_KM``. This catches the typical
+             ``-748.27 → 748.27`` sign-drop without needing dt.
+          2. **Per-axis speed cap** — each of dx/dy/dz divided by dt must
+             stay under ``_MAX_PLAUSIBLE_SPEED_KM_S``. Rejecting per-axis
+             prevents a 60 km jump on Y (the classic ``-103 → -163`` 0↔6
+             confusion in the hundreds digit) from being averaged out by
+             two quiet axes the way the 3D norm would.
+          3. **3D-norm speed cap** — kept as a backstop for legitimate
+             diagonal moves that pass per-axis but accumulate fast.
 
         Tolerates:
           - first scan (no reference) → False;
           - OOC change (legitimate teleport via QT) → False;
-          - long time gap (> 5 s, we may have missed jump) → False.
+          - long time gap (> 5 s, we may have missed a jump) → False.
         """
         if self.current_data.get("x") is None or self._last_coord_ts is None:
             return False
         # OOC change: don't compare, frame changed.
-        # Fuzzy comparison to tolerate OCR variations in zone name.
         new_ooc = new_data.get("ooc")
         cur_ooc = self.current_data.get("ooc")
         if new_ooc and cur_ooc and not _zones_match(new_ooc, cur_ooc):
@@ -464,27 +526,92 @@ class GPSOverlay(QMainWindow):
         dt = time.monotonic() - self._last_coord_ts
         if dt <= 0 or dt > 5.0:
             return False
-        dx = new_data["x"] - self.current_data["x"]
-        dy = new_data["y"] - self.current_data["y"]
-        dz = new_data["z"] - self.current_data["z"]
+
+        cur_x, cur_y, cur_z = (
+            self.current_data["x"], self.current_data["y"], self.current_data["z"],
+        )
+        new_x, new_y, new_z = new_data["x"], new_data["y"], new_data["z"]
+
+        # Gate 1 — sign-flip mirror on a single axis.
+        flip_tol = self._SIGN_FLIP_MIRROR_TOL_KM
+        for axis, cur, new in (("X", cur_x, new_x), ("Y", cur_y, new_y), ("Z", cur_z, new_z)):
+            if (cur * new) < 0 and abs(abs(cur) - abs(new)) < flip_tol:
+                logger.warning(
+                    f"OCR rejection: sign-flip on {axis} "
+                    f"({cur:.4f} → {new:.4f}), mirror gap {abs(abs(cur)-abs(new)):.4f} km"
+                )
+                return True
+
+        # Gate 2 — per-axis speed cap.
+        per_axis_cap = self._MAX_PLAUSIBLE_SPEED_KM_S
+        for axis, cur, new in (("X", cur_x, new_x), ("Y", cur_y, new_y), ("Z", cur_z, new_z)):
+            axis_speed = abs(new - cur) / dt
+            if axis_speed > per_axis_cap:
+                logger.warning(
+                    f"OCR rejection: implausible {axis}-axis speed {axis_speed:.1f} km/s "
+                    f"(Δ{axis}={new - cur:+.2f} km in {dt:.2f} s)"
+                )
+                return True
+
+        # Gate 3 — 3D-norm speed cap (slightly higher than per-axis to
+        # accommodate sqrt(3)× the per-axis maximum on diagonal travel).
+        dx, dy, dz = new_x - cur_x, new_y - cur_y, new_z - cur_z
         dist_km = (dx * dx + dy * dy + dz * dz) ** 0.5
         speed = dist_km / dt
-        if speed > self._MAX_PLAUSIBLE_SPEED_KM_S:
+        if speed > self._MAX_PLAUSIBLE_3D_SPEED_KM_S:
             logger.warning(
-                f"OCR rejection: implausible speed {speed:.1f} km/s "
+                f"OCR rejection: implausible 3D speed {speed:.1f} km/s "
                 f"(Δ={dist_km:.2f} km in {dt:.2f} s)"
             )
             return True
         return False
+
+    # Max age (s) of the last real OCR read for which we still extrapolate
+    # the displayed position from the smoothed velocity vector. Past this,
+    # the velocity estimate becomes stale (turns, decelerations) so we
+    # freeze the label and let it age into red.
+    _EXTRAPOLATION_MAX_AGE_S = 3.0
 
     def _tick_visual_refresh(self):
         """Recolors pos_label and nav_label without triggering OCR.
 
         Decoupled from worker so green→orange→red transition remains
         smooth independent of cadence or OCR failures.
+
+        While OCR is between successful reads (age 0.3-3 s), we
+        extrapolate the displayed position from the last known coords +
+        the smoothed velocity vector. The user sees a smoothly ticking
+        readout even when OCR drops a frame, and the colour still ages
+        toward red so the data freshness signal isn't lost.
+        ``current_data`` is intentionally NOT updated — only the visible
+        label — so the next real read's velocity calculation remains
+        anchored to the last true position.
         """
         self._refresh_pos_color()
         self._refresh_nav_label()
+        self._extrapolate_position_label()
+
+    def _extrapolate_position_label(self):
+        """Fill the gap between successful OCR reads with velocity-based
+        extrapolation. See ``_tick_visual_refresh``."""
+        if self.current_data.get("x") is None or self._last_coord_ts is None:
+            return
+        age = time.monotonic() - self._last_coord_ts
+        if age < 0.3 or age > self._EXTRAPOLATION_MAX_AGE_S:
+            return
+        if not self._velocity_tracker.is_moving:
+            return
+        v = self._velocity_tracker.velocity
+        if v is None:
+            return
+        vx, vy, vz = v
+        ext_x = self.current_data["x"] + vx * age
+        ext_y = self.current_data["y"] + vy * age
+        ext_z = self.current_data["z"] + vz * age
+        self.pos_label.setText(
+            f"X: {ext_x:>10.2f}   Y: {ext_y:>10.2f}\n"
+            f"Z: {ext_z:>10.2f}"
+        )
 
     def _refresh_pos_color(self):
         """Updates only pos_label color based on coordinate age."""
@@ -663,9 +790,11 @@ class GPSOverlay(QMainWindow):
     def _reassert_on_top(self):
         """Re-raise the overlay so it stays above SC's borderless window.
 
-        WindowStaysOnTopHint is honoured by Qt but some fullscreen game windows
-        push other top-level widgets behind themselves when focused. Calling
-        raise_() periodically is enough to restore the Z-order without
+        WindowStaysOnTopHint is honoured by Qt but Star Citizen's borderless
+        fullscreen window keeps pushing other top-level widgets behind itself
+        on focus. Qt's ``raise_()`` alone does not survive — on Windows we
+        must call ``SetWindowPos(HWND_TOPMOST, SWP_NOACTIVATE)`` directly
+        through Win32 to reassert true "always on top" status without
         stealing input focus (the overlay is WindowTransparentForInput).
 
         Skip while any of our own modal/dialog windows is active: raising the
@@ -679,6 +808,17 @@ class GPSOverlay(QMainWindow):
         if active is not None and active is not self:
             return
         self.raise_()
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                # HWND_TOPMOST = -1
+                # flags = SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE
+                ctypes.windll.user32.SetWindowPos(
+                    int(self.winId()), -1, 0, 0, 0, 0,
+                    0x0001 | 0x0002 | 0x0010,
+                )
+            except Exception:
+                pass  # best-effort; Qt raise_() above already ran
 
     def _load_app_icon(self):
         """Loads SpaceDrive icon from assets/, or system fallback.

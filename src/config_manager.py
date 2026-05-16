@@ -164,6 +164,25 @@ class ConfigManager:
     def get_paddle_lang(self):
         return self.config.get('OCR', 'paddle_lang', fallback='en')
 
+    def get_paddle_min_confidence(self):
+        """Per-line Paddle confidence floor. Lines below are dropped before
+        regex parsing. 0.0 disables the filter."""
+        try:
+            value = self.config.getfloat(
+                'OCR', 'paddle_min_confidence', fallback=0.30,
+            )
+        except Exception:
+            return 0.30
+        return max(0.0, min(1.0, value))
+
+    def set_paddle_min_confidence(self, threshold):
+        if not self.config.has_section('OCR'):
+            self.config.add_section('OCR')
+        self.config.set(
+            'OCR', 'paddle_min_confidence',
+            str(max(0.0, min(1.0, float(threshold)))),
+        )
+
     def set_paddle_lang(self, lang):
         if not self.config.has_section('OCR'):
             self.config.add_section('OCR')
@@ -201,6 +220,31 @@ class ConfigManager:
         if not self.config.has_section('OCR'):
             self.config.add_section('OCR')
         self.config.set('OCR', 'paddle_vl_backend', backend.lower())
+
+    def get_tesseract_lang(self):
+        """Tesseract language pack to use (`eng` is the stock pretrained
+        English model; `spacedrive` is the project's fine-tuned LSTM —
+        only available if `models/tessdata/spacedrive.traineddata` was
+        shipped or produced by `tools/train_tesseract.py`)."""
+        value = self.config.get('OCR', 'tesseract_lang', fallback='eng')
+        return value.strip() or 'eng'
+
+    def set_tesseract_lang(self, lang):
+        if not self.config.has_section('OCR'):
+            self.config.add_section('OCR')
+        self.config.set('OCR', 'tesseract_lang', (lang or 'eng').strip())
+
+    def get_tesseract_tessdata_dir(self):
+        """Optional override for the tessdata directory passed to Tesseract.
+        Empty = let Tesseract use its system default. Set to e.g.
+        `models/tessdata` to load the fine-tuned `spacedrive.traineddata`
+        shipped with the project."""
+        return self.config.get('OCR', 'tesseract_tessdata_dir', fallback='').strip()
+
+    def set_tesseract_tessdata_dir(self, path):
+        if not self.config.has_section('OCR'):
+            self.config.add_section('OCR')
+        self.config.set('OCR', 'tesseract_tessdata_dir', (path or '').strip())
 
     def get_glyph_engine(self):
         """Return the glyph classifier (ncc or onnx)."""

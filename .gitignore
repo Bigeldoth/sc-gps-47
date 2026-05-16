@@ -47,3 +47,5 @@ debug_capture_*.png
 
 # Test screenshot used for paddle_diagnose (~3 MB binary)
 sample.bmp
+# Local Python venv (created on demand, never committed)
+.venv/
