@@ -566,14 +566,52 @@ class GPSOverlay(QMainWindow):
             return True
         return False
 
+    # Max age (s) of the last real OCR read for which we still extrapolate
+    # the displayed position from the smoothed velocity vector. Past this,
+    # the velocity estimate becomes stale (turns, decelerations) so we
+    # freeze the label and let it age into red.
+    _EXTRAPOLATION_MAX_AGE_S = 3.0
+
     def _tick_visual_refresh(self):
         """Recolors pos_label and nav_label without triggering OCR.
 
         Decoupled from worker so green→orange→red transition remains
         smooth independent of cadence or OCR failures.
+
+        While OCR is between successful reads (age 0.3-3 s), we
+        extrapolate the displayed position from the last known coords +
+        the smoothed velocity vector. The user sees a smoothly ticking
+        readout even when OCR drops a frame, and the colour still ages
+        toward red so the data freshness signal isn't lost.
+        ``current_data`` is intentionally NOT updated — only the visible
+        label — so the next real read's velocity calculation remains
+        anchored to the last true position.
         """
         self._refresh_pos_color()
         self._refresh_nav_label()
+        self._extrapolate_position_label()
+
+    def _extrapolate_position_label(self):
+        """Fill the gap between successful OCR reads with velocity-based
+        extrapolation. See ``_tick_visual_refresh``."""
+        if self.current_data.get("x") is None or self._last_coord_ts is None:
+            return
+        age = time.monotonic() - self._last_coord_ts
+        if age < 0.3 or age > self._EXTRAPOLATION_MAX_AGE_S:
+            return
+        if not self._velocity_tracker.is_moving:
+            return
+        v = self._velocity_tracker.velocity
+        if v is None:
+            return
+        vx, vy, vz = v
+        ext_x = self.current_data["x"] + vx * age
+        ext_y = self.current_data["y"] + vy * age
+        ext_z = self.current_data["z"] + vz * age
+        self.pos_label.setText(
+            f"X: {ext_x:>10.2f}   Y: {ext_y:>10.2f}\n"
+            f"Z: {ext_z:>10.2f}"
+        )
 
     def _refresh_pos_color(self):
         """Updates only pos_label color based on coordinate age."""
