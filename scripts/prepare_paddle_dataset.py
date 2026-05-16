@@ -148,12 +148,16 @@ def _sample_video(
     label_engine: str,
     seen_hashes: set[int],
     name_prefix: str,
+    pairs_log: Path | None = None,
 ) -> list[tuple[str, str]]:
     """Extract + label HUD rows from one video. Returns (relpath, text) pairs.
 
     `seen_hashes` is shared across all videos so the same identical crop in
     two clips is only labelled (and saved) once. `name_prefix` namespaces
     the output PNGs so frame indices don't collide between videos.
+    `pairs_log` (if given) is appended to after every accepted pair so the
+    work survives a Ctrl-C / kill in the middle of the prep — the eventual
+    train.txt / val.txt split is rebuilt from this file at the end.
     """
     cap = cv2.VideoCapture(str(video))
     if not cap.isOpened():
@@ -162,32 +166,41 @@ def _sample_video(
     pairs: list[tuple[str, str]] = []
     idx = 0
     sampled = 0
-    while idx < total and sampled < max_frames:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-        ok, frame = cap.read()
-        if not ok or frame is None:
-            break
-        fh, fw = frame.shape[:2]
-        hud = frame[:HUD_H, max(0, fw - HUD_W):]
-        binary, enhanced = _preprocess(hud)
-        bboxes = _row_bboxes(binary)
-        for row_i, (x1, y1, x2, y2) in enumerate(bboxes):
-            row_crop = enhanced[y1:y2, x1:x2]
-            if row_crop.size == 0:
-                continue
-            h = hash(row_crop.tobytes())
-            if h in seen_hashes:
-                continue
-            seen_hashes.add(h)
-            text = _transcribe(row_crop, label_engine)
-            if not _looks_useful(text):
-                continue
-            name = f"{name_prefix}_{idx:06d}_row{row_i}.png"
-            cv2.imwrite(str(images_dir / name), row_crop)
-            pairs.append((f"images/{name}", text))
-        sampled += 1
-        idx += frame_stride
-    cap.release()
+    log_fh = open(pairs_log, "a", encoding="utf-8") if pairs_log else None
+    try:
+        while idx < total and sampled < max_frames:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                break
+            fh, fw = frame.shape[:2]
+            hud = frame[:HUD_H, max(0, fw - HUD_W):]
+            binary, enhanced = _preprocess(hud)
+            bboxes = _row_bboxes(binary)
+            for row_i, (x1, y1, x2, y2) in enumerate(bboxes):
+                row_crop = enhanced[y1:y2, x1:x2]
+                if row_crop.size == 0:
+                    continue
+                h = hash(row_crop.tobytes())
+                if h in seen_hashes:
+                    continue
+                seen_hashes.add(h)
+                text = _transcribe(row_crop, label_engine)
+                if not _looks_useful(text):
+                    continue
+                name = f"{name_prefix}_{idx:06d}_row{row_i}.png"
+                cv2.imwrite(str(images_dir / name), row_crop)
+                relpath = f"images/{name}"
+                pairs.append((relpath, text))
+                if log_fh is not None:
+                    log_fh.write(f"{relpath}\t{text}\n")
+                    log_fh.flush()
+            sampled += 1
+            idx += frame_stride
+    finally:
+        if log_fh is not None:
+            log_fh.close()
+        cap.release()
     return pairs
 
 
@@ -203,15 +216,41 @@ def build_dataset(
     output_dir.mkdir(parents=True, exist_ok=True)
     images_dir = output_dir / "images"
     images_dir.mkdir(exist_ok=True)
+    # Append-only journal of (relpath, text) pairs. Survives Ctrl-C so a
+    # partial run can resume without re-labelling already-seen crops.
+    pairs_log = output_dir / "pairs.tsv"
 
     rng = random.Random(seed)
     seen_hashes: set[int] = set()
     pairs: list[tuple[str, str]] = []
+    # Replay any existing journal so videos already processed in a previous
+    # interrupted run are skipped (dedup keys their crops via name_prefix).
+    completed_prefixes: set[str] = set()
+    if pairs_log.is_file():
+        for line in pairs_log.read_text(encoding="utf-8").splitlines():
+            if "\t" not in line:
+                continue
+            relpath, text = line.split("\t", 1)
+            pairs.append((relpath, text))
+            stem = Path(relpath).stem  # `<prefix>_<idx>_row<k>`
+            # Strip the trailing `_<idx>_row<k>` to recover the prefix.
+            parts = stem.rsplit("_", 2)
+            if len(parts) == 3:
+                completed_prefixes.add(parts[0])
+        if pairs:
+            logger.info(
+                "Resuming from %s: %d existing pairs across %d prefix(es)",
+                pairs_log, len(pairs), len(completed_prefixes),
+            )
+
     for video in videos:
         prefix = video.stem.replace(" ", "_")[:32]
+        if prefix in completed_prefixes:
+            logger.info("[%s] already in journal, skipping", video.name)
+            continue
         v_pairs = _sample_video(
             video, images_dir, max_frames, frame_stride,
-            label_engine, seen_hashes, prefix,
+            label_engine, seen_hashes, prefix, pairs_log,
         )
         logger.info("[%s] %d labelled rows", video.name, len(v_pairs))
         pairs.extend(v_pairs)

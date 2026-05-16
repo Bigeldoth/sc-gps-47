@@ -200,6 +200,7 @@ def _write_paddlex_yaml(
     output_dir: Path,
     epochs: int,
     base_config: Path,
+    device: str = "cpu",
 ) -> None:
     """Builds a PaddleX 3.x rec training yaml from the shipped template.
 
@@ -213,7 +214,8 @@ def _write_paddlex_yaml(
     cfg["Global"]["mode"] = "train"
     cfg["Global"]["dataset_dir"] = str(dataset_dir)
     cfg["Global"]["output"] = str(output_dir)
-    cfg["Global"]["device"] = "cpu"
+    # PaddleX accepts ``gpu`` (single GPU), ``gpu:0,1,2`` (multi), or ``cpu``.
+    cfg["Global"]["device"] = device
     cfg["Train"]["epochs_iters"] = epochs
     cfg["Train"]["batch_size"] = 8
     # The shipped config pulls the pretrained URL — keep it; PaddleX caches.
@@ -239,6 +241,8 @@ def main():
                         "(skip → train from scratch). Download from " + DEFAULT_PRETRAIN_URL)
     p.add_argument("--skip-prepare", action="store_true",
                    help="Re-use an existing dataset in --dataset-dir")
+    p.add_argument("--device", default="cpu",
+                   help="PaddleX training device: 'cpu', 'gpu', or 'gpu:0,1,…'.")
     args = p.parse_args()
 
     _ensure_paddle_installed()
@@ -268,6 +272,7 @@ def main():
         sys.exit(2)
     _write_paddlex_yaml(
         config_path, args.dataset_dir, args.output, args.epochs, base_config,
+        device=args.device,
     )
     logger.info("Wrote training config to %s", config_path)
 
