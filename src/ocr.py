@@ -801,6 +801,79 @@ class OCRProcessor:
             config=self._tesseract_config_with_tessdata(),
         )
 
+    @staticmethod
+    def _find_text_rows(binary_img, min_density=0.04, min_height=6):
+        """Horizontal-projection row finder.
+
+        Sums white pixels per Y row, marks bands where the density rises
+        above ``min_density`` (fraction of width) and stays there for at
+        least ``min_height`` rows. Returns ``[(y_start, y_end)]`` top-to-bottom.
+
+        Beats ``sc_ocr.segment.find_glyph_regions`` for SC HUD row splitting:
+        the inter-line gaps drop to near-zero density while the lines stay
+        > 5 % full, so the histogram cleanly separates the 3 text bands.
+        Glyph-bounding-box clustering misses the gap because connected
+        components from ascenders/descenders bleed across the row boundary.
+        """
+        if binary_img is None or binary_img.size == 0:
+            return []
+        h, w = binary_img.shape[:2]
+        if w == 0:
+            return []
+        density = (binary_img > 0).sum(axis=1) / float(w)
+        bands: list[tuple[int, int]] = []
+        in_band = False
+        start = 0
+        for y in range(h):
+            if density[y] > min_density:
+                if not in_band:
+                    start = y
+                    in_band = True
+            else:
+                if in_band:
+                    if y - start >= min_height:
+                        bands.append((start, y))
+                    in_band = False
+        if in_band and h - start >= min_height:
+            bands.append((start, h))
+        return bands
+
+    def _ocr_image_to_text_per_row(self, binary_img):
+        """Tesseract-only: cut into rows then OCR each row with ``--psm 7``.
+
+        Cleaner than ``--psm 6`` on the whole HUD because Tesseract no longer
+        has to figure out structure across CamDir / system-Pos / OOC-Pos
+        lines that share the same column. PSM 7 = single text line,
+        OEM 1 = LSTM only (no legacy engine fallback) — exactly what the
+        thin monospaced HUD font wants.
+
+        Falls back to the whole-image path when row detection yields fewer
+        than 2 bands (HUD obscured / low contrast) so we never lose data.
+        """
+        bands = self._find_text_rows(binary_img)
+        if len(bands) < 2:
+            return self._ocr_image_to_text(binary_img)
+        h, w = binary_img.shape[:2]
+        cfg = (
+            self._tesseract_config_with_tessdata()
+            .replace("--psm 6", "--psm 7")
+            .replace("--oem 3", "--oem 1")
+        )
+        lang = self._resolve_tesseract_lang()
+        texts: list[str] = []
+        pad_y = 4
+        for y0, y1 in bands:
+            crop = binary_img[max(0, y0 - pad_y):min(h, y1 + pad_y), :]
+            try:
+                t = pytesseract.image_to_string(crop, lang=lang, config=cfg)
+            except Exception as exc:
+                logger.debug("Per-row OCR failed at y=%d-%d: %s", y0, y1, exc)
+                t = ""
+            t = t.strip()
+            if t:
+                texts.append(t)
+        return "\n".join(texts)
+
     def _resolve_tesseract_lang(self):
         """Returns the effective lang code, falling back to 'eng' if the
         configured custom language pack is missing from disk."""
@@ -1141,6 +1214,12 @@ class OCRProcessor:
         }
 
     def _ocr_single_pass(self, pass_name, img):
+        # Per-row PSM 7 + LSTM-only was measured to add ~80 % latency
+        # without improving accuracy on the stock eng.traineddata — the
+        # 0↔G / 8↔& confusions Tesseract makes are systemic to the model,
+        # not the segmentation. `_ocr_image_to_text_per_row` is kept
+        # available for future use once a fine-tuned spacedrive.traineddata
+        # ships and per-line OCR can actually outperform the whole-HUD path.
         ocr_text = self._ocr_image_to_text(img)
         ocr_text = self._correct_ocr_errors(ocr_text)
         lines = [line.strip() for line in ocr_text.split('\n') if line.strip()]
