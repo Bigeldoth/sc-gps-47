@@ -752,9 +752,11 @@ class GPSOverlay(QMainWindow):
     def _reassert_on_top(self):
         """Re-raise the overlay so it stays above SC's borderless window.
 
-        WindowStaysOnTopHint is honoured by Qt but some fullscreen game windows
-        push other top-level widgets behind themselves when focused. Calling
-        raise_() periodically is enough to restore the Z-order without
+        WindowStaysOnTopHint is honoured by Qt but Star Citizen's borderless
+        fullscreen window keeps pushing other top-level widgets behind itself
+        on focus. Qt's ``raise_()`` alone does not survive — on Windows we
+        must call ``SetWindowPos(HWND_TOPMOST, SWP_NOACTIVATE)`` directly
+        through Win32 to reassert true "always on top" status without
         stealing input focus (the overlay is WindowTransparentForInput).
 
         Skip while any of our own modal/dialog windows is active: raising the
@@ -768,6 +770,17 @@ class GPSOverlay(QMainWindow):
         if active is not None and active is not self:
             return
         self.raise_()
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                # HWND_TOPMOST = -1
+                # flags = SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE
+                ctypes.windll.user32.SetWindowPos(
+                    int(self.winId()), -1, 0, 0, 0, 0,
+                    0x0001 | 0x0002 | 0x0010,
+                )
+            except Exception:
+                pass  # best-effort; Qt raise_() above already ran
 
     def _load_app_icon(self):
         """Loads SpaceDrive icon from assets/, or system fallback.
