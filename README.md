@@ -2,9 +2,10 @@
 
 > GPS navigation overlay for Star Citizen, based on OCR of the debug HUD `r_DisplayInfo 3`.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Python: 3.10+](https://img.shields.io/badge/Python-3.10%2B-yellow.svg)](https://www.python.org/)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE.txt)
+[![Python: 3.10–3.14](https://img.shields.io/badge/Python-3.10%E2%80%933.14-yellow.svg)](https://www.python.org/)
 [![Anti-cheat](https://img.shields.io/badge/EAC-safe-green.svg)](#anti-cheat-security)
+[![Download](https://img.shields.io/github/v/release/Bigeldoth/sc-gps-47?label=download&include_prereleases)](https://github.com/Bigeldoth/sc-gps-47/releases/latest)
 
 SpaceDrive continuously reads the coordinates displayed by the game's debug HUD (`Zone:OOC_X Pos: X.XXXX km Y.XXXX km Z.XXXX km`) and provides an always-on-top overlay with distance, heading and data freshness indicator. No memory reading — 100% screenshot-based.
 
@@ -58,42 +59,44 @@ SpaceDrive continuously reads the coordinates displayed by the game's debug HUD 
 
 ## Installation
 
-### Prerequisites
+### Recommended: Windows installer (no Python required)
 
+1. Go to the [latest release](https://github.com/Bigeldoth/sc-gps-47/releases/latest) and download **`SpaceDrive-Setup-vX.Y.Z.exe`** (~70 MB).
+2. Double-click the installer and accept the UAC prompt.
+3. The wizard installs SpaceDrive into `C:\Program Files\SpaceDrive\`. If Tesseract OCR is not already present, it is automatically downloaded from UB-Mannheim and installed silently — no extra step on your side.
+4. Launch *SpaceDrive GPS* from the Start menu.
+
+Tesseract + the ONNX glyph classifier work out of the box. **PaddleOCR** (CPU / GPU / Blackwell) is optional and can be added later from *Options → Manage engines…*; the Engine Manager will also auto-download Python 3.12 if your machine doesn't have it.
+
+User data (POIs, log, optional sidecar venvs) lives in `%LOCALAPPDATA%\SpaceDrive\` so it survives future installs.
+
+Requirements: Windows 10 / 11 (x64), internet during installation, ~150 MB of disk.
+
+### From source (developers)
+
+For contributors who want to run from a checkout instead of the installer.
+
+Prerequisites:
 - **Python 3.10–3.14** ([python.org](https://www.python.org/downloads/) — check "Add to PATH" at installation)
-- **Tesseract OCR** ([UB-Mannheim build for Windows](https://github.com/UB-Mannheim/tesseract/wiki))
-  - Default installation in `C:\Program Files\Tesseract-OCR\` (auto-detected).
-  - Optional alternative: **PaddleOCR** can be installed on demand from
-    Options → OCR → *Manage engines…*. PaddleOCR ships wheels only for
-    CPython 3.8–3.12, so the installer provisions a dedicated `.venv-paddle/`
-    sidecar (Python 3.12) and the host app talks to it over JSON IPC —
-    you keep running the app on 3.13 / 3.14 if you want.
-    Requires Python 3.12 available on the machine (e.g. via the `py -3.12`
-    launcher); not a runtime dep of the main app.
-- **Windows 10/11** (Tesseract Windows paths; Linux/macOS not tested).
-
-### Procedure
+- **Tesseract OCR** ([UB-Mannheim build for Windows](https://github.com/UB-Mannheim/tesseract/wiki)) installed to `C:\Program Files\Tesseract-OCR\` (auto-detected)
+- Optional **PaddleOCR**: installed on demand from *Options → Manage engines…* into a dedicated `.venv-paddle/` (Python 3.12) — see [`docs/BUILD.md`](docs/BUILD.md) for details
 
 ```powershell
-# 1. Clone the repo
 git clone https://github.com/Bigeldoth/sc-gps-47.git
 cd sc-gps-47
-
-# 2. Install Python dependencies
 python -m pip install -r requirements.txt
-
-# 3. Launch
 python src/main.py
 ```
 
-### Build standalone executable (PyInstaller)
+### Build the installer yourself
 
 ```powershell
-python -m PyInstaller --clean spaceDrive.spec
-# → dist/spaceDrive.exe
+# Prerequisite: Inno Setup 6 (https://jrsoftware.org/isdl.php)
+.\tools\build_installer.ps1
+# -> dist\SpaceDrive-Setup-vX.Y.Z.exe
 ```
 
-See [`docs/BUILD.md`](docs/BUILD.md) for build details.
+See [`docs/BUILD.md`](docs/BUILD.md) for the full build + Sandbox-test workflow.
 
 ---
 
