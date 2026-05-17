@@ -28,6 +28,8 @@ from typing import Callable
 import cv2
 import numpy as np
 
+from capture import UPSCALE_FACTOR
+
 logger = logging.getLogger(__name__)
 
 # Default sampling cadence — matches the OCR scan interval so the captures
@@ -402,7 +404,7 @@ def run_diagnostic(
     ctx = {
         "timestamp": ts,
         "device": device,
-        "upscale": 3,  # mirror PaddleAdapter's _UPSCALE_FACTOR
+        "upscale": UPSCALE_FACTOR,
         "interval_ms": interval_ms,
         "max_samples": max_samples,
         "paddle_version": paddle_version,

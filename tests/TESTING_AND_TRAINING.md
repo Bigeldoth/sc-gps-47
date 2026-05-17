@@ -383,7 +383,7 @@ window), see the open task to add a `--video` flag to `src/capture.py`.
 | Coordinates jump ~60 km | `OCR rejection: implausible Y-axis` (0↔6 confusion) |
 | Position oscillates by ~200 m | Expected — median smoothing absorbs ±1 LSB noise on the 4th decimal |
 | Multi-pass consensus rate < 30 % | OTSU/ADAPTIVE disagree too much. Bump `_CONSENSUS_TOL_KM` or check binarisation thresholds |
-| Paddle says nothing on every frame | `[paddle] inference: … ms, 0 region(s)` — detection net fails. Try a larger upscale factor in `paddle_adapter._UPSCALE_FACTOR` or feed BGR vs grayscale |
+| Paddle says nothing on every frame | `[paddle] inference: … ms, 0 region(s)` — detection net fails. Try a larger upscale factor in `capture.UPSCALE_FACTOR` or feed BGR vs grayscale |
 
 ---
 

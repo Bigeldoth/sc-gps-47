@@ -31,7 +31,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from capture import CAPTURE_WIDTH, CAPTURE_HEIGHT  # noqa: E402
+from capture import CAPTURE_WIDTH, CAPTURE_HEIGHT, UPSCALE_FACTOR  # noqa: E402
 from sc_ocr.classify import classify_single_glyph, normalize_glyph  # noqa: E402
 from sc_ocr.preprocess import isolate_channel, otsu_threshold  # noqa: E402
 from sc_ocr.segment import find_glyph_regions  # noqa: E402
@@ -68,10 +68,13 @@ def safe_dir_name(char: str) -> str:
 def preprocess_bgr(image_bgr: np.ndarray) -> np.ndarray:
     """Replicate main preprocessing pipeline on raw BGR frame.
 
-    Steps: auto channel isolation → 3× upscale → CLAHE → Otsu thresholding.
+    Steps: auto channel isolation → UPSCALE_FACTOR upscale → CLAHE → Otsu.
     """
     channel = isolate_channel(image_bgr)
-    upscaled = cv2.resize(channel, None, fx=3.0, fy=3.0, interpolation=cv2.INTER_LINEAR)
+    upscaled = cv2.resize(
+        channel, None, fx=UPSCALE_FACTOR, fy=UPSCALE_FACTOR,
+        interpolation=cv2.INTER_LINEAR,
+    )
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
     enhanced = clahe.apply(upscaled)
     return otsu_threshold(enhanced)

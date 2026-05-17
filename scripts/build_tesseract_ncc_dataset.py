@@ -36,6 +36,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
+from capture import UPSCALE_FACTOR  # noqa: E402
 from sc_ocr.preprocess import isolate_channel  # noqa: E402
 from sc_ocr.segment import find_glyph_regions  # noqa: E402
 from sc_ocr.templates import TemplateLibrary  # noqa: E402
@@ -45,13 +46,12 @@ from ocr import OCRProcessor, _RE_POS, _normalize_ooc_line  # noqa: E402
 logger = logging.getLogger(__name__)
 
 HUD_W, HUD_H = 600, 45
-_UPSCALE = 3
 
 
 def _preprocess(hud_bgr: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Mirrors src/capture.py preprocessing. Returns (otsu_binary, enhanced)."""
     channel = isolate_channel(hud_bgr)
-    channel = cv2.resize(channel, None, fx=_UPSCALE, fy=_UPSCALE,
+    channel = cv2.resize(channel, None, fx=UPSCALE_FACTOR, fy=UPSCALE_FACTOR,
                          interpolation=cv2.INTER_LINEAR)
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
     enhanced = clahe.apply(channel)

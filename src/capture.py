@@ -45,6 +45,17 @@ logger = logging.getLogger(__name__)
 CAPTURE_WIDTH = 600
 CAPTURE_HEIGHT = 45
 
+# Canonical upscale factor applied to the HUD strip before OCR / classification.
+# ×3 brings the average HUD char height from ~16 px native to ~48 px — the
+# sweet spot for Tesseract's LSTM (trained around 36 px line height). ×2 left
+# us at 32 px which mis-discriminated 8↔6 / 0↔6 where the difference is 1-2 px
+# of stroke thickness. Larger factors hurt latency without improving accuracy.
+#
+# This value is the single source of truth: every preprocessing pipeline
+# (runtime capture, Paddle adapter, training dataset builders, diagnostics)
+# imports it from here so trained models always match runtime resolution.
+UPSCALE_FACTOR = 3
+
 # Threshold above which a GaussianBlur is applied (otherwise fast-path).
 # Metric: standard deviation of the isolated channel. Above ~45, the background
 # is genuinely noisy (asteroid texture, particles), a light blur helps.
@@ -115,13 +126,12 @@ class ScreenCapture:
 
         # Phase A: smart colour channel isolation.
         channel = isolate_channel(img)
-        # ×3 upscale brings the average HUD char height from ~16 px native to
-        # ~48 px — right in the sweet spot for Tesseract's LSTM (trained around
-        # 36 px line height). ×2 left us at 32 px which is just below and
-        # measurably mis-discriminates 8↔6 / 0↔6 where the difference is 1-2 px
-        # of stroke thickness. Costs ~+25 % per-frame latency, still well under
-        # scan_interval_ms=200.
-        channel = cv2.resize(channel, None, fx=3, fy=3, interpolation=cv2.INTER_LINEAR)
+        # Costs ~+25 % per-frame latency, still well under scan_interval_ms=200.
+        # See UPSCALE_FACTOR docstring above for the rationale on the value.
+        channel = cv2.resize(
+            channel, None, fx=UPSCALE_FACTOR, fy=UPSCALE_FACTOR,
+            interpolation=cv2.INTER_LINEAR,
+        )
 
         # Conditional GaussianBlur: only if background is noisy.
         # Preserves sharpness of fine text under normal conditions.
