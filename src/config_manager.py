@@ -56,14 +56,15 @@ class ConfigManager:
         # Existing sections
         if not self.config.has_section('Logging'):
             self.config.add_section('Logging')
-            self.config.set('Logging', 'level', 'DEBUG')
+            self.config.set('Logging', 'level', 'INFO')
             self.config.set('Logging', 'file', 'spacedrive.log')
 
         if not self.config.has_section('Debug'):
             self.config.add_section('Debug')
             self.config.set('Debug', 'capture_screenshot', 'False')
-            self.config.set('Debug', 'save_ocr_images', 'True')
-            self.config.set('Debug', 'verbose_mode', 'True')
+            self.config.set('Debug', 'save_ocr_images', 'False')
+            self.config.set('Debug', 'save_glyph_crops', 'False')
+            self.config.set('Debug', 'verbose_mode', 'False')
 
         if not self.config.has_section('Features'):
             self.config.add_section('Features')
@@ -90,7 +91,8 @@ class ConfigManager:
             self.config.set('Hotkeys', 'toggle_overlay', 'shift+f1')
             self.config.set('Hotkeys', 'open_options', 'shift+f2')
             self.config.set('Hotkeys', 'save_position', 'shift+f3')
-            self.config.set('Hotkeys', 'open_poi_manager', 'ctrl+shift+p')
+            self.config.set('Hotkeys', 'open_poi_manager', 'shift+f4')
+            self.config.set('Hotkeys', 'reset_gps_nav', 'shift+f5')
 
         self.save()
 
@@ -303,7 +305,8 @@ class ConfigManager:
             'toggle_overlay': 'shift+f1',
             'open_options': 'shift+f2',
             'save_position': 'shift+f3',
-            'open_poi_manager': 'ctrl+shift+p'
+            'open_poi_manager': 'shift+f4',
+            'reset_gps_nav': 'shift+f5',
         }
         return self.config.get('Hotkeys', action, fallback=defaults.get(action, ''))
 

@@ -14,8 +14,9 @@ navigation guidance to user-defined POIs.
 ## Architecture
 - `src/main.py` — PyQt6 app, GPSOverlay + GPSWorker (QThread)
 - `src/ocr.py` — OCR pipeline: NCC-first on enhanced grayscale, text engine fallback (Tesseract or PaddleOCR), regex + consensus
-- `src/paddle_adapter.py` — wrapper around PaddleOCR (lazy import, CPU/GPU toggle, optional fine-tuned rec model)
-- `src/engine_installer.py` + `src/ui/engine_manager.py` — on-demand pip install of Paddle, CUDA detection
+- `src/paddle_adapter.py` — thin client preserving the historical `recognize` / `recognize_detailed` API
+- `src/paddle_service.py` + `scripts/paddle_worker.py` — JSON IPC sidecar running PaddleOCR in `.venv-paddle/` (Python 3.12); lets the host app run on Python 3.10–3.14
+- `src/engine_installer.py` + `src/ui/engine_manager.py` — on-demand install of Paddle into `.venv-paddle/`, CUDA detection
 - `src/capture.py` — mss screen capture + channel isolation; emits 2 binary passes (otsu, adaptive) + CLAHE-enhanced grayscale + raw BGR crop (for Paddle's own detection net)
 - `src/navigation.py` — bearing/distance calculations (SC coordinate frame: X-axis inverted)
 - `src/velocity_tracker.py` — velocity estimation from successive OCR positions (EMA smoothed)
@@ -35,8 +36,10 @@ Toggle via `config.ini` → `[OCR] glyph_engine = onnx|ncc`.
 
 ## Text engine
 `[OCR] text_engine = tesseract|paddle`. Paddle is installed on demand from the
-Options dialog (Manage engines…). `[OCR] pipeline_mode = hybrid|full_text`
-chooses between NCC/ONNX + text-engine fallback and a text-engine-only path.
+Options dialog (Manage engines…) — it lives in a Python 3.12 sidecar venv
+(`.venv-paddle/`) and is invoked via JSON IPC, so the host app stays free to
+run on Python 3.10–3.14. `[OCR] pipeline_mode = hybrid|full_text` chooses
+between NCC/ONNX + text-engine fallback and a text-engine-only path.
 
 ## Tools (offline, not shipped)
 - `tools/dataset_builder.py` — auto-label glyphs from video/screen capture

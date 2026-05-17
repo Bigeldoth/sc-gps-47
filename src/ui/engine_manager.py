@@ -5,6 +5,9 @@ background QThread so the UI remains responsive.
 """
 import logging
 import os
+import subprocess
+import sys
+import threading
 import webbrowser
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
@@ -40,6 +43,12 @@ class _InstallWorker(QThread):
     Streams pip output line by line via the `line` signal so the dialog can
     show progress while the install runs (paddle-gpu pulls ~2 GB of CUDA
     wheels — without streaming the UI looks frozen).
+
+    Supports cancellation: `cancel()` taskkill's the live subprocess tree
+    so the worker's blocking read returns, the action function bubbles up
+    an error or finishes early, and `finished_with_result` fires with the
+    cancellation marker. Cancellation is best-effort — a subprocess that
+    has just spawned children may take a second or two to wind down.
     """
 
     line = pyqtSignal(str)
@@ -48,12 +57,54 @@ class _InstallWorker(QThread):
     def __init__(self, action_fn, parent=None):
         super().__init__(parent)
         self._action_fn = action_fn
+        self._current_proc = None  # subprocess.Popen | None — set by helpers
+        self._proc_lock = threading.Lock()
+        self._cancelled = False
+
+    def _track_proc(self, proc):
+        """Called by engine_installer helpers as they spawn subprocesses."""
+        with self._proc_lock:
+            self._current_proc = proc
+
+    def cancel(self) -> None:
+        """Marks the worker as cancelled and kills the live subprocess tree."""
+        self._cancelled = True
+        with self._proc_lock:
+            proc = self._current_proc
+        if proc is None or proc.poll() is not None:
+            return
+        # taskkill /T /F walks the descendant tree — important because pip
+        # spawns sub-processes (wheel builds, etc.) that survive a plain
+        # Popen.kill() on Windows.
+        if sys.platform == "win32":
+            try:
+                subprocess.run(
+                    ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                    capture_output=True, timeout=10,
+                )
+            except Exception as exc:
+                logger.warning("taskkill failed: %s", exc)
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+        else:
+            try:
+                proc.kill()
+            except Exception:
+                pass
 
     def run(self):
         try:
-            ok, output = self._action_fn(on_line=self.line.emit)
+            ok, output = self._action_fn(
+                on_line=self.line.emit,
+                on_proc=self._track_proc,
+            )
         except Exception as exc:
             ok, output = False, f"Unhandled error: {exc}"
+        if self._cancelled:
+            ok = False
+            output = "Cancelled by user.\n" + (output or "")
         self.finished_with_result.emit(ok, output)
 
 
@@ -160,10 +211,21 @@ class EngineManagerDialog(QDialog):
         vl_row.addStretch()
         layout.addLayout(vl_row)
 
+        progress_row = QHBoxLayout()
         self.progress = QProgressBar()
         self.progress.setRange(0, 0)  # busy indicator
         self.progress.setVisible(False)
-        layout.addWidget(self.progress)
+        progress_row.addWidget(self.progress, stretch=1)
+
+        self.cancel_button = QPushButton("Cancel install")
+        self.cancel_button.setToolTip(
+            "Stop the running install. The downloaded files stay on disk; "
+            "you can rerun the install later to resume from where pip left off."
+        )
+        self.cancel_button.setVisible(False)
+        self.cancel_button.clicked.connect(self._on_cancel_install)
+        progress_row.addWidget(self.cancel_button)
+        layout.addLayout(progress_row)
 
         self.output = QTextEdit()
         self.output.setReadOnly(True)
@@ -338,11 +400,84 @@ class EngineManagerDialog(QDialog):
             return
         self.output.append(f"\n→ {busy_label}…\n")
         self.progress.setVisible(True)
+        self.cancel_button.setVisible(True)
+        self.cancel_button.setEnabled(True)
         self._set_buttons_enabled(False)
         self._worker = _InstallWorker(fn, self)
         self._worker.line.connect(self._on_worker_line)
         self._worker.finished_with_result.connect(self._on_worker_done)
         self._worker.start()
+
+    def _on_cancel_install(self):
+        """User clicked Cancel — kill the running subprocess tree."""
+        if self._worker is None or not self._worker.isRunning():
+            return
+        confirm = QMessageBox.question(
+            self, "Cancel install",
+            "Stop the running install?<br><br>"
+            "Already-downloaded files stay on disk, so a future install will "
+            "resume from where pip left off — you do not need to redownload "
+            "everything.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        self.cancel_button.setEnabled(False)
+        self.output.append("\n→ Cancelling — terminating subprocess tree...\n")
+        self._worker.cancel()
+
+    def _safe_close_or_block(self) -> bool:
+        """Returns True if it is safe to close the dialog now.
+
+        If a worker QThread is still running, asks the user. On confirm,
+        disconnects the worker's signals and reparents it off this dialog
+        so its pending emissions cannot call into destroyed widgets — which
+        is what crashes the host app today.
+        """
+        if self._worker is None or not self._worker.isRunning():
+            return True
+        reply = QMessageBox.question(
+            self, "Install in progress",
+            "An installation is still running in the background.<br><br>"
+            "Closing this window will NOT abort the install — it keeps "
+            "running silently and the result goes to the app log.<br><br>"
+            "Close anyway?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return False
+        # Detach: disconnect signals so the worker cannot call into widgets
+        # that are about to be destroyed, then reparent off self so QThread
+        # is not auto-deleted alongside the dialog.
+        try:
+            self._worker.line.disconnect(self._on_worker_line)
+        except (TypeError, RuntimeError):
+            pass
+        try:
+            self._worker.finished_with_result.disconnect(self._on_worker_done)
+        except (TypeError, RuntimeError):
+            pass
+        self._worker.setParent(None)
+        self._worker = None  # forget the reference so we never touch it again
+        logger.info(
+            "engine_manager: dialog closing with worker still running "
+            "(install continues in background, signals detached)"
+        )
+        return True
+
+    def closeEvent(self, event):
+        """Handles the X button and Alt-F4 (Escape and the Close button
+        come in through `done()` instead — see below)."""
+        if self._safe_close_or_block():
+            super().closeEvent(event)
+        else:
+            event.ignore()
+
+    def done(self, result):
+        """Funnel for accept()/reject()/Escape — runs the same guard."""
+        if self._safe_close_or_block():
+            super().done(result)
+        # else: silently ignore the close attempt (modal dialog stays open)
 
     def _on_worker_line(self, line: str):
         """Appends a single streamed pip line and keeps the view scrolled."""
@@ -352,6 +487,7 @@ class EngineManagerDialog(QDialog):
 
     def _on_worker_done(self, ok: bool, output: str):
         self.progress.setVisible(False)
+        self.cancel_button.setVisible(False)
         self._set_buttons_enabled(True)
         # Streamed lines populate the textbox as the worker runs, but if the
         # worker raised before its first `on_line()` (e.g. an exception while
@@ -394,7 +530,20 @@ class EngineManagerDialog(QDialog):
     # ----- Button handlers -----
 
     def _on_install_paddle_cpu(self):
-        self._start_worker(install_paddleocr_cpu, "Installing PaddleOCR (CPU)")
+        confirm = QMessageBox.question(
+            self, "Install Paddle CPU",
+            "Install PaddleOCR (CPU build) in a dedicated Python 3.12 sidecar?<br><br>"
+            "<b>What will be downloaded</b>:<br>"
+            "&nbsp;&nbsp;• Python 3.12 (~30 MB) if not already on this machine<br>"
+            "&nbsp;&nbsp;• paddlepaddle CPU wheel (~450 MB)<br>"
+            "&nbsp;&nbsp;• paddleocr + deps (~100 MB)<br><br>"
+            "<b>Estimated time</b>: 5 to 10 minutes depending on your connection.<br><br>"
+            "The install runs in the background — SpaceDrive keeps working with "
+            "Tesseract during the install. Status updates stream in the output box.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if confirm == QMessageBox.StandardButton.Yes:
+            self._start_worker(install_paddleocr_cpu, "Installing PaddleOCR (CPU)")
 
     def _on_install_paddle_gpu(self):
         cuda_version = detect_cuda_version()

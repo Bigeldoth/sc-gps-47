@@ -15,8 +15,10 @@ covered.
 | A/B-test two OCR engines on the same scene | `tools/paddle_diagnose.py` or record + replay (see §6) |
 
 Always activate the venv first: `.venv\Scripts\Activate.ps1` (Windows) or
-`source .venv/bin/activate` (POSIX). PaddleOCR + paddlepaddle require Python
-3.12 in this venv.
+`source .venv/bin/activate` (POSIX). The main app runs on Python 3.10–3.14.
+**PaddleOCR runs in its own sidecar venv `.venv-paddle/` (Python 3.12)** —
+provisioned by `scripts/install_paddle.ps1` or the *Manage engines…* dialog.
+You never `pip install paddleocr` in the main venv.
 
 ---
 
@@ -322,8 +324,10 @@ Until then the runtime defaults to the pretrained PP-OCRv4 rec; the custom
 
 ### Known pitfalls
 
-- **PaddleOCR requires Python 3.12** in our venv setup. Other Python versions
-  fail at import time on Windows.
+- **PaddleOCR's sidecar venv (`.venv-paddle/`) requires Python 3.12** because
+  Paddle wheels only target CPython 3.8–3.12 on Windows. The main app venv
+  can be any supported Python (3.10–3.14) — it talks to the sidecar via
+  JSON IPC (see `src/paddle_service.py` / `scripts/paddle_worker.py`).
 - **PaddleX 3.x training plumbing is fragile**. Required one-time setup:
   1. `mkdir -p .venv\Lib\site-packages\paddlex\repo_manager\repos` (the
      installer fails if this parent is missing).
