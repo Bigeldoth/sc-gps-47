@@ -1,5 +1,7 @@
 # SpaceDrive GPS — runtime dependencies
-# Python 3.10+ required
+# Python 3.10–3.14 supported. PaddleOCR is NOT listed here: it lives in its
+# own sidecar venv (.venv-paddle/, Python 3.12) installed on demand via the
+# Options → Manage engines… dialog or scripts/install_paddle.ps1.
 
 # Screen capture
 mss>=9.0.0

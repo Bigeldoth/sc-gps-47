@@ -4,9 +4,15 @@ Designed to be called from the Options dialog so users can install
 PaddleOCR (CPU or GPU) without leaving the app. Tesseract on Windows
 cannot be silently installed (no first-party MSI), so this module only
 detects it and points users to the UB-Mannheim build.
+
+PaddleOCR is installed into a dedicated Python 3.12 venv (`.venv-paddle/`)
+rather than the host process — Paddle wheels stop at CPython 3.12 and we
+want the app to run on 3.13/3.14. All paddle detection and install hits
+that venv via subprocess.
 """
 import ctypes
 import importlib.util
+import json
 import logging
 import os
 import re
@@ -17,6 +23,82 @@ from dataclasses import dataclass
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# Paddle sidecar venv layout. The host never imports paddle directly; every
+# detection/install call below targets VENV_PYTHON via subprocess.
+REPO_ROOT = Path(__file__).resolve().parent.parent
+VENV_DIR = REPO_ROOT / ".venv-paddle"
+if sys.platform == "win32":
+    VENV_PYTHON = VENV_DIR / "Scripts" / "python.exe"
+else:
+    VENV_PYTHON = VENV_DIR / "bin" / "python"
+
+
+def venv_python_exe() -> str:
+    """Path-as-string for subprocess calls. Convenience wrapper."""
+    return str(VENV_PYTHON)
+
+
+def venv_installed() -> bool:
+    """True if `.venv-paddle/` exists and has a Python interpreter."""
+    return VENV_PYTHON.is_file()
+
+
+def _resolve_python_312() -> str | None:
+    """Returns the path to a CPython 3.12 interpreter on this machine, or None.
+
+    Tries the Windows launcher `py -3.12` first (most reliable), then falls
+    back to `python3.12` on PATH. The returned path is suitable for
+    `subprocess.run([..., "-m", "venv", str(VENV_DIR)])`.
+    """
+    candidates: list[list[str]] = []
+    if sys.platform == "win32":
+        candidates.append(["py", "-3.12"])
+    candidates.append(["python3.12"])
+    for cmd in candidates:
+        try:
+            result = subprocess.run(
+                [*cmd, "-c", "import sys; print(sys.executable)"],
+                capture_output=True, text=True, timeout=5,
+            )
+        except (FileNotFoundError, OSError):
+            continue
+        if result.returncode == 0:
+            path = result.stdout.strip()
+            if path:
+                return path
+    return None
+
+
+def _create_paddle_venv(on_line=None) -> tuple[bool, str]:
+    """Creates `.venv-paddle/` from a system Python 3.12, idempotent.
+
+    Returns (success, message). If the venv already exists with a usable
+    python.exe, returns (True, "<already present>") without touching it.
+    """
+    if venv_installed():
+        return True, f"venv already present at {VENV_DIR}\n"
+    py312 = _resolve_python_312()
+    if py312 is None:
+        msg = (
+            "Cannot create .venv-paddle/: no Python 3.12 found on this machine.\n"
+            "Install it from https://www.python.org/downloads/ (or via Microsoft Store)\n"
+            "then retry. PaddleOCR wheels only target CPython 3.8-3.12.\n"
+        )
+        if on_line is not None:
+            on_line(msg.rstrip())
+        return False, msg
+    cmd = [py312, "-m", "venv", str(VENV_DIR)]
+    logger.info("Creating paddle venv: %s", " ".join(cmd))
+    if on_line is not None:
+        on_line(f"-> Creating sidecar venv at {VENV_DIR} (using {py312})...")
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    except Exception as exc:
+        return False, f"venv creation failed: {exc}"
+    if result.returncode != 0 or not venv_installed():
+        return False, f"venv creation failed:\n{result.stdout}\n{result.stderr}"
+    return True, f"Created {VENV_DIR}\n"
 
 # PaddlePaddle GPU wheels are not on PyPI — they live on the project's own
 # index, with a separate URL per CUDA major.minor. Keep this list ordered
@@ -46,12 +128,38 @@ _BLACKWELL_PADDLE_VERSION = "paddlepaddle-gpu==3.2.1"
 _BLACKWELL_SENTINEL_NAME = ".spacedrive-blackwell-cu129"
 
 
+def _venv_query(code: str, timeout: float = 10.0) -> tuple[bool, str]:
+    """Runs `VENV_PYTHON -c <code>` and returns (success, stdout).
+
+    Returns (False, "") if the venv is missing or the call fails. Used to
+    introspect the paddle install inside the sidecar venv without importing
+    paddle in the host process.
+    """
+    if not venv_installed():
+        return False, ""
+    try:
+        result = subprocess.run(
+            [str(VENV_PYTHON), "-c", code],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except Exception as exc:
+        logger.debug("venv query failed: %s", exc)
+        return False, ""
+    if result.returncode != 0:
+        return False, result.stdout or ""
+    return True, result.stdout.strip()
+
+
 def _paddle_install_dir() -> Path | None:
-    """Filesystem location of the installed paddle package, if any."""
-    spec = importlib.util.find_spec("paddle")
-    if spec is None or not spec.origin:
+    """Filesystem location of the paddle package inside the sidecar venv."""
+    ok, out = _venv_query(
+        "import paddle, pathlib, sys; "
+        "p = pathlib.Path(paddle.__file__).resolve().parent; "
+        "sys.stdout.write(str(p))"
+    )
+    if not ok or not out:
         return None
-    return Path(spec.origin).resolve().parent
+    return Path(out)
 
 
 def _has_blackwell_sentinel() -> bool:
@@ -63,7 +171,7 @@ def _has_blackwell_sentinel() -> bool:
 
 
 def _write_blackwell_sentinel() -> bool:
-    """Marks the current paddle install as Blackwell-capable. Best-effort."""
+    """Marks the venv paddle install as Blackwell-capable. Best-effort."""
     pd = _paddle_install_dir()
     if pd is None:
         return False
@@ -78,32 +186,9 @@ def _write_blackwell_sentinel() -> bool:
         logger.warning("could not write Blackwell sentinel: %s", exc)
         return False
 
-# Python versions for which PaddlePaddle publishes wheels. Anything outside
-# this range will fail with `No matching distribution`, since pip looks at
-# the (cp<py_tag>, abi, platform) wheel tags.
-# As of mid-2025, Paddle supports CPython 3.8 through 3.12 on Windows.
-_PADDLE_SUPPORTED_PY = (
-    (3, 8), (3, 9), (3, 10), (3, 11), (3, 12),
-)
-
 
 def _current_python_tag() -> str:
     return f"{sys.version_info.major}.{sys.version_info.minor}"
-
-
-def _check_python_supported() -> tuple[bool, str]:
-    """Returns (supported, message). Message is empty if supported."""
-    py = (sys.version_info.major, sys.version_info.minor)
-    if py in _PADDLE_SUPPORTED_PY:
-        return True, ""
-    supported = ", ".join(f"{m}.{n}" for m, n in _PADDLE_SUPPORTED_PY)
-    return False, (
-        f"Python {_current_python_tag()} is not supported by PaddlePaddle.\n"
-        f"Supported versions: {supported}.\n"
-        f"Workaround: create a venv with a supported Python "
-        f"(e.g. `py -3.12 -m venv .venv-paddle`), activate it, then rerun "
-        f"the installer from that environment."
-    )
 
 
 @dataclass
@@ -144,26 +229,24 @@ def detect_tesseract() -> EngineStatus:
 
 
 def detect_paddleocr() -> EngineStatus:
-    """Returns status for the paddleocr Python package."""
-    if importlib.util.find_spec("paddleocr") is None:
-        return EngineStatus(installed=False)
-    try:
-        import paddleocr  # noqa: F401
-        version = getattr(paddleocr, "__version__", "(unknown)")
-        return EngineStatus(installed=True, version=str(version))
-    except Exception as exc:
-        return EngineStatus(installed=False, detail=f"import failed: {exc}")
+    """Returns status for paddleocr inside the sidecar venv."""
+    if not venv_installed():
+        return EngineStatus(installed=False, detail=f"venv missing at {VENV_DIR}")
+    ok, out = _venv_query(
+        "import paddleocr, sys; "
+        "sys.stdout.write(getattr(paddleocr, '__version__', '(unknown)'))"
+    )
+    if not ok:
+        return EngineStatus(installed=False, detail=f"paddleocr not importable in {VENV_DIR}")
+    return EngineStatus(installed=True, version=out, detail=str(VENV_DIR))
 
 
 def detect_paddlepaddle_gpu() -> bool:
-    """True if a GPU-enabled paddlepaddle build is installed."""
-    if importlib.util.find_spec("paddle") is None:
-        return False
-    try:
-        import paddle  # type: ignore
-        return bool(paddle.is_compiled_with_cuda())
-    except Exception:
-        return False
+    """True if the sidecar venv has a GPU-enabled paddlepaddle build."""
+    ok, out = _venv_query(
+        "import paddle, sys; sys.stdout.write('1' if paddle.is_compiled_with_cuda() else '0')"
+    )
+    return ok and out == "1"
 
 
 def detect_gpu_compute_cap() -> str | None:
@@ -186,16 +269,13 @@ def detect_gpu_compute_cap() -> str | None:
 
 
 def _paddle_version_tuple() -> tuple[int, int, int] | None:
-    """Returns the installed paddle version as a (major, minor, patch) tuple,
-    or None if paddle is not importable."""
-    if importlib.util.find_spec("paddle") is None:
+    """Returns the paddle version inside the sidecar venv as (major, minor, patch)."""
+    ok, out = _venv_query(
+        "import paddle, sys; sys.stdout.write(str(getattr(paddle, '__version__', '')))"
+    )
+    if not ok or not out:
         return None
-    try:
-        import paddle  # type: ignore
-        v = str(getattr(paddle, "__version__", ""))
-    except Exception:
-        return None
-    parts = re.findall(r"\d+", v)
+    parts = re.findall(r"\d+", out)
     if len(parts) < 3:
         return None
     return tuple(int(p) for p in parts[:3])  # type: ignore[return-value]
@@ -316,15 +396,19 @@ def _pip_install(
     packages: list[str],
     extra_args: list[str] | None = None,
     on_line=None,
+    python_exe: str | None = None,
 ) -> tuple[bool, str]:
-    """Runs `python -m pip install <packages>` in a subprocess.
+    """Runs `<python_exe> -m pip install <packages>` in a subprocess.
+
+    `python_exe` defaults to `sys.executable` (the host) but Paddle installs
+    pass `str(VENV_PYTHON)` to install into the sidecar venv.
 
     Returns (success, combined_stdout_stderr). If `on_line` is provided it is
     called with each output line as pip emits it — letting the UI stream
     progress instead of waiting for the whole install to finish (relevant for
     paddlepaddle-gpu which pulls ~2 GB of CUDA wheels).
     """
-    cmd = [sys.executable, "-m", "pip", "install", "--upgrade",
+    cmd = [python_exe or sys.executable, "-m", "pip", "install", "--upgrade",
            "--progress-bar", "off"]
     if extra_args:
         cmd.extend(extra_args)
@@ -402,16 +486,28 @@ def _select_paddle_gpu_index(cuda_version: str | None) -> tuple[str, str]:
 
 
 def install_paddleocr_cpu(on_line=None) -> tuple[bool, str]:
-    """Installs the CPU build of PaddleOCR (paddlepaddle + paddleocr)."""
-    supported, msg = _check_python_supported()
-    if not supported:
+    """Installs the CPU build of PaddleOCR into `.venv-paddle/`.
+
+    Creates the venv from a system Python 3.12 if needed, then installs
+    paddlepaddle + paddleocr inside it. The host process is never touched.
+    """
+    ok, msg = _create_paddle_venv(on_line=on_line)
+    if not ok:
         return False, msg
-    return _pip_install(["paddlepaddle", "paddleocr"], on_line=on_line)
+    return _pip_install(
+        ["paddlepaddle", "paddleocr"],
+        on_line=on_line,
+        python_exe=venv_python_exe(),
+    )
 
 
-def _pip_uninstall(packages: list[str], on_line=None) -> tuple[bool, str]:
-    """`pip uninstall -y` with streamed output."""
-    cmd = [sys.executable, "-m", "pip", "uninstall", "-y", *packages]
+def _pip_uninstall(
+    packages: list[str],
+    on_line=None,
+    python_exe: str | None = None,
+) -> tuple[bool, str]:
+    """`pip uninstall -y` with streamed output. Targets `python_exe` if given."""
+    cmd = [python_exe or sys.executable, "-m", "pip", "uninstall", "-y", *packages]
     logger.info("Running %s", " ".join(cmd))
     try:
         proc = subprocess.Popen(
@@ -447,16 +543,13 @@ def install_paddleocr_gpu_blackwell(on_line=None, header_extra: str = "") -> tup
         "install_paddleocr_gpu_blackwell START (header=%r)", header_extra.strip()
     )
 
-    supported, msg = _check_python_supported()
-    if not supported:
-        logger.warning("Blackwell install: unsupported Python: %s", msg)
-        if on_line is not None:
-            on_line(msg)
-        return False, msg
+    ok_venv, venv_msg = _create_paddle_venv(on_line=on_line)
+    if not ok_venv:
+        return False, venv_msg
 
     header = (
         f"{header_extra}"
-        f"Python:        {_current_python_tag()}\n"
+        f"Sidecar venv:  {VENV_DIR}\n"
         f"Target wheel:  {_BLACKWELL_PADDLE_VERSION}  (Blackwell sm_120 capable)\n"
         f"Index URL:     {_BLACKWELL_PADDLE_INDEX}\n"
         f"(see https://www.paddleocr.ai/main/en/version3.x/pipeline_usage/"
@@ -466,14 +559,17 @@ def install_paddleocr_gpu_blackwell(on_line=None, header_extra: str = "") -> tup
     if on_line is not None:
         on_line(header.rstrip())
 
+    py_exe = venv_python_exe()
+
     # Step 0: clean any existing paddle install (cu126 wheels conflict with
     # cu129 ones on the same site-packages because they bundle different
     # nvidia-* deps and a different paddle library tag).
     if _paddle_version_tuple() is not None:
         if on_line is not None:
-            on_line("\n→ Removing existing paddlepaddle install before migration…")
+            on_line("\n-> Removing existing paddlepaddle install before migration...")
         ok_u, out_u = _pip_uninstall(
             ["paddlepaddle", "paddlepaddle-gpu"], on_line=on_line,
+            python_exe=py_exe,
         )
         if not ok_u:
             return False, header + out_u
@@ -482,11 +578,12 @@ def install_paddleocr_gpu_blackwell(on_line=None, header_extra: str = "") -> tup
 
     # Step 1: install pinned paddle from cu129.
     if on_line is not None:
-        on_line("\n→ Installing paddlepaddle-gpu from cu129 index…")
+        on_line("\n-> Installing paddlepaddle-gpu from cu129 index...")
     ok, output = _pip_install(
         [_BLACKWELL_PADDLE_VERSION],
         extra_args=["-i", _BLACKWELL_PADDLE_INDEX],
         on_line=on_line,
+        python_exe=py_exe,
     )
     if not ok:
         return False, header + out_u + output
@@ -494,8 +591,8 @@ def install_paddleocr_gpu_blackwell(on_line=None, header_extra: str = "") -> tup
     # Step 2: ensure paddleocr is present (no-op if already installed at the
     # right version).
     if on_line is not None:
-        on_line("\n→ Ensuring paddleocr is installed…")
-    ok2, output2 = _pip_install(["paddleocr"], on_line=on_line)
+        on_line("\n-> Ensuring paddleocr is installed...")
+    ok2, output2 = _pip_install(["paddleocr"], on_line=on_line, python_exe=py_exe)
 
     # Drop the sentinel so detect_gpu_paddle_status() can recognize this
     # install as Blackwell-capable without re-running an inference probe.
@@ -536,9 +633,9 @@ def install_paddleocr_gpu(on_line=None) -> tuple[bool, str]:
       - Blackwell (sm_120) GPU → cu129 + paddle 3.2.1 (sm_120 kernels)
       - Anything older         → highest cu* index ≤ the local CUDA version.
     """
-    supported, msg = _check_python_supported()
-    if not supported:
-        return False, msg
+    ok_venv, venv_msg = _create_paddle_venv(on_line=on_line)
+    if not ok_venv:
+        return False, venv_msg
 
     # Blackwell short-circuit: route through the pinned cu129 / 3.2.1 wheel.
     cap = detect_gpu_compute_cap()
@@ -549,7 +646,7 @@ def install_paddleocr_gpu(on_line=None) -> tuple[bool, str]:
             major = 0
         if major >= 12:
             logger.info(
-                "paddle-gpu install: Blackwell sm_%d detected → using cu129 wheel",
+                "paddle-gpu install: Blackwell sm_%d detected -> using cu129 wheel",
                 major * 10,
             )
             return install_paddleocr_gpu_blackwell(on_line=on_line)
@@ -558,16 +655,17 @@ def install_paddleocr_gpu(on_line=None) -> tuple[bool, str]:
     label, index_url = _select_paddle_gpu_index(cuda_version)
     detected = cuda_version or "unknown"
     logger.info(
-        "paddle-gpu install: detected CUDA=%s → using index %s (cu%s)",
+        "paddle-gpu install: detected CUDA=%s -> using index %s (cu%s)",
         detected, index_url, label.replace(".", ""),
     )
     header = (
-        f"Python:        {_current_python_tag()}\n"
-        f"Detected CUDA: {detected}  →  using {index_url}\n"
+        f"Sidecar venv:  {VENV_DIR}\n"
+        f"Detected CUDA: {detected}  ->  using {index_url}\n"
         f"(see https://www.paddlepaddle.org.cn/install/quick for other versions)\n\n"
     )
     if on_line is not None:
         on_line(header.rstrip())
+    py_exe = venv_python_exe()
     # Step 1: install paddlepaddle-gpu using `-i` (replace index) — matches
     # Paddle's official install command exactly. We do NOT use
     # --extra-index-url because PyPI does not carry paddlepaddle-gpu, and
@@ -576,35 +674,30 @@ def install_paddleocr_gpu(on_line=None) -> tuple[bool, str]:
         ["paddlepaddle-gpu"],
         extra_args=["-i", index_url],
         on_line=on_line,
+        python_exe=py_exe,
     )
     if not ok:
         return False, header + output
     # Step 2: install paddleocr from PyPI.
-    ok2, output2 = _pip_install(["paddleocr"], on_line=on_line)
+    ok2, output2 = _pip_install(["paddleocr"], on_line=on_line, python_exe=py_exe)
     return ok2, header + output + "\n" + output2
 
 
 def uninstall_paddleocr(on_line=None) -> tuple[bool, str]:
-    cmd = [sys.executable, "-m", "pip", "uninstall", "-y",
-           "paddleocr", "paddlepaddle", "paddlepaddle-gpu"]
+    """Removes the entire `.venv-paddle/` directory tree.
+
+    Cleaner than pip-uninstalling each package individually: the venv exists
+    purely for paddle, so blowing it away leaves no orphan caches behind.
+    """
+    if not VENV_DIR.exists():
+        return True, f"paddle sidecar was not installed -- nothing to do.\n"
     try:
-        proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, bufsize=1,
-        )
+        shutil.rmtree(VENV_DIR)
     except Exception as exc:
-        return False, f"pip uninstall failed to start: {exc}"
-    lines: list[str] = []
-    assert proc.stdout is not None
-    for line in proc.stdout:
-        lines.append(line)
-        if on_line is not None:
-            try:
-                on_line(line.rstrip())
-            except Exception:
-                pass
-    proc.wait()
-    return proc.returncode == 0, "".join(lines)
+        return False, f"could not remove {VENV_DIR}: {exc}"
+    if on_line is not None:
+        on_line(f"Removed {VENV_DIR}")
+    return True, f"Removed {VENV_DIR}\n"
 
 
 TESSERACT_WINDOWS_URL = "https://github.com/UB-Mannheim/tesseract/wiki"

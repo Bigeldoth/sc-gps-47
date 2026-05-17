@@ -60,11 +60,16 @@ SpaceDrive continuously reads the coordinates displayed by the game's debug HUD 
 
 ### Prerequisites
 
-- **Python 3.10+** ([python.org](https://www.python.org/downloads/) — check "Add to PATH" at installation)
+- **Python 3.10–3.14** ([python.org](https://www.python.org/downloads/) — check "Add to PATH" at installation)
 - **Tesseract OCR** ([UB-Mannheim build for Windows](https://github.com/UB-Mannheim/tesseract/wiki))
   - Default installation in `C:\Program Files\Tesseract-OCR\` (auto-detected).
   - Optional alternative: **PaddleOCR** can be installed on demand from
-    Options → OCR → *Manage engines…* (pip-only, no system binary).
+    Options → OCR → *Manage engines…*. PaddleOCR ships wheels only for
+    CPython 3.8–3.12, so the installer provisions a dedicated `.venv-paddle/`
+    sidecar (Python 3.12) and the host app talks to it over JSON IPC —
+    you keep running the app on 3.13 / 3.14 if you want.
+    Requires Python 3.12 available on the machine (e.g. via the `py -3.12`
+    launcher); not a runtime dep of the main app.
 - **Windows 10/11** (Tesseract Windows paths; Linux/macOS not tested).
 
 ### Procedure
