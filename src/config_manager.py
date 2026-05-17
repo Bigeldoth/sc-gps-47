@@ -19,13 +19,29 @@ class ConfigManager:
 
         Args:
             config_file: Path to the configuration file.
-        """
-        if getattr(sys, 'frozen', False):
-            self.base_dir = os.path.dirname(sys.executable)
-        else:
-            self.base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-        self.config_path = os.path.join(self.base_dir, config_file)
+        Path strategy: the writable config lives under user_data_dir() so a
+        Program Files install never tries to write into its own read-only
+        folder. On first launch, if the user config is missing, we seed it
+        by copying the default config.ini shipped with the bundle.
+        """
+        import shutil
+        from app_paths import bundle_dir, user_data_dir
+        self.base_dir = str(bundle_dir())  # kept for callers that still read it
+
+        bundled_default = os.path.join(str(bundle_dir()), config_file)
+        self.config_path = os.path.join(str(user_data_dir()), config_file)
+
+        # Seed the user config from the bundle on first run.
+        if not os.path.exists(self.config_path) and os.path.exists(bundled_default):
+            try:
+                shutil.copy2(bundled_default, self.config_path)
+                logger.info(
+                    f"Seeded user config at {self.config_path} from {bundled_default}"
+                )
+            except Exception as e:
+                logger.warning(f"Could not seed user config: {e}")
+
         self.config = configparser.ConfigParser()
         self.load()
 
