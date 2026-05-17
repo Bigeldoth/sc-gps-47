@@ -1,0 +1,38 @@
+<Configuration>
+  <!--
+    Windows Sandbox configuration for end-to-end install testing.
+
+    What this does:
+      1. Mounts <repo>/dist as C:\sandbox-input (read-only) so the installer
+         and the auto-bootstrap script are visible inside the VM.
+      2. Enables networking (default) so Tesseract + Python 3.12 downloads work.
+      3. At sandbox startup, runs the auto-bootstrap script which launches
+         the installer non-silent — you click Next/Next/Finish and watch.
+
+    Pre-flight on the host:
+      - Build the installer first:
+          .\tools\build_installer.ps1
+        That produces dist\SpaceDrive-Setup-v0.7.0.exe (the file the Sandbox
+        bootstrap script picks up).
+      - Windows Sandbox feature must be enabled
+        (Control Panel -> Programs -> Turn Windows features on/off ->
+         "Windows Sandbox"). Requires Windows 10/11 Pro or Enterprise.
+
+    Usage:
+      Double-click this file. Windows Sandbox starts; the installer wizard
+      pops up automatically inside the VM. Close the VM to discard all
+      changes — the host is untouched.
+  -->
+  <Networking>Enable</Networking>
+  <MappedFolders>
+    <MappedFolder>
+      <HostFolder>..\dist</HostFolder>
+      <SandboxFolder>C:\sandbox-input</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+  </MappedFolders>
+  <LogonCommand>
+    <Command>powershell.exe -ExecutionPolicy Bypass -NoProfile -Command "Get-ChildItem 'C:\sandbox-input\SpaceDrive-Setup-*.exe' | Select-Object -First 1 | ForEach-Object { Start-Process $_.FullName }"</Command>
+  </LogonCommand>
+  <MemoryInMB>4096</MemoryInMB>
+</Configuration>

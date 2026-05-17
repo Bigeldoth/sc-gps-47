@@ -19,15 +19,20 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 # Paddle sidecar venv layout. The host never imports paddle directly; every
-# detection/install call below targets VENV_PYTHON via subprocess.
-REPO_ROOT = Path(__file__).resolve().parent.parent
-VENV_DIR = REPO_ROOT / ".venv-paddle"
+# detection/install call below targets VENV_PYTHON via subprocess. The venv
+# lives under user data so it survives app updates and never needs admin
+# rights to (re)install.
+from app_paths import user_data_dir  # noqa: E402
+
+VENV_DIR = user_data_dir() / ".venv-paddle"
 if sys.platform == "win32":
     VENV_PYTHON = VENV_DIR / "Scripts" / "python.exe"
 else:
@@ -70,20 +75,206 @@ def _resolve_python_312() -> str | None:
     return None
 
 
-def _create_paddle_venv(on_line=None) -> tuple[bool, str]:
+# Default Python 3.12 build used when we have to download one ourselves.
+# Updated periodically — the python.org installer is forward-compatible with
+# the `py -3.12` launcher we resolve later. Wheels for paddlepaddle exist
+# for every 3.12.x patch release.
+_PYTHON_312_DOWNLOAD_URL = (
+    "https://www.python.org/ftp/python/3.12.7/python-3.12.7-amd64.exe"
+)
+
+
+def _make_ssl_context():
+    """Returns an SSLContext that also works inside a PyInstaller bundle.
+
+    Frozen bundles do not see the Windows system CA store, so urllib's
+    default verification fails with CERTIFICATE_VERIFY_FAILED on every
+    HTTPS request. We point to the certifi bundle (shipped via the host's
+    site-packages, picked up by PyInstaller) which works in both dev and
+    bundled runs.
+    """
+    import ssl
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        return ssl.create_default_context()
+
+
+def _download_file(url: str, dest: Path, on_line=None) -> tuple[bool, str]:
+    """Streams a URL to `dest` with progress callback. urllib + certifi."""
+    import urllib.request
+    if on_line is not None:
+        on_line(f"-> Downloading {url}")
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        last_pct = -1
+        with urllib.request.urlopen(url, timeout=60, context=_make_ssl_context()) as resp:
+            total = int(resp.headers.get("Content-Length", 0))
+            written = 0
+            with open(dest, "wb") as fh:
+                while True:
+                    chunk = resp.read(64 * 1024)
+                    if not chunk:
+                        break
+                    fh.write(chunk)
+                    written += len(chunk)
+                    if on_line is not None and total > 0:
+                        pct = int(written * 100 / total)
+                        if pct != last_pct and pct % 5 == 0:
+                            on_line(f"   {pct}% ({written // 1024} KB / {total // 1024} KB)")
+                            last_pct = pct
+    except Exception as exc:
+        return False, f"download failed: {exc}"
+    return True, f"downloaded {dest.name} ({dest.stat().st_size // 1024} KB)\n"
+
+
+def install_python_312(on_line=None, on_proc=None) -> tuple[bool, str]:
+    """Downloads the official python.org installer for 3.12 and runs it silent.
+
+    Install is per-user (no admin required), does NOT alter PATH, and DOES
+    install the `py` launcher so `_resolve_python_312()` finds it on the
+    next call. Returns (success, message).
+    """
+    if sys.platform != "win32":
+        return False, "auto-install of Python 3.12 is currently Windows-only"
+
+    tmpdir = user_data_dir() / "downloads"
+    installer = tmpdir / "python-3.12-installer.exe"
+    if installer.is_file():
+        installer.unlink()
+    ok, dl_msg = _download_file(_PYTHON_312_DOWNLOAD_URL, installer, on_line=on_line)
+    if not ok:
+        return False, dl_msg
+
+    # python.org install flags. We use /quiet because /passive can take
+    # 10+ minutes on slow disks (Windows Sandbox, USB drives) while showing
+    # a progress window that just says "Compiling Python files...". /quiet
+    # combined with CompileAll=0 (skip stdlib bytecode pre-compilation —
+    # .pyc are produced on first import instead) cuts a typical install
+    # from ~10 min to ~30s. The bootstrapper still returns before the MSI
+    # is fully done, so a poll on `py -3.12` below confirms readiness.
+    # InstallLauncherAllUsers=0 avoids the UAC popup the py launcher would
+    # otherwise trigger (we already run user-only with InstallAllUsers=0).
+    # See https://docs.python.org/3/using/windows.html#installing-without-ui
+    cmd = [
+        str(installer),
+        "/quiet",
+        "InstallAllUsers=0",
+        "InstallLauncherAllUsers=0",
+        "PrependPath=0",
+        "Include_launcher=1",
+        "Include_test=0",
+        "Include_doc=0",
+        "Include_dev=0",
+        "Include_debug=0",
+        "Include_tcltk=0",
+        "Shortcuts=0",
+        "CompileAll=0",
+    ]
+    if on_line is not None:
+        on_line(f"-> Launching {installer.name} (quiet mode)")
+        on_line("   No progress window will appear. Typical duration: 30 to 90 seconds.")
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+    except Exception as exc:
+        return False, f"installer launch failed: {exc}"
+    if on_proc is not None:
+        try:
+            on_proc(proc)
+        except Exception:
+            pass
+    _stream_with_heartbeat(
+        proc, on_line=on_line,
+        heartbeat_msg="   ... Python installer still running",
+        heartbeat_after_s=8.0,
+        heartbeat_every_s=8.0,
+    )
+    try:
+        rc = proc.wait(timeout=300)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        return False, "Python installer timed out after 5 minutes"
+    if on_proc is not None:
+        try:
+            on_proc(None)
+        except Exception:
+            pass
+    if rc != 0:
+        return False, f"installer failed (code={rc})"
+
+    # Even with /passive, the `py` launcher registry entries can take a few
+    # extra seconds to settle. Actively poll until `py -3.12` resolves so
+    # we never race the next step (venv creation). Bail after 60s of polling.
+    if on_line is not None:
+        on_line("-> Installer finished — waiting for the `py -3.12` launcher to register...")
+    deadline = time.monotonic() + 60.0
+    last_beat = time.monotonic()
+    while time.monotonic() < deadline:
+        if _resolve_python_312() is not None:
+            break
+        if on_line is not None and time.monotonic() - last_beat > 6.0:
+            on_line("   ... still waiting for `py -3.12` to appear")
+            last_beat = time.monotonic()
+        time.sleep(1.5)
+    else:
+        return False, (
+            "Python 3.12 installer finished but `py -3.12` cannot be resolved.\n"
+            "You may need to log out and back in, or install manually from\n"
+            "https://www.python.org/downloads/."
+        )
+
+    # Best-effort cleanup of the ~30 MB download.
+    try:
+        installer.unlink()
+    except Exception:
+        pass
+    if on_line is not None:
+        on_line("-> Python 3.12 ready (per-user install, `py` launcher available)")
+    return True, "Python 3.12 installed via python.org passive installer\n"
+
+
+def ensure_python_312(on_line=None, allow_download: bool = True, on_proc=None) -> str | None:
+    """Returns a path to Python 3.12, auto-installing one if missing.
+
+    With `allow_download=False`, just probes — same as `_resolve_python_312()`.
+    `on_proc` lets the UI register the live subprocess so a Cancel button
+    can kill it during the long download/install phase.
+    """
+    py = _resolve_python_312()
+    if py is not None:
+        return py
+    if not allow_download:
+        return None
+    ok, msg = install_python_312(on_line=on_line, on_proc=on_proc)
+    if not ok:
+        if on_line is not None:
+            on_line(msg)
+        return None
+    return _resolve_python_312()
+
+
+def _create_paddle_venv(on_line=None, on_proc=None) -> tuple[bool, str]:
     """Creates `.venv-paddle/` from a system Python 3.12, idempotent.
 
+    Auto-downloads + installs Python 3.12 if none is found on the machine.
     Returns (success, message). If the venv already exists with a usable
     python.exe, returns (True, "<already present>") without touching it.
     """
     if venv_installed():
         return True, f"venv already present at {VENV_DIR}\n"
-    py312 = _resolve_python_312()
+    py312 = ensure_python_312(on_line=on_line, on_proc=on_proc)
     if py312 is None:
         msg = (
-            "Cannot create .venv-paddle/: no Python 3.12 found on this machine.\n"
-            "Install it from https://www.python.org/downloads/ (or via Microsoft Store)\n"
-            "then retry. PaddleOCR wheels only target CPython 3.8-3.12.\n"
+            "Cannot create .venv-paddle/: no Python 3.12 available and the\n"
+            "auto-installer failed. Install Python 3.12 manually from\n"
+            "https://www.python.org/downloads/ then retry.\n"
         )
         if on_line is not None:
             on_line(msg.rstrip())
@@ -397,6 +588,7 @@ def _pip_install(
     extra_args: list[str] | None = None,
     on_line=None,
     python_exe: str | None = None,
+    on_proc=None,
 ) -> tuple[bool, str]:
     """Runs `<python_exe> -m pip install <packages>` in a subprocess.
 
@@ -424,18 +616,74 @@ def _pip_install(
         )
     except Exception as exc:
         return False, f"pip install failed to start: {exc}"
-
-    lines: list[str] = []
-    assert proc.stdout is not None
-    for line in proc.stdout:
-        lines.append(line)
-        if on_line is not None:
-            try:
-                on_line(line.rstrip())
-            except Exception:
-                pass
+    if on_proc is not None:
+        try:
+            on_proc(proc)
+        except Exception:
+            pass
+    lines = _stream_with_heartbeat(
+        proc, on_line=on_line,
+        heartbeat_msg="   ... still working (network download in progress, no admin needed)",
+    )
     proc.wait()
+    if on_proc is not None:
+        try:
+            on_proc(None)
+        except Exception:
+            pass
     return proc.returncode == 0, "".join(lines)
+
+
+def _stream_with_heartbeat(
+    proc: subprocess.Popen,
+    on_line=None,
+    heartbeat_msg: str = "   ... still working",
+    heartbeat_after_s: float = 8.0,
+    heartbeat_every_s: float = 6.0,
+) -> list[str]:
+    """Reads `proc.stdout` line by line and emits a heartbeat when silent.
+
+    pip can fall silent for minutes while downloading a single large wheel
+    (e.g. paddlepaddle ~450 MB). Without a heartbeat the UI looks frozen.
+    This helper forwards every real line via `on_line`, AND injects a
+    synthetic heartbeat line if no real line has appeared for
+    `heartbeat_after_s` seconds, repeating every `heartbeat_every_s`.
+    """
+    assert proc.stdout is not None
+    lines: list[str] = []
+    last_emit = [time.monotonic()]
+    stop = threading.Event()
+
+    def _beat():
+        while not stop.is_set():
+            stop.wait(2.0)
+            if stop.is_set():
+                return
+            now = time.monotonic()
+            silent_for = now - last_emit[0]
+            if silent_for >= heartbeat_after_s and on_line is not None:
+                try:
+                    elapsed = int(silent_for)
+                    on_line(f"{heartbeat_msg} ({elapsed}s silent)")
+                except Exception:
+                    pass
+                # Avoid re-firing every loop until the next quiet window.
+                last_emit[0] = now - (heartbeat_after_s - heartbeat_every_s)
+
+    hb = threading.Thread(target=_beat, daemon=True)
+    hb.start()
+    try:
+        for line in proc.stdout:
+            lines.append(line)
+            last_emit[0] = time.monotonic()
+            if on_line is not None:
+                try:
+                    on_line(line.rstrip())
+                except Exception:
+                    pass
+    finally:
+        stop.set()
+    return lines
 
 
 def detect_cuda_version() -> str | None:
@@ -485,20 +733,43 @@ def _select_paddle_gpu_index(cuda_version: str | None) -> tuple[str, str]:
     return "11.8", _PADDLE_GPU_INDEXES["11.8"]
 
 
-def install_paddleocr_cpu(on_line=None) -> tuple[bool, str]:
+def install_paddleocr_cpu(on_line=None, on_proc=None) -> tuple[bool, str]:
     """Installs the CPU build of PaddleOCR into `.venv-paddle/`.
 
     Creates the venv from a system Python 3.12 if needed, then installs
     paddlepaddle + paddleocr inside it. The host process is never touched.
+    `on_proc` lets the UI track the current subprocess for a Cancel button.
     """
-    ok, msg = _create_paddle_venv(on_line=on_line)
+    if on_line is not None:
+        on_line("=" * 60)
+        on_line("Installing PaddleOCR (CPU) into the sidecar venv")
+        on_line("Expect ~600 MB total download and 5 to 10 minutes")
+        on_line("(Python 3.12 ~30 MB + paddlepaddle ~450 MB + paddleocr ~100 MB)")
+        on_line("=" * 60)
+        on_line("")
+        on_line("[1/3] Provisioning Python 3.12 sidecar venv...")
+    ok, msg = _create_paddle_venv(on_line=on_line, on_proc=on_proc)
     if not ok:
         return False, msg
-    return _pip_install(
-        ["paddlepaddle", "paddleocr"],
-        on_line=on_line,
-        python_exe=venv_python_exe(),
+    py_exe = venv_python_exe()
+    if on_line is not None:
+        on_line("")
+        on_line("[2/3] Installing paddlepaddle (CPU build, ~450 MB)...")
+    ok1, out1 = _pip_install(
+        ["paddlepaddle"], on_line=on_line, python_exe=py_exe, on_proc=on_proc,
     )
+    if not ok1:
+        return False, out1
+    if on_line is not None:
+        on_line("")
+        on_line("[3/3] Installing paddleocr + dependencies...")
+    ok2, out2 = _pip_install(
+        ["paddleocr"], on_line=on_line, python_exe=py_exe, on_proc=on_proc,
+    )
+    if on_line is not None and ok2:
+        on_line("")
+        on_line("All done. PaddleOCR sidecar is ready.")
+    return ok2, out1 + "\n" + out2
 
 
 def _pip_uninstall(
@@ -529,7 +800,7 @@ def _pip_uninstall(
     return proc.returncode == 0, "".join(lines)
 
 
-def install_paddleocr_gpu_blackwell(on_line=None, header_extra: str = "") -> tuple[bool, str]:
+def install_paddleocr_gpu_blackwell(on_line=None, header_extra: str = "", on_proc=None) -> tuple[bool, str]:
     """Installs the Blackwell-capable paddlepaddle-gpu (cu129/3.2.1) + paddleocr.
 
     Shared by:
@@ -543,7 +814,7 @@ def install_paddleocr_gpu_blackwell(on_line=None, header_extra: str = "") -> tup
         "install_paddleocr_gpu_blackwell START (header=%r)", header_extra.strip()
     )
 
-    ok_venv, venv_msg = _create_paddle_venv(on_line=on_line)
+    ok_venv, venv_msg = _create_paddle_venv(on_line=on_line, on_proc=on_proc)
     if not ok_venv:
         return False, venv_msg
 
@@ -584,6 +855,7 @@ def install_paddleocr_gpu_blackwell(on_line=None, header_extra: str = "") -> tup
         extra_args=["-i", _BLACKWELL_PADDLE_INDEX],
         on_line=on_line,
         python_exe=py_exe,
+        on_proc=on_proc,
     )
     if not ok:
         return False, header + out_u + output
@@ -592,7 +864,9 @@ def install_paddleocr_gpu_blackwell(on_line=None, header_extra: str = "") -> tup
     # right version).
     if on_line is not None:
         on_line("\n-> Ensuring paddleocr is installed...")
-    ok2, output2 = _pip_install(["paddleocr"], on_line=on_line, python_exe=py_exe)
+    ok2, output2 = _pip_install(
+        ["paddleocr"], on_line=on_line, python_exe=py_exe, on_proc=on_proc,
+    )
 
     # Drop the sentinel so detect_gpu_paddle_status() can recognize this
     # install as Blackwell-capable without re-running an inference probe.
@@ -604,7 +878,7 @@ def install_paddleocr_gpu_blackwell(on_line=None, header_extra: str = "") -> tup
     return ok2, header + out_u + output + "\n" + output2
 
 
-def migrate_paddle_to_blackwell(on_line=None) -> tuple[bool, str]:
+def migrate_paddle_to_blackwell(on_line=None, on_proc=None) -> tuple[bool, str]:
     """Migrates an existing (older) paddlepaddle install to the cu129 Blackwell
     wheel. Same as `install_paddleocr_gpu_blackwell` but with a header line
     that makes the intent obvious in the dialog log."""
@@ -615,13 +889,14 @@ def migrate_paddle_to_blackwell(on_line=None) -> tuple[bool, str]:
     target = _BLACKWELL_PADDLE_VERSION.split("==", 1)[-1]
     return install_paddleocr_gpu_blackwell(
         on_line=on_line,
+        on_proc=on_proc,
         header_extra=(
             f"Migrating paddlepaddle: {cur} → {target} (cu129, Blackwell sm_120)\n"
         ),
     )
 
 
-def install_paddleocr_gpu(on_line=None) -> tuple[bool, str]:
+def install_paddleocr_gpu(on_line=None, on_proc=None) -> tuple[bool, str]:
     """Installs the GPU build of PaddleOCR.
 
     paddlepaddle-gpu wheels are NOT published to PyPI; they live on the
@@ -633,7 +908,7 @@ def install_paddleocr_gpu(on_line=None) -> tuple[bool, str]:
       - Blackwell (sm_120) GPU → cu129 + paddle 3.2.1 (sm_120 kernels)
       - Anything older         → highest cu* index ≤ the local CUDA version.
     """
-    ok_venv, venv_msg = _create_paddle_venv(on_line=on_line)
+    ok_venv, venv_msg = _create_paddle_venv(on_line=on_line, on_proc=on_proc)
     if not ok_venv:
         return False, venv_msg
 
@@ -649,7 +924,7 @@ def install_paddleocr_gpu(on_line=None) -> tuple[bool, str]:
                 "paddle-gpu install: Blackwell sm_%d detected -> using cu129 wheel",
                 major * 10,
             )
-            return install_paddleocr_gpu_blackwell(on_line=on_line)
+            return install_paddleocr_gpu_blackwell(on_line=on_line, on_proc=on_proc)
 
     cuda_version = detect_cuda_version()
     label, index_url = _select_paddle_gpu_index(cuda_version)
@@ -675,15 +950,18 @@ def install_paddleocr_gpu(on_line=None) -> tuple[bool, str]:
         extra_args=["-i", index_url],
         on_line=on_line,
         python_exe=py_exe,
+        on_proc=on_proc,
     )
     if not ok:
         return False, header + output
     # Step 2: install paddleocr from PyPI.
-    ok2, output2 = _pip_install(["paddleocr"], on_line=on_line, python_exe=py_exe)
+    ok2, output2 = _pip_install(
+        ["paddleocr"], on_line=on_line, python_exe=py_exe, on_proc=on_proc,
+    )
     return ok2, header + output + "\n" + output2
 
 
-def uninstall_paddleocr(on_line=None) -> tuple[bool, str]:
+def uninstall_paddleocr(on_line=None, on_proc=None) -> tuple[bool, str]:
     """Removes the entire `.venv-paddle/` directory tree.
 
     Cleaner than pip-uninstalling each package individually: the venv exists
@@ -720,7 +998,7 @@ def detect_paddle_vl() -> EngineStatus:
     )
 
 
-def install_paddle_vl(on_line=None, backend: str = "transformers") -> tuple[bool, str]:
+def install_paddle_vl(on_line=None, backend: str = "transformers", on_proc=None) -> tuple[bool, str]:
     """Runs scripts/install_paddle_vl.ps1 to provision the VL sidecar venv.
 
     `backend` is forwarded to the script so the user can pick transformers
@@ -729,7 +1007,8 @@ def install_paddle_vl(on_line=None, backend: str = "transformers") -> tuple[bool
     if sys.platform != "win32":
         return False, "paddle-vl install script is currently Windows-only"
 
-    script = Path(__file__).resolve().parent.parent / "scripts" / "install_paddle_vl.ps1"
+    from app_paths import scripts_dir
+    script = scripts_dir() / "install_paddle_vl.ps1"
     if not script.is_file():
         return False, f"install script missing: {script}"
 
@@ -753,20 +1032,25 @@ def install_paddle_vl(on_line=None, backend: str = "transformers") -> tuple[bool
         )
     except Exception as exc:
         return False, f"paddle-vl install failed to start: {exc}"
-    lines: list[str] = []
-    assert proc.stdout is not None
-    for line in proc.stdout:
-        lines.append(line)
-        if on_line is not None:
-            try:
-                on_line(line.rstrip())
-            except Exception:
-                pass
+    if on_proc is not None:
+        try:
+            on_proc(proc)
+        except Exception:
+            pass
+    lines = _stream_with_heartbeat(
+        proc, on_line=on_line,
+        heartbeat_msg="   ... still working (large VL model download in progress)",
+    )
     proc.wait()
+    if on_proc is not None:
+        try:
+            on_proc(None)
+        except Exception:
+            pass
     return proc.returncode == 0, "".join(lines)
 
 
-def uninstall_paddle_vl(on_line=None) -> tuple[bool, str]:
+def uninstall_paddle_vl(on_line=None, on_proc=None) -> tuple[bool, str]:
     """Deletes the .venv-paddle-vl directory tree."""
     from paddle_vl_service import VENV_DIR
     if not VENV_DIR.exists():

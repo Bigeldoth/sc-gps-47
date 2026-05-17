@@ -23,21 +23,23 @@ import subprocess
 import sys
 import threading
 import time
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 
+from app_paths import scripts_dir, user_data_dir
+
 logger = logging.getLogger(__name__)
 
-# Filesystem layout — same convention as paddle_vl_service.py.
-REPO_ROOT = Path(__file__).resolve().parent.parent
-VENV_DIR = REPO_ROOT / ".venv-paddle"
+# Sidecar lives under user data so it survives across app updates and never
+# requires admin rights to (re)install. The worker script ships read-only
+# with the bundle (or the repo in dev) and is resolved via scripts_dir().
+VENV_DIR = user_data_dir() / ".venv-paddle"
 if sys.platform == "win32":
     VENV_PYTHON = VENV_DIR / "Scripts" / "python.exe"
 else:
     VENV_PYTHON = VENV_DIR / "bin" / "python"
-WORKER_SCRIPT = REPO_ROOT / "scripts" / "paddle_worker.py"
+WORKER_SCRIPT = scripts_dir() / "paddle_worker.py"
 
 DEFAULT_TIMEOUT = 30.0
 DEFAULT_UPSCALE = 3
@@ -182,7 +184,7 @@ class PaddleService:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             bufsize=0,
-            cwd=str(REPO_ROOT),
+            cwd=str(user_data_dir()),
             creationflags=creationflags,
         )
         # Drain stderr first so the worker can never block on a full pipe.
