@@ -27,13 +27,14 @@ os.environ.setdefault("FLAGS_use_mkldnn", "0")
 import cv2
 import numpy as np
 
+from capture import UPSCALE_FACTOR
+
 logger = logging.getLogger(__name__)
 
 # PaddleOCR's PP-OCRv5 detection net was trained on natural scene images and
-# struggles with the tiny 45×600 SC HUD strip at native resolution. Upscale
-# 3× (linear interp) before recognition. Larger factors hurt latency without
-# improving accuracy in practice.
-_UPSCALE_FACTOR = 3
+# struggles with the tiny 45×600 SC HUD strip at native resolution. We upscale
+# (linear interp) before recognition using the canonical UPSCALE_FACTOR shared
+# with the runtime capture pipeline — see src/capture.py for the rationale.
 
 
 class PaddleAdapter:
@@ -162,7 +163,7 @@ class PaddleAdapter:
         h, w = image.shape[:2]
         scale = 1
         if max(h, w) < 800:
-            scale = _UPSCALE_FACTOR
+            scale = UPSCALE_FACTOR
             image = cv2.resize(
                 image, (w * scale, h * scale), interpolation=cv2.INTER_LINEAR,
             )
@@ -242,7 +243,7 @@ class PaddleAdapter:
         if max(h, w) < 800:
             image = cv2.resize(
                 image,
-                (w * _UPSCALE_FACTOR, h * _UPSCALE_FACTOR),
+                (w * UPSCALE_FACTOR, h * UPSCALE_FACTOR),
                 interpolation=cv2.INTER_LINEAR,
             )
 
