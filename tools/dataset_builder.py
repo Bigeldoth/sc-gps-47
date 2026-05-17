@@ -68,10 +68,10 @@ def safe_dir_name(char: str) -> str:
 def preprocess_bgr(image_bgr: np.ndarray) -> np.ndarray:
     """Replicate main preprocessing pipeline on raw BGR frame.
 
-    Steps: auto channel isolation → 2× upscale → CLAHE → Otsu thresholding.
+    Steps: auto channel isolation → 3× upscale → CLAHE → Otsu thresholding.
     """
     channel = isolate_channel(image_bgr)
-    upscaled = cv2.resize(channel, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_LINEAR)
+    upscaled = cv2.resize(channel, None, fx=3.0, fy=3.0, interpolation=cv2.INTER_LINEAR)
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
     enhanced = clahe.apply(upscaled)
     return otsu_threshold(enhanced)
