@@ -28,7 +28,10 @@ data/glyphs/
 
 # ONNX training artifacts (datasets, model checkpoints, font assets)
 dataset/
-models/
+models/*
+!models/spacedrive_ocr.onnx
+!models/spacedrive_ocr.pt
+!models/spacedrive_ocr.classes.json
 tools/fonts/
 
 # OS generated files
