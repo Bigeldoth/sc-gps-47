@@ -119,17 +119,17 @@ def test_bearing_aligned():
 
 
 def test_bearing_target_to_right():
-    # On va vers +Y, cible à +X → cible à droite (yaw_off positif)
+    # SC: X- = right. Moving +Y, target at X- = -10 → target to the right → yaw_off = +90
     yaw, _ = calculate_velocity_bearing(
-        (0, 1, 0), {"x": 0, "y": 0, "z": 0}, {"x": 10, "y": 0, "z": 0}
+        (0, 1, 0), {"x": 0, "y": 0, "z": 0}, {"x": -10, "y": 0, "z": 0}
     )
     assert abs(yaw - 90.0) < 1e-6
 
 
 def test_bearing_target_to_left():
-    # We move toward +Y, target at -X → target to left (negative yaw_off)
+    # SC: X+ = left. Moving +Y, target at X+ = +10 → target to the left → yaw_off = -90
     yaw, _ = calculate_velocity_bearing(
-        (0, 1, 0), {"x": 0, "y": 0, "z": 0}, {"x": -10, "y": 0, "z": 0}
+        (0, 1, 0), {"x": 0, "y": 0, "z": 0}, {"x": +10, "y": 0, "z": 0}
     )
     assert abs(yaw + 90.0) < 1e-6
 
@@ -191,9 +191,9 @@ def test_absolute_bearing_yaw_pitch():
 
 
 def test_absolute_bearing_target_to_right():
-    # Target at +X (right in atan2(dx, dy) convention) → yaw = +90°
+    # SC: X- = right. Target at X- = -10 → yaw = +90° (right)
     res = calculate_absolute_bearing(
-        {"x": 0, "y": 0, "z": 0}, {"x": 10, "y": 0, "z": 0}
+        {"x": 0, "y": 0, "z": 0}, {"x": -10, "y": 0, "z": 0}
     )
     assert abs(res["yaw_deg"] - 90.0) < 1e-6
 

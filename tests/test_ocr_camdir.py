@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from ocr import (
     OCRProcessor,
     _RE_CAMDIR_TAG,
-    _RE_OOC_TAG,
+    _RE_OOC_HINT,
     _RE_POS,
     _parse_camdir_values,
 )
@@ -34,7 +34,7 @@ def _parse_text(text):
                 data["cam_roll"] = float(values[1])
                 data["cam_yaw"] = float(values[2])
         elif "Pos:" in line or "pos:" in line.lower():
-            ooc_match = _RE_OOC_TAG.search(line)
+            ooc_match = _RE_OOC_HINT.search(line)
             if not ooc_match:
                 continue
             m = _RE_POS.search(line)
