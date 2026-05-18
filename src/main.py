@@ -344,6 +344,27 @@ class GPSOverlay(QMainWindow):
         self.hotkey_listener.open_poi_manager_triggered.connect(
             self.show_poi_manager_window, Qt.ConnectionType.QueuedConnection
         )
+        self.hotkey_listener.stop_navigation_triggered.connect(
+            self._on_hotkey_stop_navigation, Qt.ConnectionType.QueuedConnection
+        )
+
+    def _on_hotkey_stop_navigation(self):
+        """Cancel the current navigation target and clear bearing state."""
+        logger.debug("Hotkey 'stop_navigation' detected")
+        if self.nav.target is None:
+            self._show_overlay_message("No active navigation")
+            return
+        target_name = self.nav.target.get("name", "?")
+        self.nav.clear_target()
+        self._smoothed_distance_km = None
+        self._last_raw_distance_km = None
+        self._smoothed_yaw_off = None
+        self._smoothed_pitch_off = None
+        self._last_raw_yaw_off = None
+        self._last_raw_pitch_off = None
+        self._refresh_nav_label()
+        self._show_overlay_message(f"Navigation stopped: {target_name}")
+        logger.info(f"Navigation cancelled by hotkey (was: {target_name})")
 
     def _on_hotkey_save_position(self):
         """Captures current coordinates at exact press moment.

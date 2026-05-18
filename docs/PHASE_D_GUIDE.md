@@ -79,7 +79,7 @@ Le logiciel sauvegarde chaque glyphe segmenté dans `data/glyphs/{TIMESTAMP}/`.
 #### 1.2 Session de jeu
 
 - **Lancer SpaceDrive** (`python src/main.py` ou executable)
-- **Jouer ~30 min en Star Citizen** avec HUD visible (`r_DisplayInfo 3`)
+- **Jouer ~30 min en Star Citizen** avec HUD visible (`r_DisplayInfo 2`)
   - Explore différentes zones : Hurston, Crusader, microTech
   - Varie l'éclairage (pièce sombre, cockpit, extérieur)
   - Mouvement + stationnaire (300+ glyphes par zone)
@@ -257,7 +257,7 @@ ls -R data/templates/
 
 - Réduire `min_glyph_width` dans `segment.py` si glyphes trop petits
 - Augmenter `proximity_threshold` si glyphes fusionnés à tort
-- Vérifier l'éclairage en jeu (`r_DisplayInfo 3` doit être bien lisible)
+- Vérifier l'éclairage en jeu (`r_DisplayInfo 2` doit être bien lisible)
 
 ### NCC score bas (< 0.85)
 

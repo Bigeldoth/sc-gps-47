@@ -16,12 +16,14 @@ class HotkeyListener(QObject):
     open_options_triggered = pyqtSignal()
     save_position_triggered = pyqtSignal()
     open_poi_manager_triggered = pyqtSignal()
+    stop_navigation_triggered = pyqtSignal()
 
     _SIGNAL_MAP = {
         'toggle_overlay': 'toggle_overlay_triggered',
         'open_options': 'open_options_triggered',
         'save_position': 'save_position_triggered',
         'open_poi_manager': 'open_poi_manager_triggered',
+        'stop_navigation': 'stop_navigation_triggered',
     }
 
     _MODIFIER_NAMES = {'shift', 'ctrl', 'alt', 'cmd'}

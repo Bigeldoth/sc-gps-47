@@ -2,7 +2,7 @@
 
 ## Context
 
-The reliability of OCR reading from the HUD `r_DisplayInfo 3` is the critical factor for the software. Imprecise reading (loss of decimals, aberrant values) causes navigation errors of up to 17 m on a saved POI.
+The reliability of OCR reading from the HUD `r_DisplayInfo 2` is the critical factor for the software. Imprecise reading (loss of decimals, aberrant values) causes navigation errors of up to 17 m on a saved POI.
 
 This plan adopts a **pure NumPy NCC template matching** approach, ~1 ms latency, without heavy ML dependencies.
 

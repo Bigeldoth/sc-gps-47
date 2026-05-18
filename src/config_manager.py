@@ -90,7 +90,8 @@ class ConfigManager:
             self.config.set('Hotkeys', 'toggle_overlay', 'shift+f1')
             self.config.set('Hotkeys', 'open_options', 'shift+f2')
             self.config.set('Hotkeys', 'save_position', 'shift+f3')
-            self.config.set('Hotkeys', 'open_poi_manager', 'ctrl+shift+p')
+            self.config.set('Hotkeys', 'open_poi_manager', 'shift+f4')
+            self.config.set('Hotkeys', 'stop_navigation', 'shift+f5')
 
         self.save()
 
@@ -303,7 +304,8 @@ class ConfigManager:
             'toggle_overlay': 'shift+f1',
             'open_options': 'shift+f2',
             'save_position': 'shift+f3',
-            'open_poi_manager': 'ctrl+shift+p'
+            'open_poi_manager': 'shift+f4',
+            'stop_navigation': 'shift+f5',
         }
         return self.config.get('Hotkeys', action, fallback=defaults.get(action, ''))
 
