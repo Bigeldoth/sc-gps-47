@@ -2,35 +2,31 @@
 
 ## Context
 
-The reliability of OCR reading from the HUD `r_DisplayInfo 3` is the critical factor for the software. Imprecise reading (loss of decimals, aberrant values) causes navigation errors of up to 17 m on a saved POI.
+The reliability of OCR reading from the HUD `r_DisplayInfo 2` is the critical factor for the software. Imprecise reading (loss of decimals, aberrant values) causes navigation errors of up to 17 m on a saved POI.
 
 This plan adopts a **pure NumPy NCC template matching** approach, ~1 ms latency, without heavy ML dependencies.
 
-## Current state (v0.5.0)
+## Current state (Phases A–E implemented)
 
 ```
 Capture (mss, 600×150)
-  → grayscale (BGR2GRAY)
-  → upscale ×2 (INTER_LINEAR)
-  → GaussianBlur 3×3
+  → isolate_channel(auto) — picks R/G/B/max channel by background stats
+  → upscale ×3 (INTER_LINEAR)
+  → conditional GaussianBlur (only if std > 45)
   → CLAHE clipLimit=3.0
-  → 4 parallel passes (threshold 180, Otsu, adaptive, white HSV mask)
-  → Tesseract OEM3 PSM6 on each pass
-  → Score → best pass wins
-  → Strict 3-4 decimal regex on Pos
+  → 2 binary thresholding passes (Otsu, adaptive) + CLAHE-enhanced grayscale + raw BGR
+  → NCC-first segmentation on Otsu + classification on enhanced grayscale
+  → Tesseract OEM3 PSM6 fallback only for labels NCC cannot reconstruct
+  → Strict 3-4 decimal regex on Pos with range validation (|x|,|y|,|z| < 30000 km)
 ```
 
-**Strengths:**
-- Strict regex rejects degraded readings (major fix for 17 m bug).
+**Implemented improvements:**
+- Smart channel isolation (Phase A) — auto-selects best channel by background stats.
+- Geographic range validation + missing-decimal recovery (Phase B).
+- ONNX `TinyGlyphCNN` classifier replaces NCC by default (Phase D, with NCC fallback).
+- Decoupled segmentation (Otsu) and classification (enhanced grayscale) — Phase E.
+- Strict regex rejects degraded readings (eliminates the 17 m POI bug).
 - Progressive color (green→red) visually signals freshness.
-- 4 passes cover space/cockpit/lit room.
-
-**Identified weaknesses:**
-- Grayscale conversion discards color info — loss of contrast on white HUD.
-- 4 parallel passes, HSV pass produces noise in ~50% of cases (logs).
-- No cross-pass validation: 1 aberrant pass (~14 M km vs ~4 k km) can win on score.
-- No physical validation (impossible velocity between scans).
-- No template system for SC HUD characters.
 
 ## Chosen architecture
 

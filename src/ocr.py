@@ -16,7 +16,7 @@ Pipeline (NCC-first since Phase E):
   8. Multi-pass consensus: if ≥2 passes converge within ±0.1 km, average;
      otherwise, best score
 
-HUD r_DisplayInfo 3 structure (3 Pos: lines):
+HUD r_DisplayInfo 2 structure (3 Pos: lines):
   Line 1: Zone: SolarSystem_XXXXX Pos: X Y Z  → absolute frame, rejected
   Line 2: Root Pos: X Y Z                     → absolute frame, rejected
   Line 3: {ZoneName} Pos: X Y Z               → relative frame, TARGET

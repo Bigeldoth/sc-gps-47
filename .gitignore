@@ -50,5 +50,9 @@ debug_capture_*.png
 
 # Test screenshot used for paddle_diagnose (~3 MB binary)
 sample.bmp
+
+# Gameplay capture videos used for offline OCR/training datasets — local-only
+tests/*.mp4
+
 # Local Python venv (created on demand, never committed)
 .venv/
