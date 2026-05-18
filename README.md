@@ -2,7 +2,7 @@
 
 > GPS navigation overlay for Star Citizen, based on OCR of the debug HUD `r_DisplayInfo 3`.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Python: 3.10+](https://img.shields.io/badge/Python-3.10%2B-yellow.svg)](https://www.python.org/)
 [![Anti-cheat](https://img.shields.io/badge/EAC-safe-green.svg)](#anti-cheat-security)
 
@@ -135,18 +135,18 @@ Shortcuts are reconfigurable via `Shift+F2`.
 
 ```
 ┌──────────────────┐
-│ ScreenCapture    │  mss → BGR → grayscale → upscale ×2 → CLAHE
-│ (capture.py)     │  → 4 thresholding passes (fixed / Otsu / adaptive / HSV)
+│ ScreenCapture    │  mss → BGR → isolate_channel(auto) → upscale ×3 → CLAHE
+│ (capture.py)     │  → 2 binary passes (Otsu / adaptive) + enhanced + raw BGR
 └────────┬─────────┘
          ▼
 ┌──────────────────┐
-│ OCRProcessor     │  ThreadPoolExecutor → Tesseract on each pass
-│ (ocr.py)         │  → best pass by score → strict Pos regex
-└────────┬─────────┘  → normalization + extraction (x, y, z, ooc)
+│ OCRProcessor     │  NCC-first: segment on Otsu, classify on enhanced grayscale
+│ (ocr.py)         │  → Tesseract fallback only for labels NCC can't reconstruct
+└────────┬─────────┘  → strict Pos regex + range validation
          ▼
 ┌──────────────────┐
 │ NavigationEngine │  Load system + user POIs → set_target → distance
-│ (navigation.py)  │  euclidienne planet-relative
+│ (navigation.py)  │  euclidean planet-relative
 └────────┬─────────┘
          ▼
 ┌──────────────────┐
@@ -186,44 +186,14 @@ Star Citizen has used **Easy Anti-Cheat (EAC)** since November 2021. Any memory-
 
 Detailed OCR optimization plan: [`docs/OCR_OPTIMIZATION_PLAN.md`](docs/OCR_OPTIMIZATION_PLAN.md)
 
-**Coming:**
-- Phase A — Color channel preprocessing (inspired by SC_OCR)
-- Phase B — Geographic range validation + recovery of missing `.`
-- Phase C — Tesseract tuning (`classify_bln_numeric_mode`, user_words/patterns)
-- Phase D — Custom NCC template matching for digits (~10 ms/frame)
+**Implemented:**
+- Phase A — Color channel preprocessing (`isolate_channel(auto)` in [`src/capture.py`](src/capture.py))
+- Phase B — Geographic range validation + missing-decimal recovery (in [`src/ocr.py`](src/ocr.py))
+- Phase C — Tesseract tuning (numeric mode, user_words/patterns)
+- Phase D — Custom glyph classifier: NCC template matching + `TinyGlyphCNN` ONNX
+- Phase E — Decoupled segmentation (Otsu) and classification (CLAHE-enhanced grayscale)
 
----
-
-## Known bugs
-
-### OCR pipeline
-
-| # | Severity | Description |
-|---|----------|-------------|
-| 1 | **High** | **Tesseract `0 → 6` digit confusion on bright backgrounds.** When the green channel is selected (daylight scenes, e.g. MicroTech atmosphere), Tesseract occasionally reads `0` as `6` in the integer part of coordinates (e.g. `580` → `586`). This causes ~6 km position errors on affected frames. Not fixable by post-processing; relies on multi-frame consensus to average out. |
-| 2 | **Medium** | **NCC/ONNX glyph classifier fails on green-channel frames.** Templates were trained on max_RGB (night/space) preprocessing. When the pipeline selects the green channel (G − R > 15), glyph appearance differs and confidence drops below threshold — nearly all glyphs return `?`. The pipeline falls back to Tesseract-only, losing the accuracy benefit of the custom classifier. |
-| 3 | **Low** | **Trailing zero truncation on Z coordinate.** `815.8260` is extracted as `815.826` (3 decimals instead of 4). The strict regex accepts 3-4 decimals so the reading passes, but precision is reduced from 10 cm to 1 m. |
-
-### Navigation
-
-| # | Severity | Description |
-|---|----------|-------------|
-| 4 | **High** | **Cross-OOC distance check not enforced.** `NavigationEngine.calculate_distance()` returns a numeric distance even when target and player are in different ObjectContainers (e.g. Hurston vs MicroTech). Should return `None`. Related: `is_target_in_same_ooc()` always returns `True`. |
-| 6 | **Medium** | **Legacy POIs without `ooc` field still navigable.** POIs saved before the OOC-aware update (missing `ooc` key) should be rejected, but `calculate_distance()` still computes a distance for them. |
-
-### Test suite
-
-| # | Severity | Description |
-|---|----------|-------------|
-| 7 | **Medium** | **`test_bearing.py` broken — stale import.** Imports `calculate_relative_bearing` which was renamed to `calculate_velocity_bearing`. Tests do not collect. |
-| 8 | **Medium** | **`test_ocr_camdir.py` broken — stale import.** Imports `_RE_OOC_TAG` which no longer exists in `ocr.py`. Tests do not collect. |
-
-### Documentation
-
-| # | Severity | Description |
-|---|----------|-------------|
-| 9 | **Low** | **README Roadmap outdated.** Phases A–D are described as "Coming" but are already implemented (channel isolation, range validation, decimal recovery, NCC/ONNX classifiers). |
-| 10 | **Low** | **README states 4 thresholding passes.** The pipeline now uses 3 passes (Otsu, Otsu-inv, adaptive). The HSV pass was removed. |
+**Known issues:** tracked in [GitHub issues](https://github.com/Bigeldoth/sc-gps-47/issues).
 
 ---
 
@@ -240,7 +210,10 @@ User-facing code (displayed messages, logs) is in English. Code comments are als
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+GNU General Public License v3.0 or later — see [LICENSE](LICENSE).
+
+SpaceDrive depends on PyQt6 (GPL-3) for the overlay; the project is therefore
+distributed under the same license to remain compatible.
 
 ---
 

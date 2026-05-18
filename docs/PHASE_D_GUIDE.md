@@ -340,7 +340,7 @@ Ajustable dans `classify.py` ligne ~120.
 ## 📝 Notes
 
 - Phase D est **optionnelle** : sans templates, le système fallback 100 % Tesseract
-- Templates collectés sont **spécifiques** à la résolution/HUD (600×150 px avec upscale ×2)
+- Templates collectés sont **spécifiques** à la résolution/HUD (600×150 px avec upscale ×3)
 - Compatibilité **100 %** avec les règles de validation Phase B (plage géo, vitesse max)
 
 ---

@@ -14,7 +14,7 @@ setup(
     long_description_content_type='text/markdown',
     author='Bigeldoth',
     url='https://github.com/Bigeldoth/sc-gps-47',
-    license='MIT',
+    license='GPL-3.0-or-later',
     packages=find_packages(where='src'),
     package_dir={'': 'src'},
     python_requires='>=3.10',
@@ -35,7 +35,7 @@ setup(
     classifiers=[
         'Development Status :: 4 - Beta',
         'Intended Audience :: End Users/Desktop',
-        'License :: OSI Approved :: MIT License',
+        'License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)',
         'Operating System :: Microsoft :: Windows',
         'Programming Language :: Python :: 3.10',
         'Programming Language :: Python :: 3.11',

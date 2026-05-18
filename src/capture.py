@@ -9,7 +9,7 @@ Pipeline :
        - R - G > 15        → R channel (red/orange text)
        - G - R > 15        → G channel (green/cyan text)
        - otherwise         → max(R, G, B) (white text — default SC HUD)
-  3. Upscale ×2
+  3. Upscale ×3 (brings HUD char height from ~16 px to ~48 px)
   4. CLAHE clipLimit=3.0
   5. Conditional GaussianBlur : only if std(channel) > 45 (fast-path
      under normal conditions — saves CPU + better sharpness)
