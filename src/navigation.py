@@ -113,8 +113,8 @@ def calculate_absolute_bearing(current_pos, target):
     else:
         # In SC (OOC frame), the X axis is inverted relative to the standard
         # navigation convention (X+ points left, X- points right).
-        # We negate dx to get: Y+ = forward (↑), X- = right (→).
-        yaw = math.degrees(math.atan2(-dx, dy))
+        # atan2(dx, dy) correctly maps: Y+ = forward, X- = right, X+ = left.
+        yaw = math.degrees(math.atan2(dx, dy))
     if horiz == 0:
         pitch = 90.0 if dz > 0 else (-90.0 if dz < 0 else 0.0)
     else:
@@ -173,9 +173,9 @@ def calculate_velocity_bearing(velocity, current_pos, target):
         return 0.0, 0.0
 
     # Horizontal heading of velocity and target.
-    # SC: X+ = left, X- = right → invert X for standard convention.
-    vel_yaw = math.degrees(math.atan2(-vx, vy)) if (vx or vy) else 0.0
-    tgt_yaw = math.degrees(math.atan2(-dx, dy)) if (dx or dy) else 0.0
+    # SC: X+ = left, X- = right. atan2(dx, dy) correctly maps to standard frame.
+    vel_yaw = math.degrees(math.atan2(vx, vy)) if (vx or vy) else 0.0
+    tgt_yaw = math.degrees(math.atan2(dx, dy)) if (dx or dy) else 0.0
     yaw_off = normalize_angle_signed(tgt_yaw - vel_yaw)
 
     # Pitch (vertical component)

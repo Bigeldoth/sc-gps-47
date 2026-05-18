@@ -209,7 +209,6 @@ Detailed OCR optimization plan: [`docs/OCR_OPTIMIZATION_PLAN.md`](docs/OCR_OPTIM
 | # | Severity | Description |
 |---|----------|-------------|
 | 4 | **High** | **Cross-OOC distance check not enforced.** `NavigationEngine.calculate_distance()` returns a numeric distance even when target and player are in different ObjectContainers (e.g. Hurston vs MicroTech). Should return `None`. Related: `is_target_in_same_ooc()` always returns `True`. |
-| 5 | **High** | **Velocity bearing sign inverted on X-axis.** `calculate_velocity_bearing()` and `calculate_absolute_bearing()` return inverted yaw when the target is along the X-axis (right/left swapped). The SC X-axis inversion (`-dx`) may be applied incorrectly or doubled. |
 | 6 | **Medium** | **Legacy POIs without `ooc` field still navigable.** POIs saved before the OOC-aware update (missing `ooc` key) should be rejected, but `calculate_distance()` still computes a distance for them. |
 
 ### Test suite

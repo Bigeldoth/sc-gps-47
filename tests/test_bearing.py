@@ -1,4 +1,4 @@
-"""Tests for normalize_angle_signed, ema_angle, calculate_relative_bearing."""
+"""Tests for normalize_angle_signed, ema_angle, calculate_velocity_bearing."""
 import math
 import os
 import sys
@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from navigation import (
     normalize_angle_signed,
     ema_angle,
-    calculate_relative_bearing,
+    calculate_velocity_bearing,
 )
 
 
@@ -74,29 +74,29 @@ def test_ema_angle_wrap_small_alpha():
     assert abs(result - 172.0) < 0.5
 
 
-# ---- calculate_relative_bearing ----
+# ---- calculate_velocity_bearing ----
 
 def test_bearing_no_target():
-    assert calculate_relative_bearing(
+    assert calculate_velocity_bearing(
         {"x": 0, "y": 0, "z": 0}, {"yaw": 0, "pitch": 0}, None, (1, 0)
     ) is None
 
 
 def test_bearing_no_camdir():
-    assert calculate_relative_bearing(
+    assert calculate_velocity_bearing(
         {"x": 0, "y": 0, "z": 0}, None, {"x": 1, "y": 0, "z": 0}, (1, 0)
     ) is None
 
 
 def test_bearing_no_pos():
-    assert calculate_relative_bearing(
+    assert calculate_velocity_bearing(
         {"x": None, "y": None, "z": None}, {"yaw": 0, "pitch": 0},
         {"x": 1, "y": 0, "z": 0}, (1, 0)
     ) is None
 
 
 def test_bearing_no_calib():
-    assert calculate_relative_bearing(
+    assert calculate_velocity_bearing(
         {"x": 0, "y": 0, "z": 0}, {"yaw": 0, "pitch": 0},
         {"x": 1, "y": 0, "z": 0}, None
     ) is None
@@ -105,7 +105,7 @@ def test_bearing_no_calib():
 def test_bearing_aligned():
     # Target straight ahead: with convention sign=+1 offset=0,
     # target at dx=0, dy=10 → world_yaw = atan2(0,10) = 0, cam aligned at 0
-    yaw, pitch = calculate_relative_bearing(
+    yaw, pitch = calculate_velocity_bearing(
         {"x": 0, "y": 0, "z": 0},
         {"yaw": 0.0, "pitch": 0.0},
         {"x": 0, "y": 10, "z": 0},
@@ -118,7 +118,7 @@ def test_bearing_aligned():
 def test_bearing_target_to_right():
     # Target at dx=10, dy=0 → world_yaw = atan2(10,0) = +90°
     # Cam at yaw=0, calib sign=+1 offset=0 → target_cam_yaw=+90, yaw_off=+90
-    yaw, _ = calculate_relative_bearing(
+    yaw, _ = calculate_velocity_bearing(
         {"x": 0, "y": 0, "z": 0},
         {"yaw": 0.0, "pitch": 0.0},
         {"x": 10, "y": 0, "z": 0},
@@ -134,7 +134,7 @@ def test_bearing_wrap_around():
     # atan2(dx, dy) = -170° → dx ≈ sin(-170°), dy ≈ cos(-170°)
     dx = math.sin(math.radians(-170.0))
     dy = math.cos(math.radians(-170.0))
-    yaw, _ = calculate_relative_bearing(
+    yaw, _ = calculate_velocity_bearing(
         {"x": 0, "y": 0, "z": 0},
         {"yaw": 170.0, "pitch": 0.0},
         {"x": dx, "y": dy, "z": 0},
@@ -147,7 +147,7 @@ def test_bearing_wrap_around():
 def test_bearing_pitch_up():
     # Target higher (z=10) at dy=10 → target_world_pitch = atan2(10, 10) = +45°
     # Cam pitch=0 → pitch_off = +45
-    _, pitch = calculate_relative_bearing(
+    _, pitch = calculate_velocity_bearing(
         {"x": 0, "y": 0, "z": 0},
         {"yaw": 0.0, "pitch": 0.0},
         {"x": 0, "y": 10, "z": 10},
@@ -160,7 +160,7 @@ def test_bearing_calib_sign_inverse():
     # If calib says sign=-1 offset=0, then target_cam_yaw = -world_yaw
     # Target dx=10, dy=0 → world_yaw=+90 → target_cam_yaw=-90
     # cam=0 → yaw_off = -90 - 0 = -90
-    yaw, _ = calculate_relative_bearing(
+    yaw, _ = calculate_velocity_bearing(
         {"x": 0, "y": 0, "z": 0},
         {"yaw": 0.0, "pitch": 0.0},
         {"x": 10, "y": 0, "z": 0},
@@ -173,7 +173,7 @@ def test_bearing_calib_offset():
     # If calib offset=+45 sign=+1, then target_cam_yaw = world_yaw + 45
     # Target straight ahead in world (world_yaw=0) → target_cam_yaw=+45
     # If cam is at +45, yaw_off = 0 (cam looks in calibrated direction)
-    yaw, _ = calculate_relative_bearing(
+    yaw, _ = calculate_velocity_bearing(
         {"x": 0, "y": 0, "z": 0},
         {"yaw": 45.0, "pitch": 0.0},
         {"x": 0, "y": 10, "z": 0},
