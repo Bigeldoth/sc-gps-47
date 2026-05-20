@@ -1,10 +1,11 @@
 # SpaceDrive GPS
 
-> GPS navigation overlay for Star Citizen, based on OCR of the debug HUD `r_DisplayInfo 3`.
+> GPS navigation overlay for Star Citizen, based on OCR of the debug HUD `r_DisplayInfo 2`.
 
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
-[![Python: 3.10+](https://img.shields.io/badge/Python-3.10%2B-yellow.svg)](https://www.python.org/)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE.txt)
+[![Python: 3.10–3.14](https://img.shields.io/badge/Python-3.10%E2%80%933.14-yellow.svg)](https://www.python.org/)
 [![Anti-cheat](https://img.shields.io/badge/EAC-safe-green.svg)](#anti-cheat-security)
+[![Download](https://img.shields.io/github/v/release/Bigeldoth/sc-gps-47?label=download&include_prereleases)](https://github.com/Bigeldoth/sc-gps-47/releases/latest)
 
 SpaceDrive continuously reads the coordinates displayed by the game's debug HUD (`Zone:OOC_X Pos: X.XXXX km Y.XXXX km Z.XXXX km`) and provides an always-on-top overlay with distance, heading and data freshness indicator. No memory reading — 100% screenshot-based.
 
@@ -58,37 +59,44 @@ SpaceDrive continuously reads the coordinates displayed by the game's debug HUD 
 
 ## Installation
 
-### Prerequisites
+### Recommended: Windows installer (no Python required)
 
-- **Python 3.10+** ([python.org](https://www.python.org/downloads/) — check "Add to PATH" at installation)
-- **Tesseract OCR** ([UB-Mannheim build for Windows](https://github.com/UB-Mannheim/tesseract/wiki))
-  - Default installation in `C:\Program Files\Tesseract-OCR\` (auto-detected).
-  - Optional alternative: **PaddleOCR** can be installed on demand from
-    Options → OCR → *Manage engines…* (pip-only, no system binary).
-- **Windows 10/11** (Tesseract Windows paths; Linux/macOS not tested).
+1. Go to the [latest release](https://github.com/Bigeldoth/sc-gps-47/releases/latest) and download **`SpaceDrive-Setup-vX.Y.Z.exe`** (~70 MB).
+2. Double-click the installer and accept the UAC prompt.
+3. The wizard installs SpaceDrive into `C:\Program Files\SpaceDrive\`. If Tesseract OCR is not already present, it is automatically downloaded from UB-Mannheim and installed silently — no extra step on your side.
+4. Launch *SpaceDrive GPS* from the Start menu.
 
-### Procedure
+Tesseract + the ONNX glyph classifier work out of the box. **PaddleOCR** (CPU / GPU / Blackwell) is optional and can be added later from *Options → Manage engines…*; the Engine Manager will also auto-download Python 3.12 if your machine doesn't have it.
+
+User data (POIs, log, optional sidecar venvs) lives in `%LOCALAPPDATA%\SpaceDrive\` so it survives future installs.
+
+Requirements: Windows 10 / 11 (x64), internet during installation, ~150 MB of disk.
+
+### From source (developers)
+
+For contributors who want to run from a checkout instead of the installer.
+
+Prerequisites:
+- **Python 3.10–3.14** ([python.org](https://www.python.org/downloads/) — check "Add to PATH" at installation)
+- **Tesseract OCR** ([UB-Mannheim build for Windows](https://github.com/UB-Mannheim/tesseract/wiki)) installed to `C:\Program Files\Tesseract-OCR\` (auto-detected)
+- Optional **PaddleOCR**: installed on demand from *Options → Manage engines…* into a dedicated `.venv-paddle/` (Python 3.12) — see [`docs/BUILD.md`](docs/BUILD.md) for details
 
 ```powershell
-# 1. Clone the repo
 git clone https://github.com/Bigeldoth/sc-gps-47.git
 cd sc-gps-47
-
-# 2. Install Python dependencies
 python -m pip install -r requirements.txt
-
-# 3. Launch
 python src/main.py
 ```
 
-### Build standalone executable (PyInstaller)
+### Build the installer yourself
 
 ```powershell
-python -m PyInstaller --clean spaceDrive.spec
-# → dist/spaceDrive.exe
+# Prerequisite: Inno Setup 6 (https://jrsoftware.org/isdl.php)
+.\tools\build_installer.ps1
+# -> dist\SpaceDrive-Setup-vX.Y.Z.exe
 ```
 
-See [`docs/BUILD.md`](docs/BUILD.md) for build details.
+See [`docs/BUILD.md`](docs/BUILD.md) for the full build + Sandbox-test workflow.
 
 ---
 
@@ -97,7 +105,7 @@ See [`docs/BUILD.md`](docs/BUILD.md) for build details.
 The overlay requires Star Citizen's **debug HUD** to be displayed:
 
 1. Open the game console: **`** key (left of `1` on US keyboard, below `Esc` on FR keyboard).
-2. Type `r_DisplayInfo 3` then Enter.
+2. Type `r_DisplayInfo 2` then Enter.
 3. Debug HUD appears top right with `CamDir`, `Zone`, `Pos`, `FPS`, etc.
 
 The overlay captures this area automatically.
@@ -112,6 +120,7 @@ The overlay captures this area automatically.
 | `Shift+F2` | Open options window |
 | `Shift+F3` | **Quick snapshot** of current coordinates (POI saved at time T) |
 | `Shift+F4` | Open POI manager |
+| `Shift+F5` | **Stop navigation** (clear current target) |
 
 Shortcuts are reconfigurable via `Shift+F2`.
 
@@ -146,7 +155,7 @@ Shortcuts are reconfigurable via `Shift+F2`.
          ▼
 ┌──────────────────┐
 │ NavigationEngine │  Load system + user POIs → set_target → distance
-│ (navigation.py)  │  euclidean planet-relative
+│ (navigation.py)  │  euclidienne planet-relative
 └────────┬─────────┘
          ▼
 ┌──────────────────┐
@@ -182,21 +191,6 @@ Star Citizen has used **Easy Anti-Cheat (EAC)** since November 2021. Any memory-
 
 ---
 
-## Roadmap
-
-Detailed OCR optimization plan: [`docs/OCR_OPTIMIZATION_PLAN.md`](docs/OCR_OPTIMIZATION_PLAN.md)
-
-**Implemented:**
-- Phase A — Color channel preprocessing (`isolate_channel(auto)` in [`src/capture.py`](src/capture.py))
-- Phase B — Geographic range validation + missing-decimal recovery (in [`src/ocr.py`](src/ocr.py))
-- Phase C — Tesseract tuning (numeric mode, user_words/patterns)
-- Phase D — Custom glyph classifier: NCC template matching + `TinyGlyphCNN` ONNX
-- Phase E — Decoupled segmentation (Otsu) and classification (CLAHE-enhanced grayscale)
-
-**Known issues:** tracked in [GitHub issues](https://github.com/Bigeldoth/sc-gps-47/issues).
-
----
-
 ## Contributing
 
 1. Fork → branch `feat/...` or `fix/...`
@@ -206,11 +200,13 @@ Detailed OCR optimization plan: [`docs/OCR_OPTIMIZATION_PLAN.md`](docs/OCR_OPTIM
 
 User-facing code (displayed messages, logs) is in English. Code comments are also in English.
 
+Bug reports and feature requests: [GitHub issues](https://github.com/Bigeldoth/sc-gps-47/issues). OCR pipeline design notes: [`docs/OCR_OPTIMIZATION_PLAN.md`](docs/OCR_OPTIMIZATION_PLAN.md).
+
 ---
 
 ## License
 
-GNU General Public License v3.0 or later — see [LICENSE](LICENSE).
+GNU General Public License v3.0 or later — see [LICENSE.txt](LICENSE.txt).
 
 SpaceDrive depends on PyQt6 (GPL-3) for the overlay; the project is therefore
 distributed under the same license to remain compatible.

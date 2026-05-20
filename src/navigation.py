@@ -190,18 +190,22 @@ def calculate_velocity_bearing(velocity, current_pos, target):
 
 class NavigationEngine:
     def __init__(self, poi_file=None):
-        if getattr(sys, 'frozen', False):
-            self.base_dir = os.path.dirname(sys.executable)
-        else:
-            self.base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        # Read-only assets (system POIs shipped with the app) come from the
+        # bundle dir. Writable user data (user_poi.json) goes under user_data
+        # so a Program Files install never tries to write into its own
+        # read-only folder. In dev mode both paths resolve to the repo root,
+        # preserving the historical `data/poi.json` / `data/user_poi.json`
+        # layout.
+        from app_paths import bundle_dir, user_data_dir
+        self.base_dir = str(bundle_dir())
 
         if poi_file is None:
             poi_file = os.path.join(self.base_dir, "data", "poi.json")
 
         self.poi_file = poi_file
-        self.user_poi_file = os.path.join(self.base_dir, "data", "user_poi.json")
+        self.user_poi_file = os.path.join(str(user_data_dir()), "data", "user_poi.json")
 
-        # Create the data folder if it does not exist
+        # Create the user data subfolder if it does not exist.
         os.makedirs(os.path.dirname(self.user_poi_file), exist_ok=True)
 
         self.poi_data = self.load_poi(self.poi_file)

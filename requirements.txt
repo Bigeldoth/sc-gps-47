@@ -1,5 +1,7 @@
 # SpaceDrive GPS — runtime dependencies
-# Python 3.10+ required
+# Python 3.10–3.14 supported. PaddleOCR is NOT listed here: it lives in its
+# own sidecar venv (.venv-paddle/, Python 3.12) installed on demand via the
+# Options → Manage engines… dialog or scripts/install_paddle.ps1.
 
 # Screen capture
 mss>=9.0.0
@@ -29,6 +31,12 @@ pynput>=1.7.6
 # ONNX CPU inference (optional — required only if [OCR] glyph_engine = onnx)
 # Pure local runtime, ~5 MB. Falls back to NCC template matching if absent.
 onnxruntime>=1.17.0
+
+# Mozilla CA bundle. Required by engine_installer to download the Python 3.12
+# silent installer + (future) other assets over HTTPS from PyInstaller-frozen
+# builds. The host Python's default trust store is not bundled with the
+# frozen exe, so urllib raises CERTIFICATE_VERIFY_FAILED without this.
+certifi>=2024.0.0
 
 # ─────────────────────────────────────────────────────────
 # Build / packaging (dev only — not required at runtime)

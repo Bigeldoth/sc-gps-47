@@ -40,6 +40,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools"))
 
+from capture import UPSCALE_FACTOR  # noqa: E402
 from sc_ocr.segment import find_glyph_regions  # noqa: E402
 from sc_ocr.preprocess import isolate_channel  # noqa: E402
 
@@ -51,7 +52,10 @@ HUD_W, HUD_H = 600, 45
 def _preprocess(frame_bgr: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Returns (binary_for_segmentation, raw_upscaled_for_crop)."""
     channel = isolate_channel(frame_bgr)
-    channel = cv2.resize(channel, None, fx=2, fy=2, interpolation=cv2.INTER_LINEAR)
+    channel = cv2.resize(
+        channel, None, fx=UPSCALE_FACTOR, fy=UPSCALE_FACTOR,
+        interpolation=cv2.INTER_LINEAR,
+    )
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
     enhanced = clahe.apply(channel)
     _, binary = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)

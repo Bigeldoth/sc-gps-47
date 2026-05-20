@@ -21,14 +21,14 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from pathlib import Path
+
+from app_paths import user_data_dir
 
 logger = logging.getLogger(__name__)
 
-# Filesystem layout. Resolved relative to the repo root so the same paths work
-# from src/, tools/, and the PyInstaller bundle.
-REPO_ROOT = Path(__file__).resolve().parent.parent
-VENV_DIR = REPO_ROOT / ".venv-paddle-vl"
+# VL sidecar lives in user data so installs survive across app updates and
+# never need admin rights. In dev mode user_data_dir() == repo root.
+VENV_DIR = user_data_dir() / ".venv-paddle-vl"
 if sys.platform == "win32":
     VENV_PYTHON = VENV_DIR / "Scripts" / "python.exe"
     VENV_PADDLEOCR = VENV_DIR / "Scripts" / "paddleocr.exe"

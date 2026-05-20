@@ -19,13 +19,29 @@ class ConfigManager:
 
         Args:
             config_file: Path to the configuration file.
-        """
-        if getattr(sys, 'frozen', False):
-            self.base_dir = os.path.dirname(sys.executable)
-        else:
-            self.base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-        self.config_path = os.path.join(self.base_dir, config_file)
+        Path strategy: the writable config lives under user_data_dir() so a
+        Program Files install never tries to write into its own read-only
+        folder. On first launch, if the user config is missing, we seed it
+        by copying the default config.ini shipped with the bundle.
+        """
+        import shutil
+        from app_paths import bundle_dir, user_data_dir
+        self.base_dir = str(bundle_dir())  # kept for callers that still read it
+
+        bundled_default = os.path.join(str(bundle_dir()), config_file)
+        self.config_path = os.path.join(str(user_data_dir()), config_file)
+
+        # Seed the user config from the bundle on first run.
+        if not os.path.exists(self.config_path) and os.path.exists(bundled_default):
+            try:
+                shutil.copy2(bundled_default, self.config_path)
+                logger.info(
+                    f"Seeded user config at {self.config_path} from {bundled_default}"
+                )
+            except Exception as e:
+                logger.warning(f"Could not seed user config: {e}")
+
         self.config = configparser.ConfigParser()
         self.load()
 
@@ -56,14 +72,15 @@ class ConfigManager:
         # Existing sections
         if not self.config.has_section('Logging'):
             self.config.add_section('Logging')
-            self.config.set('Logging', 'level', 'DEBUG')
+            self.config.set('Logging', 'level', 'INFO')
             self.config.set('Logging', 'file', 'spacedrive.log')
 
         if not self.config.has_section('Debug'):
             self.config.add_section('Debug')
             self.config.set('Debug', 'capture_screenshot', 'False')
-            self.config.set('Debug', 'save_ocr_images', 'True')
-            self.config.set('Debug', 'verbose_mode', 'True')
+            self.config.set('Debug', 'save_ocr_images', 'False')
+            self.config.set('Debug', 'save_glyph_crops', 'False')
+            self.config.set('Debug', 'verbose_mode', 'False')
 
         if not self.config.has_section('Features'):
             self.config.add_section('Features')
@@ -90,7 +107,8 @@ class ConfigManager:
             self.config.set('Hotkeys', 'toggle_overlay', 'shift+f1')
             self.config.set('Hotkeys', 'open_options', 'shift+f2')
             self.config.set('Hotkeys', 'save_position', 'shift+f3')
-            self.config.set('Hotkeys', 'open_poi_manager', 'ctrl+shift+p')
+            self.config.set('Hotkeys', 'open_poi_manager', 'shift+f4')
+            self.config.set('Hotkeys', 'reset_gps_nav', 'shift+f5')
 
         self.save()
 
@@ -303,7 +321,8 @@ class ConfigManager:
             'toggle_overlay': 'shift+f1',
             'open_options': 'shift+f2',
             'save_position': 'shift+f3',
-            'open_poi_manager': 'ctrl+shift+p'
+            'open_poi_manager': 'shift+f4',
+            'reset_gps_nav': 'shift+f5',
         }
         return self.config.get('Hotkeys', action, fallback=defaults.get(action, ''))
 

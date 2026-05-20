@@ -629,6 +629,7 @@ class OptionsWindow(QDialog):
             'open_options': 'Open options',
             'save_position': 'Save position',
             'open_poi_manager': 'Open POI manager',
+            'reset_gps_nav': 'Stop navigation',
         }
         self.hotkey_table.setRowCount(len(hotkeys))
         for row, (action, hotkey) in enumerate(hotkeys.items()):

@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QLabel, QVBoxLayout,
                              QWidget, QFrame, QSystemTrayIcon, QMenu, QInputDialog, QFileDialog)
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QObject
 from PyQt6.QtGui import QIcon, QAction, QColor, QCursor
+from app_paths import user_data_dir
 from capture import ScreenCapture
 from ocr import OCRProcessor
 from navigation import (
@@ -29,12 +30,23 @@ from ui.poi_manager import POIManagerWindow
 config = configparser.ConfigParser()
 config.read('config.ini')
 
+# Log file path: respect an absolute path explicitly set in config, otherwise
+# write into the user data dir (writable from any user, survives reinstall).
+# Writing relative to CWD breaks the installed build because CWD = Program
+# Files\SpaceDrive\ which is read-only for non-admin processes.
+_log_file_setting = config.get('Logging', 'file', fallback='spacedrive.log')
+if os.path.isabs(_log_file_setting):
+    _log_file_path = _log_file_setting
+else:
+    _log_file_path = str(user_data_dir() / _log_file_setting)
+
 logging.basicConfig(
     level=getattr(logging, config.get('Logging', 'level', fallback='INFO')),
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    filename=config.get('Logging', 'file', fallback='spacedrive.log')
+    filename=_log_file_path,
 )
 logger = logging.getLogger(__name__)
+logger.info("Log file: %s", _log_file_path)
 
 
 def _build_ocr_processor(cfg):
@@ -343,6 +355,9 @@ class GPSOverlay(QMainWindow):
         )
         self.hotkey_listener.open_poi_manager_triggered.connect(
             self.show_poi_manager_window, Qt.ConnectionType.QueuedConnection
+        )
+        self.hotkey_listener.reset_gps_nav_triggered.connect(
+            self.reset_velocity_tracker, Qt.ConnectionType.QueuedConnection
         )
 
     def _on_hotkey_save_position(self):
@@ -824,8 +839,8 @@ class GPSOverlay(QMainWindow):
         """Loads SpaceDrive icon from assets/, or system fallback.
 
         Looks in order:
-          1. assets/icon.ico  (Windows, native multi-size)
-          2. assets/icon.png  (cross-platform high resolution)
+          1. assets/spacedrive.ico  (Windows, native multi-size)
+          2. assets/icon.png        (cross-platform high resolution fallback)
           3. standard SP_ComputerIcon (ultimate fallback)
         """
         if getattr(sys, 'frozen', False):
@@ -833,7 +848,7 @@ class GPSOverlay(QMainWindow):
         else:
             base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-        for filename in ('icon.ico', 'icon.png'):
+        for filename in ('spacedrive.ico', 'icon.png'):
             path = os.path.join(base_dir, 'assets', filename)
             if os.path.exists(path):
                 icon = QIcon(path)
@@ -864,21 +879,14 @@ class GPSOverlay(QMainWindow):
         poi_action.triggered.connect(self.show_poi_manager_window)
         tray_menu.addAction(poi_action)
 
-        reset_gps_action = QAction("Reset GPS", self)
+        reset_gps_action = QAction("Stop navigation", self)
+        reset_gps_action.setShortcut("Shift+F5")  # cosmetic — the global
+        # hotkey is wired separately via HotkeyListener so it fires even
+        # when SpaceDrive is not the focused window.
         reset_gps_action.triggered.connect(self.reset_velocity_tracker)
         tray_menu.addAction(reset_gps_action)
 
         tray_menu.addSeparator()
-
-        poi_menu = tray_menu.addMenu("Points of Interest")
-
-        save_action = QAction("Save position", self)
-        save_action.triggered.connect(self.prompt_save_point)
-        poi_menu.addAction(save_action)
-
-        select_poi_action = QAction("Choose destination...", self)
-        select_poi_action.triggered.connect(self.show_poi_selector)
-        poi_menu.addAction(select_poi_action)
 
         data_menu = tray_menu.addMenu("Data")
 
@@ -998,20 +1006,32 @@ class GPSOverlay(QMainWindow):
             self.toggle_overlay()
 
     def reset_velocity_tracker(self):
-        """Forgets position history (useful after quantum jump)."""
+        """Resets GPS state AND cancels any active navigation toward a POI.
+
+        Triggered by the tray action and by the `reset_gps_nav` hotkey
+        (default Shift+F5). Both reset the velocity tracker (useful after a
+        quantum jump that breaks the EMA) and clear the current destination
+        so the overlay stops painting bearing/distance toward a stale POI.
+        """
         self._velocity_tracker.reset()
         self._smoothed_yaw_off = None
         self._smoothed_pitch_off = None
         self._last_raw_yaw_off = None
         self._last_raw_pitch_off = None
+        had_target = self.nav.target is not None
+        self.nav.clear_target()
         self._refresh_nav_label()
         self.tray_icon.showMessage(
             "GPS reset",
-            "Movement history cleared. Move to recalculate direction.",
+            ("Movement history cleared and navigation stopped."
+             if had_target
+             else "Movement history cleared. Move to recalculate direction."),
             QSystemTrayIcon.MessageIcon.Information,
             2500,
         )
-        logger.info("VelocityTracker reset")
+        logger.info(
+            "GPS reset (velocity tracker cleared, target cleared=%s)", had_target,
+        )
 
     def prompt_save_point(self):
         logger.debug("prompt_save_point triggered")
@@ -1071,20 +1091,6 @@ class GPSOverlay(QMainWindow):
                 QSystemTrayIcon.MessageIcon.Critical,
                 3000,
             )
-
-    def show_poi_selector(self):
-        pois = self.nav.get_all_poi_for_location("All")
-        if not pois:
-            self.tray_icon.showMessage("Info", "No points registered.", QSystemTrayIcon.MessageIcon.Information)
-            return
-
-        menu = QMenu()
-        for poi in pois:
-            action = QAction(f"{poi['name']} ({poi.get('location', 'Unknown')})", self)
-            action.triggered.connect(lambda checked, p=poi: self._on_destination_changed(p))
-            menu.addAction(action)
-
-        menu.exec(self.tray_icon.geometry().center())
 
     def export_data(self):
         path, _ = QFileDialog.getSaveFileName(self, "Export points", "", "JSON Files (*.json)")

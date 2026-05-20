@@ -15,6 +15,6 @@ python -m pip install -r requirements.txt
 python src/main.py
 ```
 
-In-game, open the console (`` ` ``) and type `r_DisplayInfo 3` to display the debug HUD that SpaceDrive will read.
+In-game, open the console (`` ` ``) and type `r_DisplayInfo 2` to display the debug HUD that SpaceDrive will read.
 
 Shortcuts: `Shift+F1` toggle overlay · `Shift+F3` snapshot POI · `Shift+F4` POI manager.
