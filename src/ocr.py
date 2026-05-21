@@ -48,34 +48,70 @@ logger = logging.getLogger(__name__)
 # ─── Regex ────────────────────────────────────────────────────────────
 
 _RE_ZONE = re.compile(r'Zone:\s*SolarSystem[_-]?([\d\w]+?)(?:Pos|Zone|$|\s)', re.IGNORECASE)
+# Per-axis pattern: either "<n>.<3-4 decimals> km" (full-km display) or
+# "<n>.<1-2 decimals> m" (SC switches to meters when an axis is small,
+# typically a few km from the zone origin — e.g. `5156.60m`). The two
+# capture groups per axis are mutually exclusive: exactly one is populated
+# per axis. `(?!k)` after `m` prevents the meter branch from gobbling the
+# 'm' of 'km'.
+_RE_AXIS = r'(?:(-?\d+\.\d{3,4})\s*km|(-?\d+\.\d{1,2})\s*m(?!k))'
+# Relaxed last-axis: km allows 2-4 decimals (paddle truncates the right
+# edge sometimes), m unchanged.
+_RE_AXIS_LAX_LAST = r'(?:(-?\d+\.\d{2,4})\s*km|(-?\d+\.\d{1,2})\s*m(?!k))'
+
 _RE_POS = re.compile(
-    # Require 3-4 decimal places: SC always displays 4 decimals (10 cm precision).
-    # If Tesseract drops digits, the reading is rejected rather than recording
-    # an approximate position that would cause ~10 m errors at destination.
-    # The trailing 'km' is wrapped in (?:\s*km?)? so it can be missing or
-    # truncated to 'k' — Paddle frequently clips that suffix when the text
-    # touches the right edge of the crop. The 3-4 decimal constraint still
-    # rules out false matches.
-    r'[Pp]os:?\s*(-?\d+\.\d{3,4})\s*km\s*(-?\d+\.\d{3,4})\s*km\s*(-?\d+\.\d{3,4})(?:\s*km?)?',
+    # Strict 3-axis Pos: line. Per axis: 3-4 decimals (km) OR 1-2 decimals
+    # (m). Each match yields 6 groups: (km, m) × 3 axes. If Tesseract drops
+    # a digit, the precision constraint rejects the noisy reading rather
+    # than recording an approximate position.
+    rf'[Pp]os:?\s*{_RE_AXIS}\s*{_RE_AXIS}\s*{_RE_AXIS}',
     re.IGNORECASE,
 )
-# Fallback regex used only when _RE_POS fails: relaxes the third coordinate
-# to 2-4 decimals to catch paddle's right-edge truncation (e.g. -263.8265
-# → -263.82). Still demands the first two coords at full precision so we
-# never match a noisy partial reading by accident.
+# Fallback regex used only when _RE_POS fails: relaxes the third axis km
+# decimal count to 2-4 to catch paddle's right-edge truncation. First two
+# axes stay strict so we never match a noisy partial reading by accident.
 _RE_POS_RELAXED_LAST = re.compile(
-    r'[Pp]os:?\s*(-?\d+\.\d{3,4})\s*km\s*(-?\d+\.\d{3,4})\s*km\s*(-?\d+\.\d{2,4})(?:\s*km?)?',
+    rf'[Pp]os:?\s*{_RE_AXIS}\s*{_RE_AXIS}\s*{_RE_AXIS_LAX_LAST}',
     re.IGNORECASE,
 )
-# Headless triple-coord regex: matches three `<num>km <num>km <num>` blocks
-# anywhere in the string, no `Pos:` prefix required. Used ONLY as a last
-# resort on lines that already look like OOC navigation (contains an OOC
-# zone token), to recover frames where Paddle lost the 'Pos:' keyword (or
-# rendered it as digits, e.g. '905').
+# Headless triple-coord regex: matches three axis blocks anywhere in the
+# string, no `Pos:` prefix required. Used ONLY as a last resort on lines
+# that already look like OOC navigation (contains an OOC zone token), to
+# recover frames where Paddle lost the 'Pos:' keyword (or rendered it as
+# digits, e.g. '905').
 _RE_POS_HEADLESS = re.compile(
-    r'(-?\d+\.\d{3,4})\s*km\s*(-?\d+\.\d{3,4})\s*km\s*(-?\d+\.\d{2,4})(?:\s*km?)?',
+    rf'{_RE_AXIS}\s*{_RE_AXIS}\s*{_RE_AXIS_LAX_LAST}',
     re.IGNORECASE,
 )
+
+
+def _km_from_axis_groups(km_grp, m_grp):
+    """Convert the (km, m) capture pair of an axis to a value in km.
+
+    The 6-group Pos regexes alternate (km_grp, m_grp) per axis. Exactly one
+    is non-None — call this helper once per axis. Returns None only if both
+    are absent (shouldn't happen on a successful match).
+    """
+    if km_grp is not None:
+        return float(km_grp)
+    if m_grp is not None:
+        return float(m_grp) / 1000.0
+    return None
+
+
+def _pos_match_to_coords(match):
+    """Convert a successful _RE_POS / _RE_POS_RELAXED_LAST / _RE_POS_HEADLESS
+    match to an (x, y, z) tuple in km, or None on conversion failure.
+    """
+    try:
+        x = _km_from_axis_groups(match.group(1), match.group(2))
+        y = _km_from_axis_groups(match.group(3), match.group(4))
+        z = _km_from_axis_groups(match.group(5), match.group(6))
+    except (ValueError, IndexError):
+        return None
+    if None in (x, y, z):
+        return None
+    return (x, y, z)
 # Heuristic OOC line marker — covers the in-game zone names we know Paddle
 # garbles. Kept loose because Paddle never reads 'OOC' or 'Stanton' clean.
 # Variants observed in diagnostics: 'tanton', 'tantan', '5tanton', '5tantan',
@@ -160,19 +196,50 @@ def _build_tesseract_config():
 
 # ─── CamDir parsing ───────────────────────────────────────────────────
 
+def _greedy_split(digits, n, max_abs):
+    """Greedy left-to-right partition of `digits` (positive digit string) into
+    exactly ``n`` consecutive integers, each in [0, max_abs]. Returns the
+    first valid partition (smallest leading prefix first), or None.
+
+    Used to recover values from OCR runs where spaces between consecutive
+    angles were lost — e.g. ``8439134`` → [84, 39, 134] (n=3),
+    ``5177`` → [5, 177] (n=2).
+    """
+    if n <= 0:
+        return [] if not digits else None
+    if n == 1:
+        if not digits or len(digits) > len(str(max_abs)):
+            return None
+        v = int(digits)
+        return [v] if v <= max_abs else None
+    max_head_len = min(len(str(max_abs)), len(digits) - (n - 1))
+    for head_len in range(1, max_head_len + 1):
+        head = int(digits[:head_len])
+        if head > max_abs:
+            break  # monotone: longer prefixes only grow
+        rest = _greedy_split(digits[head_len:], n - 1, max_abs)
+        if rest is not None:
+            return [head] + rest
+    return None
+
+
 def _parse_camdir_values(line, max_abs=180):
-    """Extracts (pitch, roll, yaw) from a CamDir line, handles missing spaces.
+    """Extracts (pitch, roll, yaw) from a CamDir line, tolerant to OCR
+    space-merge errors.
 
     Strategy:
       1. Isolate the payload after 'Camdir' up to 'FOV' (or end of line).
       2. Insert a space before any '-' that follows a digit, to separate
          consecutive negative values ('25-5177' → '25 -5177').
       3. Extract tokens via re.findall(r'-?\\d+').
-      4. For each token whose |value| > max_abs, greedily split from the
-         left: cut at the shortest prefix that stays within [-max_abs, +max_abs]
-         and whose remainder also does.
-         e.g. '-5177' → ['-5', '177'].
-      5. Return the list of the first 3 valid ints or None.
+      4. For each token whose |value| ≤ max_abs, accept it directly.
+         Otherwise greedy-split it into the remaining 1, 2 or 3 pieces
+         we still need to reach a full triplet (largest split tried first,
+         then back off). Each piece must lie in [0, max_abs]; the original
+         sign is applied to the first piece only.
+         e.g. '8439134' (no spaces) → [84, 39, 134].
+         e.g. '25 -5177' → [25, -5, 177].
+      5. Return the first 3 valid ints or None.
     """
     if not line:
         return None
@@ -192,33 +259,30 @@ def _parse_camdir_values(line, max_abs=180):
     for tok in tokens:
         if len(out) >= 3:
             break
-        try:
-            n = int(tok)
-        except ValueError:
-            continue
-        if -max_abs <= n <= max_abs:
-            out.append(n)
-            continue
         sign = -1 if tok.startswith('-') else 1
         digits = tok.lstrip('-')
-        split_found = False
-        for i in range(1, len(digits)):
-            head = sign * int(digits[:i])
-            tail = digits[i:]
-            if not tail:
-                continue
-            try:
-                tail_n = int(tail)
-            except ValueError:
-                continue
-            if -max_abs <= head <= max_abs and -max_abs <= tail_n <= max_abs:
-                out.append(head)
-                if len(out) < 3:
-                    out.append(tail_n)
-                split_found = True
+        if not digits:
+            continue
+        try:
+            n = int(digits)
+        except ValueError:
+            continue
+        if n <= max_abs:
+            out.append(sign * n)
+            continue
+        # Token is too large: it contains multiple merged values. Try to
+        # split it into the number of values we still need, then fall back
+        # to smaller splits if the largest is not parseable.
+        needed = 3 - len(out)
+        parts = None
+        for k in range(needed, 0, -1):
+            parts = _greedy_split(digits, k, max_abs)
+            if parts is not None:
                 break
-        if not split_found:
+        if parts is None:
             return None
+        parts[0] = sign * parts[0]
+        out.extend(parts)
     if len(out) >= 3:
         return out[:3]
     return None
@@ -424,11 +488,20 @@ def _join_orphan_pos_lines(text: str) -> str:
 
 
 def _is_meter_line(line: str) -> bool:
-    """True if the line expresses coordinates in meters (not km).
+    """True if the line expresses ALL coordinates in meters (no km at all).
 
-    Sub-zone lines (PlayerContainer, HabPos...) use 'm' as the unit.
-    They are rejected: they do not correspond to navigable OOC coordinates.
+    Sub-zone lines (PlayerContainer, HabPos...) use 'm' for every axis —
+    they are rejected: they do not correspond to navigable OOC coordinates.
+
+    Mixed-unit lines (e.g. ``Pos: 5156.60m -280.9130km -42.5880km``) are
+    legitimate OOC reads where one axis happens to be close enough to the
+    zone origin that SC switched it to meters. These return False and are
+    parsed normally — _RE_POS now accepts km|m per axis.
     """
+    # If any km unit is present, this is an OOC-frame line (mixed or pure km).
+    if re.search(r'\d+\.\d+\s*km\b', line, re.IGNORECASE):
+        return False
+    # No km + at least one m suffix → pure-meter sub-container line.
     return bool(re.search(r'\d+\.\d+\s*m\b(?!\s*k)', line, re.IGNORECASE))
 
 
@@ -1419,14 +1492,9 @@ class OCRProcessor:
         # of risking a false match via recovery.
         coord_match = _RE_POS.search(normalized)
         if coord_match:
-            try:
-                return (
-                    float(coord_match.group(1)),
-                    float(coord_match.group(2)),
-                    float(coord_match.group(3)),
-                )
-            except ValueError:
-                pass
+            coords = _pos_match_to_coords(coord_match)
+            if coords is not None:
+                return coords
 
         return None
 
@@ -1439,33 +1507,23 @@ class OCRProcessor:
         """
         coord_match = _RE_POS.search(normalized_line)
         if coord_match:
-            try:
-                return (
-                    float(coord_match.group(1)),
-                    float(coord_match.group(2)),
-                    float(coord_match.group(3)),
-                )
-            except ValueError as e:
-                logger.error(f"[{pass_name}] Coordinate conversion error: {e}")
-                return None
+            coords = _pos_match_to_coords(coord_match)
+            if coords is not None:
+                return coords
+            logger.error(f"[{pass_name}] Coordinate conversion failed for match")
+            return None
         # Fallback: relaxed third-coord (2-4 decimals) for paddle truncation
         # cases like `... -103.5786km -263.82` where the right edge of the
         # detection box clipped the trailing decimals.
         relaxed = _RE_POS_RELAXED_LAST.search(normalized_line)
         if relaxed:
-            try:
-                coords = (
-                    float(relaxed.group(1)),
-                    float(relaxed.group(2)),
-                    float(relaxed.group(3)),
-                )
+            coords = _pos_match_to_coords(relaxed)
+            if coords is not None:
                 logger.info(
                     f"[{pass_name}] Position recovered via relaxed last-coord regex: "
                     f"X={coords[0]} Y={coords[1]} Z={coords[2]}"
                 )
                 return coords
-            except ValueError:
-                pass
         # Last resort: paddle sometimes loses the 'Pos:' keyword entirely
         # (e.g. reads it as '905' or simply drops it). If the line still
         # looks like an OOC line (zone-name hint) AND we can match three
@@ -1474,20 +1532,13 @@ class OCRProcessor:
         if _RE_OOC_HINT.search(normalized_line):
             head = _RE_POS_HEADLESS.search(normalized_line)
             if head:
-                try:
-                    coords = (
-                        float(head.group(1)),
-                        float(head.group(2)),
-                        float(head.group(3)),
+                coords = _pos_match_to_coords(head)
+                if coords is not None and _coords_in_range(*coords):
+                    logger.info(
+                        f"[{pass_name}] Position recovered via headless triple-coord "
+                        f"regex (Pos keyword was lost): X={coords[0]} Y={coords[1]} Z={coords[2]}"
                     )
-                    if _coords_in_range(*coords):
-                        logger.info(
-                            f"[{pass_name}] Position recovered via headless triple-coord "
-                            f"regex (Pos keyword was lost): X={coords[0]} Y={coords[1]} Z={coords[2]}"
-                        )
-                        return coords
-                except ValueError:
-                    pass
+                    return coords
         # Attempt to recover the missing '.' (Phase B).
         recovered = _try_recover_pos_line(normalized_line)
         if recovered is not None:

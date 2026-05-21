@@ -108,3 +108,98 @@ def test_add_user_point_records_ooc():
     nav.user_poi_file = "/tmp/_dummy_user_poi.json"
     pt = nav.add_user_point("test", 1.0, 2.0, 3.0, "Stanton", ooc="Stanton_1_Hurston")
     assert pt["ooc"] == "Stanton_1_Hurston"
+
+
+# ---- POI kind: surface vs space ----
+
+def test_add_user_point_records_kind_default_space():
+    """Default kind is 'space' for backward compatibility with existing callers."""
+    nav = NavigationEngine()
+    nav.user_poi = []
+    nav.user_poi_file = "/tmp/_dummy_user_poi.json"
+    pt = nav.add_user_point("test", 1.0, 2.0, 3.0, "Stanton", ooc="Stanton_1_Hurston")
+    assert pt["kind"] == "space"
+
+
+def test_add_user_point_records_kind_surface():
+    nav = NavigationEngine()
+    nav.user_poi = []
+    nav.user_poi_file = "/tmp/_dummy_user_poi.json"
+    pt = nav.add_user_point(
+        "base", 1.0, 2.0, 3.0, "Hurston",
+        ooc="Stanton_1_Hurston", kind="surface",
+    )
+    assert pt["kind"] == "surface"
+
+
+def test_calculate_distance_surface_ignores_z():
+    """Surface POI: altitude mismatch must not inflate the distance.
+
+    Target at (3, 4, 100), player at (0, 0, 0). With kind='surface' the
+    100 km Z gap is ignored; only the horizontal 5 km counts.
+    """
+    nav = NavigationEngine()
+    nav.set_target(3.0, 4.0, 100.0, "Outpost", ooc="Hurston", kind="surface")
+    dist = nav.calculate_distance({"x": 0.0, "y": 0.0, "z": 0.0, "ooc": "Hurston"})
+    assert dist == 5.0
+
+
+def test_calculate_distance_space_uses_z():
+    """Space POI: 3D distance unchanged from previous behavior."""
+    nav = NavigationEngine()
+    nav.set_target(3.0, 4.0, 100.0, "Station", ooc="Hurston", kind="space")
+    dist = nav.calculate_distance({"x": 0.0, "y": 0.0, "z": 0.0, "ooc": "Hurston"})
+    # sqrt(9 + 16 + 10000) = sqrt(10025) ≈ 100.1249
+    assert abs(dist - 100.1249) < 1e-3
+
+
+def test_calculate_distance_default_kind_is_space():
+    """A target without an explicit kind keeps the legacy 3D behavior."""
+    nav = NavigationEngine()
+    nav.set_target(3.0, 4.0, 100.0, "Legacy", ooc="Hurston")
+    dist = nav.calculate_distance({"x": 0.0, "y": 0.0, "z": 0.0, "ooc": "Hurston"})
+    assert abs(dist - 100.1249) < 1e-3
+
+
+def test_calculate_distance_surface_altitude_independent():
+    """A player varying altitude over a surface POI keeps the same distance."""
+    nav = NavigationEngine()
+    nav.set_target(10.0, 0.0, 0.0, "Base", ooc="Hurston", kind="surface")
+    d_low = nav.calculate_distance({"x": 0.0, "y": 0.0, "z": 0.0, "ooc": "Hurston"})
+    d_high = nav.calculate_distance({"x": 0.0, "y": 0.0, "z": 5.0, "ooc": "Hurston"})
+    assert d_low == d_high == 10.0
+
+
+# ---- POI Manager edit: preserve fields the dialog does not expose ----
+
+def test_edit_poi_merge_preserves_ooc():
+    """`POIManagerWindow._edit_poi` must keep ``ooc`` after a dialog edit.
+
+    The edit dialog only exposes name/x/y/z/location/description/kind, so
+    rebuilding the POI dict from dialog output drops ``ooc`` and breaks
+    navigation (calculate_distance returns None on missing ooc).
+    The fix is to merge (dict.update) the dialog output into the original.
+    """
+    nav = NavigationEngine()
+    nav.user_poi = []
+    nav.user_poi_file = "/tmp/_dummy_user_poi.json"
+    nav.add_user_point(
+        "Outpost", 1.0, 2.0, 3.0, "Hurston",
+        ooc="Stanton_1_Hurston", kind="space",
+    )
+
+    # Simulate POIEditDialog.get_poi_data — no ``ooc`` key returned.
+    new_data = {
+        "name": "Outpost-renamed",
+        "x": 1.0, "y": 2.0, "z": 3.0,
+        "location": "Hurston",
+        "description": "now a depot",
+        "kind": "surface",
+    }
+    nav.user_poi[0].update(new_data)
+
+    edited = nav.user_poi[0]
+    assert edited["ooc"] == "Stanton_1_Hurston"  # preserved by merge
+    assert edited["name"] == "Outpost-renamed"
+    assert edited["kind"] == "surface"
+    assert edited["description"] == "now a depot"

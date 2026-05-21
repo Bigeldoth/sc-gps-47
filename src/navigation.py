@@ -83,6 +83,18 @@ def ema_angle(prev, new, alpha):
     return normalize_angle_signed(prev + alpha * diff)
 
 
+def _effective_dz(target, current_pos):
+    """Return the Z delta to use for distance/bearing calculations.
+
+    Surface POIs (``kind == "surface"``) return 0.0: altitude does not
+    contribute to the displayed remaining distance or to the pitch arrow.
+    Space POIs (default) return the true Z difference.
+    """
+    if target.get("kind") == "surface":
+        return 0.0
+    return target["z"] - current_pos["z"]
+
+
 def calculate_absolute_bearing(current_pos, target):
     """Absolute heading (world frame) from the current position to the target.
 
@@ -104,7 +116,7 @@ def calculate_absolute_bearing(current_pos, target):
 
     dx = target["x"] - current_pos["x"]
     dy = target["y"] - current_pos["y"]
-    dz = target["z"] - current_pos["z"]
+    dz = _effective_dz(target, current_pos)
     distance = math.sqrt(dx * dx + dy * dy + dz * dz)
 
     horiz = math.hypot(dx, dy)
@@ -168,7 +180,7 @@ def calculate_velocity_bearing(velocity, current_pos, target):
 
     dx = target["x"] - current_pos["x"]
     dy = target["y"] - current_pos["y"]
-    dz = target["z"] - current_pos["z"]
+    dz = _effective_dz(target, current_pos)
     if dx == 0 and dy == 0 and dz == 0:
         return 0.0, 0.0
 
@@ -238,12 +250,15 @@ class NavigationEngine:
         except:
             return False
 
-    def add_user_point(self, name, x, y, z, location="Unknown", ooc=None):
+    def add_user_point(self, name, x, y, z, location="Unknown", ooc=None, kind="space"):
         """Add a new custom point.
 
         ``ooc`` (ObjectContainer name, e.g. ``Stanton_1_Hurston``) identifies
         the planet-relative frame. Required for navigation: distance and
         bearing can only be computed within the same OOC.
+
+        ``kind`` is either ``"surface"`` (planet/moon — Z ignored for distance
+        and pitch) or ``"space"`` (3D distance and pitch as usual).
         """
         point = {
             "name": name,
@@ -252,6 +267,7 @@ class NavigationEngine:
             "z": z,
             "location": location,
             "ooc": ooc,
+            "kind": kind,
         }
         self.user_poi.append(point)
         self.save_user_poi()
@@ -290,7 +306,7 @@ class NavigationEngine:
             print(f"Error loading POI: {e}")
             return []
 
-    def set_target(self, x, y, z, name="Destination", ooc=None):
+    def set_target(self, x, y, z, name="Destination", ooc=None, kind="space"):
         """Set the destination and start zone tracking.
 
         ``ooc`` is the expected zone name. It is assumed the user is already
@@ -300,8 +316,13 @@ class NavigationEngine:
         confirms this assumption on the first OCR match. If no match occurs
         within ``_ZONE_GRACE_PERIOD_S`` seconds, the player is considered
         out-of-zone.
+
+        ``kind`` ("surface" or "space") controls whether the Z axis
+        contributes to distance and pitch calculations. Surface POIs use
+        horizontal-only navigation so altitude mismatch does not inflate
+        the displayed remaining distance.
         """
-        self.target = {"x": x, "y": y, "z": z, "name": name, "ooc": ooc}
+        self.target = {"x": x, "y": y, "z": z, "name": name, "ooc": ooc, "kind": kind}
         self._zone_match_locked = False
         self._zone_last_match_ts = time.monotonic()
         if ooc:
@@ -369,6 +390,9 @@ class NavigationEngine:
         ``None`` if the target is not set, the current position is missing,
         OR the player and target are in different OOCs (distance has no
         meaning without a cross-zone transform).
+
+        For surface POIs (``kind == "surface"``) Z is ignored: distance is
+        horizontal only, so altitude mismatch does not inflate the result.
         """
         if not self.target or current_pos.get("x") is None:
             return None
@@ -377,7 +401,7 @@ class NavigationEngine:
 
         dx = self.target["x"] - current_pos["x"]
         dy = self.target["y"] - current_pos["y"]
-        dz = self.target["z"] - current_pos["z"]
+        dz = _effective_dz(self.target, current_pos)
 
         return math.sqrt(dx * dx + dy * dy + dz * dz)
 
@@ -388,7 +412,7 @@ class NavigationEngine:
 
         dx = self.target["x"] - current_pos["x"]
         dy = self.target["y"] - current_pos["y"]
-        dz = self.target["z"] - current_pos["z"]
+        dz = _effective_dz(self.target, current_pos)
 
         # In SC space navigation, visual alignment is typically used.
         # This engine returns deltas to help the overlay place a cursor.

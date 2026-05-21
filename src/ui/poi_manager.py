@@ -6,10 +6,11 @@ import logging
 import json
 import os
 import sys
-from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
+from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                              QPushButton, QTableWidget, QTableWidgetItem,
                              QHeaderView, QMessageBox, QLineEdit, QWidget,
-                             QAbstractItemView, QInputDialog)
+                             QAbstractItemView, QInputDialog,
+                             QRadioButton, QButtonGroup)
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QPalette, QColor, QFontDatabase, QFont
 
@@ -147,6 +148,15 @@ class POIManagerWindow(QDialog):
                 border: 1px solid #555;
                 font-weight: bold;
             }
+            QRadioButton {
+                color: #dcdcdc;
+                font-size: 10pt;
+                spacing: 6px;
+            }
+            QRadioButton::indicator {
+                width: 14px;
+                height: 14px;
+            }
         """)
     
     def _create_ui(self):
@@ -268,6 +278,7 @@ class POIManagerWindow(QDialog):
                     "description": poi.get("description", ""),
                     "location": poi.get("location", "Unknown"),
                     "ooc": poi.get("ooc"),
+                    "kind": poi.get("kind", "space"),
                     "source": "user",
                 }
                 self.all_pois.append(poi_entry)
@@ -362,7 +373,8 @@ class POIManagerWindow(QDialog):
                 poi_data["x"],
                 poi_data["y"],
                 poi_data["z"],
-                poi_data.get("location", "Unknown")
+                poi_data.get("location", "Unknown"),
+                kind=poi_data.get("kind", "space"),
             )
 
             # Reload POIs
@@ -386,20 +398,15 @@ class POIManagerWindow(QDialog):
         if dialog.exec() == QDialog.DialogCode.Accepted:
             new_data = dialog.get_poi_data()
 
-            # Find and update the POI in user_poi
+            # Find and update the POI in user_poi. Merge new_data into the
+            # original dict so fields the dialog does not expose (notably
+            # ``ooc``, set at save time from the player's zone) are preserved.
             for i, user_poi in enumerate(self.nav.user_poi):
                 if (user_poi["name"] == poi["name"] and
                     user_poi["x"] == poi["x"] and
                     user_poi["y"] == poi["y"] and
                     user_poi["z"] == poi["z"]):
-                    self.nav.user_poi[i] = {
-                        "name": new_data["name"],
-                        "x": new_data["x"],
-                        "y": new_data["y"],
-                        "z": new_data["z"],
-                        "description": new_data.get("description", ""),
-                        "location": new_data.get("location", "Unknown")
-                    }
+                    self.nav.user_poi[i].update(new_data)
                     break
 
             # Save
@@ -542,6 +549,19 @@ class POIEditDialog(QDialog):
         location_layout.addWidget(self.location_input)
         layout.addLayout(location_layout)
 
+        # Kind (surface = planet/moon, ignore Z for distance ; space = full 3D)
+        kind_layout = QHBoxLayout()
+        kind_layout.addWidget(QLabel("Type:"))
+        self.surface_radio = QRadioButton("Surface (planet/moon)")
+        self.space_radio = QRadioButton("Space")
+        self.space_radio.setChecked(True)
+        self._kind_group = QButtonGroup(self)
+        self._kind_group.addButton(self.surface_radio)
+        self._kind_group.addButton(self.space_radio)
+        kind_layout.addWidget(self.surface_radio)
+        kind_layout.addWidget(self.space_radio)
+        layout.addLayout(kind_layout)
+
         # Description
         desc_layout = QHBoxLayout()
         desc_layout.addWidget(QLabel("Description:"))
@@ -570,8 +590,16 @@ class POIEditDialog(QDialog):
         self.x_input.setText(str(self.poi_data["x"]))
         self.y_input.setText(str(self.poi_data["y"]))
         self.z_input.setText(str(self.poi_data["z"]))
-        self.location_input.setText(self.poi_data.get("location", ""))
+        # "Unknown" is a sentinel set by the save-point hotkey when no
+        # location is known. Don't surface it in the edit dialog — show the
+        # field as empty so the placeholder hint is visible.
+        location = self.poi_data.get("location", "")
+        self.location_input.setText("" if location == "Unknown" else location)
         self.desc_input.setText(self.poi_data.get("description", ""))
+        if self.poi_data.get("kind") == "surface":
+            self.surface_radio.setChecked(True)
+        else:
+            self.space_radio.setChecked(True)
 
     def _validate_and_accept(self):
         """Validates data and accepts the dialog"""
@@ -598,5 +626,6 @@ class POIEditDialog(QDialog):
             "y": float(self.y_input.text()),
             "z": float(self.z_input.text()),
             "location": self.location_input.text() or "Unknown",
-            "description": self.desc_input.text()
+            "description": self.desc_input.text(),
+            "kind": "surface" if self.surface_radio.isChecked() else "space",
         }

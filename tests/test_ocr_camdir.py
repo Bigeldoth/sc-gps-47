@@ -10,6 +10,7 @@ from ocr import (
     _RE_OOC_HINT,
     _RE_POS,
     _parse_camdir_values,
+    _pos_match_to_coords,
 )
 
 
@@ -39,13 +40,10 @@ def _parse_text(text):
                 continue
             m = _RE_POS.search(line)
             if m:
-                try:
-                    data["x"] = float(m.group(1))
-                    data["y"] = float(m.group(2))
-                    data["z"] = float(m.group(3))
+                coords = _pos_match_to_coords(m)
+                if coords is not None:
+                    data["x"], data["y"], data["z"] = coords
                     data["ooc"] = ooc_match.group(1).strip().replace(" ", "_")
-                except ValueError:
-                    pass
     return data
 
 
@@ -127,9 +125,25 @@ def test_camdir_partial_space():
     assert _parse_camdir_values("CamDir: 8-29-128FOV:59") == [8, -29, -128]
 
 
-def test_camdir_3pos_no_separator_unrecoverable():
-    # '2727112' purely positive and merged: ambiguous, return None
-    assert _parse_camdir_values("CamDir:2727112FOV:59") is None
+def test_camdir_3pos_no_separator():
+    # '2727112' has a unique 3-way greedy split: (27, 27, 112). The parser
+    # now recovers it. (Previously returned None as "ambiguous"; in
+    # practice OCR space-merge across all three values is common and the
+    # greedy-left strategy succeeds.)
+    assert _parse_camdir_values("CamDir:2727112FOV:59") == [27, 27, 112]
+
+
+def test_camdir_3pos_merged_8439134():
+    # User report: OCR fuses '84 39 134' (real value) into '8439134'.
+    # Greedy-left 3-way split must recover [84, 39, 134].
+    assert _parse_camdir_values("CamDir:8439134FOV:60") == [84, 39, 134]
+
+
+def test_camdir_3pos_merged_user_log():
+    # Verbatim from spacedrive.log — Tesseract reads digit-merged plus
+    # some digit misreads. We just verify the parser produces a clean
+    # 3-way split (downstream code does sanity checks on the values).
+    assert _parse_camdir_values("CamDir:7712152FOV:59Focal:0.10FStop:64.0") == [77, 12, 152]
 
 
 def test_camdir_canonical_via_parser():
@@ -191,6 +205,51 @@ def test_ooc_no_underscore_in_oocname_compact():
     d = _parse_text(text)
     assert d["ooc"] == "Stanton1_L2"
     assert abs(d["x"] - 4133.5634) < 1e-3
+
+
+# ---- Mixed-unit Pos lines: one axis in meters, others in km ----
+
+def test_ooc_first_axis_in_meters():
+    # User-observed: near zone origin, X drops to meters with 2 decimals
+    # while Y/Z stay in km with 4 decimals. Must be accepted and converted.
+    text = "Zone: OOC_Stanton_3b_Wala Pos: 5156.60m -280.9130km -42.5880km"
+    d = _parse_text(text)
+    assert d["ooc"] == "Stanton_3b_Wala"
+    assert abs(d["x"] - 5.1566) < 1e-4   # 5156.60 m → 5.1566 km
+    assert abs(d["y"] - (-280.9130)) < 1e-4
+    assert abs(d["z"] - (-42.5880)) < 1e-4
+
+
+def test_ooc_middle_axis_in_meters():
+    text = "Zone:OOC_Stanton_1_Hurston Pos:130.9362km 800.50m -42.5880km"
+    d = _parse_text(text)
+    assert d["ooc"] == "Stanton_1_Hurston"
+    assert abs(d["x"] - 130.9362) < 1e-4
+    assert abs(d["y"] - 0.80050) < 1e-4   # 800.50 m → 0.80050 km
+    assert abs(d["z"] - (-42.5880)) < 1e-4
+
+
+def test_ooc_last_axis_in_meters():
+    text = "Zone:OOC_Stanton_1_Hurston Pos:130.9362km -280.9130km 250.75m"
+    d = _parse_text(text)
+    assert abs(d["x"] - 130.9362) < 1e-4
+    assert abs(d["y"] - (-280.9130)) < 1e-4
+    assert abs(d["z"] - 0.25075) < 1e-4
+
+
+def test_pos_all_meters_still_rejected():
+    # Pure-meter line (Habs sub-container) must still be rejected via
+    # _is_meter_line — no km anywhere = not a navigable OOC frame.
+    from ocr import _is_meter_line
+    line = "Zone:ObjectContainer_HabsPos:21.61m-11.39m57.98m"
+    assert _is_meter_line(line) is True
+
+
+def test_pos_mixed_unit_line_not_meter_only():
+    # Mixed-unit lines must NOT be treated as meter-only lines.
+    from ocr import _is_meter_line
+    line = "Zone: OOC_Stanton_3b_Wala Pos: 5156.60m -280.9130km -42.5880km"
+    assert _is_meter_line(line) is False
 
 
 def test_ooc_objectcontainer_rejected_no_ooc_tag():

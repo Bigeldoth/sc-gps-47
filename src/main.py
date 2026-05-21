@@ -5,10 +5,12 @@ import time
 import logging
 import configparser
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QLabel, QVBoxLayout,
-                             QWidget, QFrame, QSystemTrayIcon, QMenu, QInputDialog, QFileDialog)
+                             QWidget, QFrame, QSystemTrayIcon, QMenu, QInputDialog, QFileDialog,
+                             QDialog, QHBoxLayout, QLineEdit, QPushButton,
+                             QRadioButton, QButtonGroup)
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QObject
 from PyQt6.QtGui import QIcon, QAction, QColor, QCursor
-from app_paths import user_data_dir
+from app_paths import user_data_dir, bundle_dir
 from capture import ScreenCapture
 from ocr import OCRProcessor
 from navigation import (
@@ -27,8 +29,19 @@ from velocity_tracker import VelocityTracker
 from ui.options import OptionsWindow
 from ui.poi_manager import POIManagerWindow
 
+# Read config.ini from the same paths ConfigManager uses so the logging
+# setup honors what the user changed in Options. Order matters: bundle is
+# read first as fallback defaults, then user_data_dir overrides — that
+# matches ConfigManager's source-of-truth precedence. Both paths resolve
+# to the repo root in dev mode and to MEIPASS / %LOCALAPPDATA%\SpaceDrive
+# in the installed bundle. Reading via a relative path ('config.ini')
+# was unreliable because CWD differs between dev runs and the installed
+# .exe launched from the start menu — in the installed case it silently
+# fell back to defaults, ignoring the user's Options changes.
+_bundle_config_path = os.path.join(str(bundle_dir()), 'config.ini')
+_user_config_path = os.path.join(str(user_data_dir()), 'config.ini')
 config = configparser.ConfigParser()
-config.read('config.ini')
+config.read([_bundle_config_path, _user_config_path], encoding='utf-8')
 
 # Log file path: respect an absolute path explicitly set in config, otherwise
 # write into the user data dir (writable from any user, survives reinstall).
@@ -126,7 +139,15 @@ class GPSWorker(QObject):
             data = self.ocr.extract_data(images)
             self.result_ready.emit(data)
         except Exception as e:
-            logger.error(f"GPS worker error: {e}")
+            # 0xC000013A (3221225786 = STATUS_CONTROL_C_EXIT) is the Tesseract
+            # subprocess being signal-terminated mid-call. The payload is
+            # just Tesseract dumping its ObjectCache leak warnings to stderr
+            # — not an OCR failure. Demote to DEBUG to keep the log clean.
+            msg = str(e)
+            if "3221225786" in msg or "ObjectCache" in msg:
+                logger.debug("Tesseract subprocess interrupted (cleanup noise): %s", e)
+            else:
+                logger.error(f"GPS worker error: {e}")
             self.result_ready.emit({"x": None, "y": None, "z": None, "location": "Unknown", "error": str(e)})
 
     def _reload_ocr(self):
@@ -136,7 +157,9 @@ class GPSWorker(QObject):
         worker thread, off the UI thread.
         """
         try:
-            config.read('config.ini')
+            # Re-read both paths (bundle defaults + user override), same
+            # precedence as the initial boot read above.
+            config.read([_bundle_config_path, _user_config_path], encoding='utf-8')
             old = self.ocr
             new_ocr = _build_ocr_processor(config)
             self.ocr = new_ocr
@@ -227,6 +250,58 @@ def _age_to_color(age_s):
     return f"#{r:02x}{g:02x}{b:02x}"
 
 
+class _SavePOIDialog(QDialog):
+    """Modal dialog prompting for a POI name and its kind (surface/space).
+
+    Surface kind defaults checked: most save-point hotkey presses happen
+    while flying around a planet/moon, and surface POIs need horizontal-only
+    distance to avoid altitude-inflated readings.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Save Point")
+        self.setModal(True)
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+
+        layout = QVBoxLayout()
+
+        layout.addWidget(QLabel("Point of interest name:"))
+        self.name_input = QLineEdit()
+        layout.addWidget(self.name_input)
+
+        layout.addWidget(QLabel("Type:"))
+        radio_row = QHBoxLayout()
+        self.surface_radio = QRadioButton("Surface (planet/moon)")
+        self.space_radio = QRadioButton("Space")
+        self.surface_radio.setChecked(True)
+        self._group = QButtonGroup(self)
+        self._group.addButton(self.surface_radio)
+        self._group.addButton(self.space_radio)
+        radio_row.addWidget(self.surface_radio)
+        radio_row.addWidget(self.space_radio)
+        layout.addLayout(radio_row)
+
+        button_row = QHBoxLayout()
+        ok_btn = QPushButton("OK")
+        ok_btn.setDefault(True)
+        ok_btn.clicked.connect(self.accept)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        button_row.addWidget(ok_btn)
+        button_row.addWidget(cancel_btn)
+        layout.addLayout(button_row)
+
+        self.setLayout(layout)
+        self.name_input.setFocus()
+
+    def get_name(self):
+        return self.name_input.text().strip()
+
+    def get_kind(self):
+        return "surface" if self.surface_radio.isChecked() else "space"
+
+
 class GPSOverlay(QMainWindow):
     save_point_signal = pyqtSignal()
     trigger_worker = pyqtSignal()
@@ -236,7 +311,11 @@ class GPSOverlay(QMainWindow):
         self.config_manager = ConfigManager()
         self.nav = NavigationEngine()
         self.is_visible = True
-        self.current_data = {"x": None, "y": None, "z": None, "ooc": None, "location": "Unknown"}
+        self.current_data = {
+            "x": None, "y": None, "z": None,
+            "ooc": None, "location": "Unknown",
+            "cam_yaw": None, "cam_pitch": None, "cam_roll": None,
+        }
         self._worker_busy = False
         self.options_window = None
         self.poi_manager_window = None
@@ -406,6 +485,13 @@ class GPSOverlay(QMainWindow):
             self._refresh_nav_label()
             return
 
+        # CamDir may arrive on a scan that has no position — persist it so it
+        # survives into the next current_data update (which uses the smoothed dict
+        # carry-forward logic below).
+        for _cam_key in ("cam_yaw", "cam_pitch", "cam_roll"):
+            if data.get(_cam_key) is not None:
+                self.current_data[_cam_key] = data[_cam_key]
+
         # A scan returning None must NOT erase last known value.
         # We only update current_data + text if OCR actually read a position.
         if data["x"] is not None:
@@ -438,6 +524,12 @@ class GPSOverlay(QMainWindow):
             smoothed["x"] = sx[mid]
             smoothed["y"] = sy[mid]
             smoothed["z"] = sz[mid]
+            # Carry forward last known CamDir values when this scan didn't provide them.
+            # CamDir is extracted far less often than position — without this, cam_yaw
+            # would be reset to None on every non-CamDir scan.
+            for _cam_key in ("cam_yaw", "cam_pitch", "cam_roll"):
+                if smoothed.get(_cam_key) is None:
+                    smoothed[_cam_key] = self.current_data.get(_cam_key)
             data = smoothed
 
             self.current_data = data
@@ -771,6 +863,20 @@ class GPSOverlay(QMainWindow):
                 abs_bearing["yaw_deg"], abs_bearing["pitch_deg"],
                 abs_bearing["distance_km"],
             )
+            # Phase-1 validation: log camera-relative bearing when CamDir is available.
+            # Used to verify that cam_yaw/cam_pitch share the same OOC frame as the
+            # position coordinates. When the player looks directly at the target,
+            # relative_yaw and relative_pitch should both be ≈ 0°.
+            cam_yaw = self.current_data.get("cam_yaw") if self.current_data else None
+            cam_pitch = self.current_data.get("cam_pitch") if self.current_data else None
+            if cam_yaw is not None and cam_pitch is not None:
+                rel_yaw = normalize_angle_signed(abs_bearing["yaw_deg"] - cam_yaw)
+                rel_pitch = normalize_angle_signed(abs_bearing["pitch_deg"] - cam_pitch)
+                logger.debug(
+                    "CamDir validation — cam_yaw=%.1f° cam_pitch=%.1f° "
+                    "→ relative_yaw=%.1f° relative_pitch=%.1f°",
+                    cam_yaw, cam_pitch, rel_yaw, rel_pitch,
+                )
             arrow = _world_arrow(abs_bearing)
             if arrow:
                 arrow_str = f"  {arrow}"
@@ -983,7 +1089,10 @@ class GPSOverlay(QMainWindow):
             logger.error("Could not request OCR reload: %s", exc)
 
     def _on_destination_changed(self, poi):
-        self.nav.set_target(poi["x"], poi["y"], poi["z"], poi["name"], ooc=poi.get("ooc"))
+        self.nav.set_target(
+            poi["x"], poi["y"], poi["z"], poi["name"],
+            ooc=poi.get("ooc"), kind=poi.get("kind", "space"),
+        )
         self._smoothed_distance_km = None
         self._last_raw_distance_km = None
         self._smoothed_yaw_off = None
@@ -994,7 +1103,10 @@ class GPSOverlay(QMainWindow):
         logger.info(f"Destination set: {poi['name']}")
 
     def _on_goto_requested(self, poi):
-        self.nav.set_target(poi["x"], poi["y"], poi["z"], poi["name"], ooc=poi.get("ooc"))
+        self.nav.set_target(
+            poi["x"], poi["y"], poi["z"], poi["name"],
+            ooc=poi.get("ooc"), kind=poi.get("kind", "space"),
+        )
         self._smoothed_distance_km = None
         self._last_raw_distance_km = None
         self._smoothed_yaw_off = None
@@ -1050,22 +1162,18 @@ class GPSOverlay(QMainWindow):
             return
 
         try:
-            # QInputDialog instance to force always-on-top
+            # Custom QDialog to force always-on-top
             # (overlay parent has WindowTransparentForInput, default dialog
-            # may appear unfocused behind overlay)
-            dialog = QInputDialog(self)
-            dialog.setWindowTitle("Save Point")
-            dialog.setLabelText("Point of interest name:")
-            dialog.setInputMode(QInputDialog.InputMode.TextInput)
-            dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
-            dialog.setModal(True)
+            # may appear unfocused behind overlay) and prompt for POI kind.
+            dialog = _SavePOIDialog(self)
             QTimer.singleShot(0, dialog.raise_)
             QTimer.singleShot(0, dialog.activateWindow)
-            if dialog.exec() != QInputDialog.DialogCode.Accepted:
+            if dialog.exec() != QDialog.DialogCode.Accepted:
                 return
-            name = dialog.textValue().strip()
+            name = dialog.get_name()
             if not name:
                 return
+            kind = dialog.get_kind()
 
             ooc = snap.get("ooc")
             self.nav.add_user_point(
@@ -1075,11 +1183,12 @@ class GPSOverlay(QMainWindow):
                 snap["z"],
                 snap.get("location", "Unknown"),
                 ooc=ooc,
+                kind=kind,
             )
             ooc_str = f" ({ooc})" if ooc else " (unknown zone)"
             self.tray_icon.showMessage(
                 "Success",
-                f"Point '{name}' saved{ooc_str}.",
+                f"Point '{name}' [{kind}] saved{ooc_str}.",
                 QSystemTrayIcon.MessageIcon.Information,
                 2500,
             )
