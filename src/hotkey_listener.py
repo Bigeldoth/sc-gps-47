@@ -17,7 +17,6 @@ class HotkeyListener(QObject):
     save_position_triggered = pyqtSignal()
     open_poi_manager_triggered = pyqtSignal()
     reset_gps_nav_triggered = pyqtSignal()
-    calibrate_camdir_triggered = pyqtSignal()
 
     _SIGNAL_MAP = {
         'toggle_overlay': 'toggle_overlay_triggered',
@@ -25,7 +24,6 @@ class HotkeyListener(QObject):
         'save_position': 'save_position_triggered',
         'open_poi_manager': 'open_poi_manager_triggered',
         'reset_gps_nav': 'reset_gps_nav_triggered',
-        'calibrate_camdir': 'calibrate_camdir_triggered',
     }
 
     _MODIFIER_NAMES = {'shift', 'ctrl', 'alt', 'cmd'}

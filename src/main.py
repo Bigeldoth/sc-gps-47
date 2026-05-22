@@ -20,7 +20,6 @@ from navigation import (
     calculate_absolute_bearing,
     format_axis_delta,
     ema_angle,
-    normalize_angle_signed,
     _zones_match,
 )
 from config_manager import ConfigManager
@@ -198,7 +197,7 @@ def _world_arrow(abs_bearing):
       - ▲ if target is notably above (pitch > 25°)
       - ▼ if notably below
 
-    Fallback when CamDir is unavailable.
+    Shown when the ship is stationary (no velocity vector available).
     """
     if not abs_bearing:
         return ""
@@ -214,45 +213,34 @@ def _world_arrow(abs_bearing):
     return arrow_h + arrow_v
 
 
-_CAMDIR_ALIGNED_DEG = 2.0  # "on-target" dead-zone (degrees)
+def _velocity_arrow(yaw_off, pitch_off=None):
+    """Velocity-relative guidance arrow (car-GPS style).
 
+    ``yaw_off``   — signed degrees: positive = target is to the right of the
+                    current movement direction; negative = to the left.
+    ``pitch_off`` — signed degrees or None; ignored for surface POIs.
 
-def _camdir_arrow(rel_yaw, rel_pitch):
-    """Camera-relative guidance string using CamDir yaw/pitch offsets.
-
-    ``rel_yaw``   — signed degrees: positive = target is to the right of where
-                    the camera is pointing; negative = to the left.
-    ``rel_pitch`` — signed degrees: positive = target is above the camera
-                    line-of-sight; negative = below.
-
-    Returns a compact string the player can act on immediately:
-      - ``"✓ 0° 0°"``     when aligned within ±_CAMDIR_ALIGNED_DEG on both axes
-      - ``"←12° ↑3°"``    yaw + pitch correction with numeric angles
-    The numeric angle is always shown (even when small) so OCR lag is visible.
-    The vertical component is omitted for surface POIs (pitch is forced 0).
+    Returns a compact string showing the correction needed:
+      - ``"↑"``      already heading toward the target (< 10°)
+      - ``"←15°"``   turn left 15°
+      - ``"→8°"``    turn right 8°
+    A vertical indicator (▲/▼) is appended for space POIs when pitch > 25°.
     """
-    aligned_yaw = abs(rel_yaw) < _CAMDIR_ALIGNED_DEG
-    aligned_pitch = abs(rel_pitch) < _CAMDIR_ALIGNED_DEG
+    parts = []
+    if abs(yaw_off) < 10.0:
+        parts.append("↑")
+    elif yaw_off > 0:
+        parts.append(f"→{yaw_off:.0f}°")
+    else:
+        parts.append(f"←{abs(yaw_off):.0f}°")
 
-    yaw_str = f"{rel_yaw:+.0f}°"
-    if not aligned_yaw:
-        yaw_arrow = "→" if rel_yaw > 0 else "←"
-        yaw_str = f"{yaw_arrow}{abs(rel_yaw):.0f}°"
+    if pitch_off is not None:
+        if pitch_off > 25.0:
+            parts.append("▲")
+        elif pitch_off < -25.0:
+            parts.append("▼")
 
-    if rel_pitch == 0.0:
-        # Surface POI: pitch suppressed
-        if aligned_yaw:
-            return f"✓ {yaw_str}"
-        return yaw_str
-
-    pitch_str = f"{rel_pitch:+.0f}°"
-    if not aligned_pitch:
-        pitch_arrow = "↑" if rel_pitch > 0 else "↓"
-        pitch_str = f"{pitch_arrow}{abs(rel_pitch):.0f}°"
-
-    if aligned_yaw and aligned_pitch:
-        return f"✓ {yaw_str} {pitch_str}"
-    return f"{yaw_str} {pitch_str}"
+    return " ".join(parts)
 
 
 # Time→color anchors for OCR data aging.
@@ -357,7 +345,6 @@ class GPSOverlay(QMainWindow):
         self.current_data = {
             "x": None, "y": None, "z": None,
             "ooc": None, "location": "Unknown",
-            "cam_yaw": None, "cam_pitch": None, "cam_roll": None,
         }
         self._worker_busy = False
         self.options_window = None
@@ -401,13 +388,6 @@ class GPSOverlay(QMainWindow):
         # Temporary message displayed in nav_label: (text, expire_monotonic_ts).
         self._overlay_message = None
 
-        # CamDir calibration: yaw offset applied to correct the SC zone-relative
-        # drift of cam_yaw zero reference between zone entries.
-        # Set via Shift+F6 while pointing at a known target.
-        # Reset when navigation is cancelled (reset_velocity_tracker).
-        self._camdir_yaw_offset = 0.0
-        # Last raw rel_yaw (before offset) so the calibration hotkey can capture it.
-        self._last_raw_rel_yaw = None
 
         # UI — MFD frame Star Citizen style
         self.central_widget = QWidget()
@@ -489,9 +469,6 @@ class GPSOverlay(QMainWindow):
         self.hotkey_listener.reset_gps_nav_triggered.connect(
             self.reset_velocity_tracker, Qt.ConnectionType.QueuedConnection
         )
-        self.hotkey_listener.calibrate_camdir_triggered.connect(
-            self._on_calibrate_camdir, Qt.ConnectionType.QueuedConnection
-        )
 
     def _on_hotkey_save_position(self):
         """Captures current coordinates at exact press moment.
@@ -510,33 +487,6 @@ class GPSOverlay(QMainWindow):
             return
         self._save_snapshot = dict(self.current_data)
         self.save_point_signal.emit()
-
-    def _on_calibrate_camdir(self):
-        """Calibrate the CamDir yaw reference offset.
-
-        Call while the camera is pointing directly at the active navigation
-        target. Captures the current raw rel_yaw as the yaw offset so that
-        subsequent bearings read ~0° when the camera is on-target.
-
-        The offset persists until reset_velocity_tracker() is called or a
-        new calibration is triggered. It is zone-specific: re-calibrate each
-        time SC assigns a new yaw reference (zone entry, respawn).
-        """
-        if not self.nav.target:
-            self._show_overlay_message("No target — set nav first")
-            return
-        if self._last_raw_rel_yaw is None:
-            self._show_overlay_message("No CamDir data yet")
-            return
-        self._camdir_yaw_offset = self._last_raw_rel_yaw
-        logger.info(
-            "CamDir yaw calibrated: offset=%.1f° (was pointing %.1f° off-target)",
-            self._camdir_yaw_offset, self._last_raw_rel_yaw,
-        )
-        self._show_overlay_message(
-            f"CamDir calibrated ({self._camdir_yaw_offset:+.1f}°)",
-            duration_s=4.0,
-        )
 
     def _show_overlay_message(self, text, duration_s=3.0):
         """Displays ephemeral message in nav_label in red."""
@@ -565,13 +515,6 @@ class GPSOverlay(QMainWindow):
             self._refresh_pos_color()
             self._refresh_nav_label()
             return
-
-        # CamDir may arrive on a scan that has no position — persist it so it
-        # survives into the next current_data update (which uses the smoothed dict
-        # carry-forward logic below).
-        for _cam_key in ("cam_yaw", "cam_pitch", "cam_roll"):
-            if data.get(_cam_key) is not None:
-                self.current_data[_cam_key] = data[_cam_key]
 
         # A scan returning None must NOT erase last known value.
         # We only update current_data + text if OCR actually read a position.
@@ -605,12 +548,6 @@ class GPSOverlay(QMainWindow):
             smoothed["x"] = sx[mid]
             smoothed["y"] = sy[mid]
             smoothed["z"] = sz[mid]
-            # Carry forward last known CamDir values when this scan didn't provide them.
-            # CamDir is extracted far less often than position — without this, cam_yaw
-            # would be reset to None on every non-CamDir scan.
-            for _cam_key in ("cam_yaw", "cam_pitch", "cam_roll"):
-                if smoothed.get(_cam_key) is None:
-                    smoothed[_cam_key] = self.current_data.get(_cam_key)
             data = smoothed
 
             self.current_data = data
@@ -933,109 +870,29 @@ class GPSOverlay(QMainWindow):
         dist_str = format_distance(self._smoothed_distance_km)
 
         # Navigation arrow to target.
-        # Priority: camera-relative (CamDir) > world-frame fallback.
+        # When moving: velocity-relative arrow (car-GPS style) — shows how many
+        # degrees to correct the current heading to reach the target.
+        # When stationary: world-frame 8-direction compass (absolute direction).
+        # Surface POIs: Z ignored in both modes (_effective_dz zeroes it).
         abs_bearing = calculate_absolute_bearing(self.current_data, self.nav.target)
         arrow_str = ""
-        if abs_bearing:
+        if self._smoothed_yaw_off is not None:
+            # Moving: pitch shown only for space POIs.
+            is_surface = self.nav.target.get("kind") == "surface"
+            pitch_arg = None if is_surface else self._smoothed_pitch_off
+            arrow = _velocity_arrow(self._smoothed_yaw_off, pitch_arg)
+            arrow_str = f"  {arrow}"
             logger.debug(
-                "Absolute bearing to '%s': dx=%.2f dy=%.2f dz=%.2f "
-                "yaw=%.1f° pitch=%.1f° dist=%.2f km",
-                self.nav.target.get("name", "?"),
-                abs_bearing["dx"], abs_bearing["dy"], abs_bearing["dz"],
-                abs_bearing["yaw_deg"], abs_bearing["pitch_deg"],
-                abs_bearing["distance_km"],
+                "Velocity arrow: yaw_off=%.1f° pitch_off=%s → '%s'",
+                self._smoothed_yaw_off,
+                f"{self._smoothed_pitch_off:.1f}°" if self._smoothed_pitch_off is not None else "N/A",
+                arrow,
             )
-            cam_yaw = self.current_data.get("cam_yaw") if self.current_data else None
-            cam_pitch = self.current_data.get("cam_pitch") if self.current_data else None
-            if cam_yaw is not None and cam_pitch is not None:
-                # Camera-relative bearing via 3D matrix projection: project the
-                # true target vector (with real dz, not the _effective_dz used by
-                # abs_bearing for surface POIs) into the camera's local frame
-                # (forward / right / up basis). This makes ✓ appear when the
-                # camera is visually aimed at the target, regardless of how
-                # pitch and yaw split the rotation. Compare with the simpler
-                # `abs_bearing.yaw - cam_yaw`, which only works at small pitch.
-                cam_roll_val = self.current_data.get("cam_roll")
-                if cam_roll_val is None:
-                    cam_roll_val = 0.0
-
-                # True 3D target vector — bypass _effective_dz (which zeroes Z
-                # for surface POIs) because the camera physically tilts up/down
-                # to look at an elevated target, and the projection needs the
-                # real direction.
-                real_dx = self.nav.target["x"] - self.current_data["x"]
-                real_dy = self.nav.target["y"] - self.current_data["y"]
-                real_dz = self.nav.target["z"] - self.current_data["z"]
-
-                cy = math.radians(cam_yaw)
-                cp = math.radians(cam_pitch)
-                cr = math.radians(cam_roll_val)
-
-                # Forward = camera line of sight.
-                # SC: yaw=0 faces OOC +Y, yaw CCW positive (turning right in SC
-                # since X+ = left), pitch+ = nose up.
-                fx = -math.sin(cy) * math.cos(cp)
-                fy = math.cos(cy) * math.cos(cp)
-                fz = math.sin(cp)
-
-                # Right and Up before roll (right is OOC -X projected, since
-                # physical right = OOC -X in SC's X-flipped convention).
-                r0x = -math.cos(cy)
-                r0y = -math.sin(cy)
-                r0z = 0.0
-
-                u0x = math.sin(cy) * math.sin(cp)
-                u0y = -math.cos(cy) * math.sin(cp)
-                u0z = math.cos(cp)
-
-                # Apply roll around forward axis: rotates R toward U for cr > 0.
-                cos_cr = math.cos(cr)
-                sin_cr = math.sin(cr)
-                rx = r0x * cos_cr + u0x * sin_cr
-                ry = r0y * cos_cr + u0y * sin_cr
-                rz = r0z * cos_cr + u0z * sin_cr
-
-                ux = u0x * cos_cr - r0x * sin_cr
-                uy = u0y * cos_cr - r0y * sin_cr
-                uz = u0z * cos_cr - r0z * sin_cr
-
-                # Project target vector into camera frame.
-                # loc_x > 0: target on the right of the view
-                # loc_y > 0: target in front of the camera
-                # loc_z > 0: target above the view
-                loc_x = real_dx * rx + real_dy * ry + real_dz * rz
-                loc_y = real_dx * fx + real_dy * fy + real_dz * fz
-                loc_z = real_dx * ux + real_dy * uy + real_dz * uz
-
-                raw_rel_yaw = math.degrees(math.atan2(loc_x, loc_y))
-                # Store raw value so the calibration hotkey can capture it.
-                self._last_raw_rel_yaw = raw_rel_yaw
-                # Apply zone-calibration offset (corrects SC's per-zone yaw drift).
-                rel_yaw = normalize_angle_signed(raw_rel_yaw - self._camdir_yaw_offset)
-
-                if self.nav.target.get("kind") == "surface":
-                    # Surface POIs: ignore vertical correction. Pilot handles
-                    # altitude visually once close to the target.
-                    rel_pitch = 0.0
-                else:
-                    horiz = math.hypot(loc_x, loc_y)
-                    rel_pitch = math.degrees(math.atan2(loc_z, horiz)) if horiz > 1e-9 else (90.0 if loc_z > 0 else -90.0)
-
-                logger.debug(
-                    "CamDir bearing — cam=(y=%.1f° p=%.1f° r=%.1f°) "
-                    "→ loc=(%.3f, %.3f, %.3f) → raw_rel_yaw=%.1f° offset=%.1f° "
-                    "→ rel_yaw=%.1f° rel_pitch=%.1f°",
-                    cam_yaw, cam_pitch, cam_roll_val,
-                    loc_x, loc_y, loc_z, raw_rel_yaw, self._camdir_yaw_offset,
-                    rel_yaw, rel_pitch,
-                )
-                guidance = _camdir_arrow(rel_yaw, rel_pitch)
-                arrow_str = f"  {guidance}"
-            else:
-                # Fallback: world-frame 8-direction arrow when CamDir unavailable.
-                arrow = _world_arrow(abs_bearing)
-                if arrow:
-                    arrow_str = f"  {arrow}"
+        elif abs_bearing:
+            # Stationary fallback: 8-direction world-frame compass.
+            arrow = _world_arrow(abs_bearing)
+            if arrow:
+                arrow_str = f"  {arrow}"
 
         self.nav_label.setText(f"▶ {name}\n  {dist_str}{arrow_str}")
         self.nav_label.setStyleSheet(f"color: {age_color}; font-size: 14px; font-weight: bold; {_css}")
@@ -1272,9 +1129,6 @@ class GPSOverlay(QMainWindow):
         self._smoothed_pitch_off = None
         self._last_raw_yaw_off = None
         self._last_raw_pitch_off = None
-        # Reset CamDir calibration: the yaw reference may change in the new zone.
-        self._camdir_yaw_offset = 0.0
-        self._last_raw_rel_yaw = None
         had_target = self.nav.target is not None
         self.nav.clear_target()
         self._refresh_nav_label()
