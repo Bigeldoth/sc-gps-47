@@ -216,8 +216,8 @@ def _world_arrow(abs_bearing):
 def _velocity_arrow(yaw_off, pitch_off=None):
     """Velocity-relative guidance arrow (car-GPS style).
 
-    ``yaw_off``   — signed degrees: positive = target is to the right of the
-                    current movement direction; negative = to the left.
+    ``yaw_off``   — signed degrees: positive = target is to the left of the
+                    current movement direction; negative = to the right.
     ``pitch_off`` — signed degrees or None; ignored for surface POIs.
 
     Returns a compact string showing the correction needed:
@@ -230,9 +230,9 @@ def _velocity_arrow(yaw_off, pitch_off=None):
     if abs(yaw_off) < 10.0:
         parts.append("↑")
     elif yaw_off > 0:
-        parts.append(f"→{yaw_off:.0f}°")
+        parts.append(f"←{yaw_off:.0f}°")
     else:
-        parts.append(f"←{abs(yaw_off):.0f}°")
+        parts.append(f"→{abs(yaw_off):.0f}°")
 
     if pitch_off is not None:
         if pitch_off > 25.0:
