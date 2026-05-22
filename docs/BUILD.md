@@ -161,5 +161,5 @@ hardening step for proper release artefacts.
 python -m pytest tests/ -v
 ```
 
-Covers navigation, bearing, CamDir parsing, velocity, and the Paddle service
+Covers navigation, bearing, velocity, metadata parsing, and the Paddle service
 client (mocked subprocess).

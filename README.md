@@ -34,7 +34,7 @@ SpaceDrive continuously reads the coordinates displayed by the game's debug HUD 
 
 ### Robust OCR reading
 - **NCC-first** glyph classifier (pure NumPy template matching, or ONNX `TinyGlyphCNN`) runs once per frame on the CLAHE-enhanced grayscale. Segmentation is performed on a binary `otsu` pass (reliable bounding boxes); classification is performed on the gradient-rich grayscale (preserves fine character detail).
-- **Tesseract OEM3 fallback** on 2 binary thresholding passes (Otsu / adaptive) in parallel, used for the labels NCC cannot yet recognise (zone names, `CamDir:`). Skipped entirely once NCC reconstructs the full HUD.
+- **Tesseract OEM3 fallback** on 2 binary thresholding passes (Otsu / adaptive) in parallel, used for zone names and metadata. Skipped entirely once NCC reconstructs coordinates.
 - **Strict 3-4 decimal regex**: rejects degraded readings that caused ~17 m errors on saved POIs.
 - **Post-OCR normalization**: fixes common artifacts (`Pos:_`, variants `lkm/Km/kn`, parasitic underscores).
 - **Capture region**: 600×150 px top right (first 3 HUD lines are enough).

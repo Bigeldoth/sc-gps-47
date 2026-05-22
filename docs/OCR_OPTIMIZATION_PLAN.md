@@ -176,7 +176,7 @@ C'est l'aboutissement : remplacer Tesseract pour les chiffres par un classifieur
 4. Si NCC reconstruit l'intégralité du HUD (coords + zone), Tesseract est
    complètement court-circuité (chemin `[ncc-first]`).
 5. Sinon, Tesseract tourne sur `{otsu, adaptive}` en parallèle pour
-   récupérer `Zone:` / `CamDir:` / `OOC_*`.
+   récupérer `Zone:` / métadonnées / `OOC_*`.
 
 **Charset NCC étendu** (`templates.EXPECTED_CHARS`) :
 chiffres + unités + A-Z/a-z + `:` / `_` / espace. Le court-circuit total

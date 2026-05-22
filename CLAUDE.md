@@ -11,6 +11,15 @@ All new code, comments, docstrings, and documentation must be written in English
 Star Citizen GPS overlay that reads in-game HUD coordinates via OCR and provides
 navigation guidance to user-defined POIs.
 
+## Navigation design
+- **Velocity-based guidance (car-GPS style)**: derives movement direction from consecutive
+  OCR position samples (VelocityTracker, EMA-smoothed). Shows `↑` / `←N°` / `→N°` arrow
+  indicating required turn toward target when moving.
+- **Stationary world compass** (`_world_arrow`): 8-direction compass rose fallback when
+  player is stationary.
+- **CamDir** (camera orientation) is parsed from the HUD but **not used for navigation**
+  (OCR lag and per-zone reference drift made it unreliable).
+
 ## Architecture
 - `src/main.py` — PyQt6 app, GPSOverlay + GPSWorker (QThread)
 - `src/ocr.py` — OCR pipeline: NCC-first on enhanced grayscale, text engine fallback (Tesseract or PaddleOCR), regex + consensus

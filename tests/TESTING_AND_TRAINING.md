@@ -24,8 +24,7 @@ You never `pip install paddleocr` in the main venv.
 
 ## 1. Unit tests (`tests/test_*.py`)
 
-Pure-Python tests, no GPU, no Tesseract binary required for most of them
-(except `test_ocr_camdir` which imports `pytesseract`).
+Pure-Python tests, no GPU, no Tesseract binary required for most of them.
 
 ```powershell
 .venv\Scripts\python.exe -m pytest tests/ -v
@@ -39,8 +38,8 @@ Files:
   `NavigationEngine.calculate_distance` corner cases.
 - `test_velocity_tracker.py` — EMA smoothing, `is_moving` gate, reset on time
   gap, `calculate_velocity_bearing` against synthetic trajectories.
-- `test_ocr_camdir.py` — `_RE_CAMDIR_TAG` tolerance to OCR variants
-  (missing `C`, missing `:`), Pos filtering against absolute-frame lines.
+- `test_ocr_metadata.py` — metadata line parsing (zone, CamDir OCR variants),
+  absolute-frame rejection (Root/SolarSystem).
 
 Add new tests next to the module they exercise. Keep them dependency-free
 when possible — if you need cv2/numpy/torch, isolate the fixture so a

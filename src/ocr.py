@@ -1036,7 +1036,7 @@ class OCRProcessor:
                     self._last_frame_hash = frame_hash
                     self._last_result = ncc_full
                     return ncc_full
-                logger.debug("[ncc-first] NCC coords cached, Tesseract still needed for zone/CamDir")
+                logger.debug("[ncc-first] NCC coords cached, Tesseract still needed for zone/metadata")
 
         if self.engine in ("paddle", "paddle-vl"):
             # Hybrid fallback for any paddle variant: single pass on the raw
@@ -1127,7 +1127,7 @@ class OCRProcessor:
             self._log_paddle_stats()
             return best[2]
 
-        # All passes failed — merge any zone/camdir partial info so the UI
+        # All passes failed — merge any zone/metadata partial info so the UI
         # at least keeps the location label even when coords were lost.
         merged = self._empty_data()
         for _, _, data in pass_results:
@@ -1580,7 +1580,7 @@ class OCRProcessor:
         # F5 — add ONNX/NCC as a third vote when it produced coords this frame.
         # The score (0.85) is above the typical Tesseract-pass score so that on
         # disagreement it tips the consensus toward ONNX. Other fields (ooc,
-        # location, camdir) are pulled from the best Tesseract pass so we
+        # location, metadata) are pulled from the best Tesseract pass so we
         # don't lose them.
         ncc_data_for_vote = None
         if self._frame_ncc_coords is not None:

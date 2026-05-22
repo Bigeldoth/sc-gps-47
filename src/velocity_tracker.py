@@ -2,9 +2,8 @@
 
 "Car GPS" approach: player position is sampled at regular intervals
 (driven by OCR at ~5 Hz) and the velocity vector is derived by finite
-differences, smoothed by EMA. The movement direction replaces the camera
-angle (CamDir) for guidance: no calibration needed, not dependent on the
-game's frame-of-reference convention.
+differences, smoothed by EMA. The movement direction is used for guidance:
+no calibration needed, not dependent on the game's frame-of-reference convention.
 
 Limitations:
 - Only works when the player is **moving** (speed above threshold).

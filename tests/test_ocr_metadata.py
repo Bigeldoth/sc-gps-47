@@ -1,4 +1,4 @@
-"""Tests for CamDir extraction tolerant to OCR variants + Pos filtering."""
+"""Tests for metadata line parsing (CamDir, Zone) and position parsing."""
 import os
 import sys
 
