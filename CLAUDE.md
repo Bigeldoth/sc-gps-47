@@ -41,6 +41,11 @@ Options dialog (Manage engines…) — it lives in a Python 3.12 sidecar venv
 run on Python 3.10–3.14. `[OCR] pipeline_mode = hybrid|full_text` chooses
 between NCC/ONNX + text-engine fallback and a text-engine-only path.
 
+## Git workflow
+- Always work on a **feature branch** (`feat/<name>`, `fix/<name>`, etc.) — never commit directly to `main`.
+- Push the branch and open a PR toward `main` with `gh pr create`.
+- `main` is the trunk; source and target must differ for GitHub PRs.
+
 ## Tools (offline, not shipped)
 - `tools/dataset_builder.py` — auto-label glyphs from video/screen capture
 - `tools/dataset_synthetic.py` — generate synthetic glyphs from TTF fonts
