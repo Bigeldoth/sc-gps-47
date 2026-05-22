@@ -17,8 +17,6 @@ navigation guidance to user-defined POIs.
   indicating required turn toward target when moving.
 - **Stationary world compass** (`_world_arrow`): 8-direction compass rose fallback when
   player is stationary.
-- **CamDir** (camera orientation) is parsed from the HUD but **not used for navigation**
-  (OCR lag and per-zone reference drift made it unreliable).
 
 ## Architecture
 - `src/main.py` — PyQt6 app, GPSOverlay + GPSWorker (QThread)

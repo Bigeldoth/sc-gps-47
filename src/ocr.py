@@ -5,7 +5,7 @@ Pipeline (NCC-first since Phase E):
      enhanced grayscale
   2. NCC/ONNX (once per frame): segment glyphs on 'otsu', classify crops on
      'enhanced' grayscale. If the reconstruction yields valid coords (and
-     eventually zone/CamDir once alphabetic templates exist), Tesseract is
+     eventually zone once alphabetic templates exist), Tesseract is
      skipped entirely.
   3. Tesseract fallback OEM3 PSM6 on the binary passes in parallel
      (ThreadPoolExecutor). NCC coords are reused if available.
@@ -123,8 +123,6 @@ _RE_OOC_HINT = re.compile(
     r'(?:[t5]\w{1,5}t[ao0]\w*?[n0o]|[ao4][r5]c\w?[cC50]\w*|microt|hurst|crusad|cellin|stanton|tanton)',
     re.IGNORECASE,
 )
-# Identifies a CamDir line even if OCR misses the ':' or leading 'C'.
-_RE_CAMDIR_TAG = re.compile(r'amdir', re.IGNORECASE)
 # Rejects Root/SolarSystem lines (absolute frame ~14 M km, unusable).
 _RE_POS_SYSTEM_FRAME = re.compile(
     r'(?<![a-zA-Z])r[o0e]{1,3}t(?![a-zA-Z])|solar\s*system',
@@ -193,99 +191,6 @@ def _build_tesseract_config():
         logger.debug(f"Tesseract user_patterns: {user_patterns}")
     return config
 
-
-# ─── CamDir parsing ───────────────────────────────────────────────────
-
-def _greedy_split(digits, n, max_abs):
-    """Greedy left-to-right partition of `digits` (positive digit string) into
-    exactly ``n`` consecutive integers, each in [0, max_abs]. Returns the
-    first valid partition (smallest leading prefix first), or None.
-
-    Used to recover values from OCR runs where spaces between consecutive
-    angles were lost — e.g. ``8439134`` → [84, 39, 134] (n=3),
-    ``5177`` → [5, 177] (n=2).
-    """
-    if n <= 0:
-        return [] if not digits else None
-    if n == 1:
-        if not digits or len(digits) > len(str(max_abs)):
-            return None
-        v = int(digits)
-        return [v] if v <= max_abs else None
-    max_head_len = min(len(str(max_abs)), len(digits) - (n - 1))
-    for head_len in range(1, max_head_len + 1):
-        head = int(digits[:head_len])
-        if head > max_abs:
-            break  # monotone: longer prefixes only grow
-        rest = _greedy_split(digits[head_len:], n - 1, max_abs)
-        if rest is not None:
-            return [head] + rest
-    return None
-
-
-def _parse_camdir_values(line, max_abs=180):
-    """Extracts (pitch, roll, yaw) from a CamDir line, tolerant to OCR
-    space-merge errors.
-
-    Strategy:
-      1. Isolate the payload after 'Camdir' up to 'FOV' (or end of line).
-      2. Insert a space before any '-' that follows a digit, to separate
-         consecutive negative values ('25-5177' → '25 -5177').
-      3. Extract tokens via re.findall(r'-?\\d+').
-      4. For each token whose |value| ≤ max_abs, accept it directly.
-         Otherwise greedy-split it into the remaining 1, 2 or 3 pieces
-         we still need to reach a full triplet (largest split tried first,
-         then back off). Each piece must lie in [0, max_abs]; the original
-         sign is applied to the first piece only.
-         e.g. '8439134' (no spaces) → [84, 39, 134].
-         e.g. '25 -5177' → [25, -5, 177].
-      5. Return the first 3 valid ints or None.
-    """
-    if not line:
-        return None
-    m = _RE_CAMDIR_TAG.search(line)
-    if not m:
-        return None
-    payload = line[m.end():]
-    # Fuzzy detection of the FOV delimiter: Tesseract often corrupts "FOV" as
-    # "gfOV", "SOV", "FGV", "FQV", "F0V"... Look for a 2-3 letter token
-    # containing at least 'O' or '0' preceded by a character ≈ 'F'.
-    fov_idx = re.search(r'[FfGgSs][oO0O][vVbB]', payload)
-    if fov_idx:
-        payload = payload[:fov_idx.start()]
-    payload = re.sub(r'(\d)-', r'\1 -', payload)
-    tokens = re.findall(r'-?\d+', payload)
-    out = []
-    for tok in tokens:
-        if len(out) >= 3:
-            break
-        sign = -1 if tok.startswith('-') else 1
-        digits = tok.lstrip('-')
-        if not digits:
-            continue
-        try:
-            n = int(digits)
-        except ValueError:
-            continue
-        if n <= max_abs:
-            out.append(sign * n)
-            continue
-        # Token is too large: it contains multiple merged values. Try to
-        # split it into the number of values we still need, then fall back
-        # to smaller splits if the largest is not parseable.
-        needed = 3 - len(out)
-        parts = None
-        for k in range(needed, 0, -1):
-            parts = _greedy_split(digits, k, max_abs)
-            if parts is not None:
-                break
-        if parts is None:
-            return None
-        parts[0] = sign * parts[0]
-        out.extend(parts)
-    if len(out) >= 3:
-        return out[:3]
-    return None
 
 
 # ─── Post-OCR corrections ─────────────────────────────────────────────
@@ -1059,7 +964,6 @@ class OCRProcessor:
             "location": "Unknown",
             "x": None, "y": None, "z": None,
             "ooc": None,
-            "cam_pitch": None, "cam_roll": None, "cam_yaw": None,
         }
 
     def _extract_full_text_paddle(self, image, enhanced_image=None):
@@ -1133,9 +1037,6 @@ class OCRProcessor:
         for _, _, data in pass_results:
             if data.get("location") and data["location"] != "Unknown":
                 merged["location"] = data["location"]
-            for key in ("cam_pitch", "cam_roll", "cam_yaw"):
-                if data.get(key) is not None and merged.get(key) is None:
-                    merged[key] = data[key]
         self._log_paddle_stats()
         return merged
 
@@ -1203,13 +1104,7 @@ class OCRProcessor:
         data = self._empty_data()
         coords_found = False
         for line in lines:
-            if _RE_CAMDIR_TAG.search(line):
-                values = _parse_camdir_values(line)
-                if values is not None:
-                    data["cam_pitch"] = float(values[0])
-                    data["cam_roll"] = float(values[1])
-                    data["cam_yaw"] = float(values[2])
-            elif "Zone:" in line and "SolarSystem" in line:
+            if "Zone:" in line and "SolarSystem" in line:
                 zone_match = _RE_ZONE.search(line)
                 if zone_match:
                     system_id = zone_match.group(1).strip()
@@ -1271,9 +1166,8 @@ class OCRProcessor:
         """One-shot NCC pass per frame. Segments on binary, classifies on enhanced.
 
         Returns a partial data dict (always with `x`, `y`, `z` if coords were
-        found; `ooc` / `location` / `cam_*` are populated only once alphabetic
-        templates are available — see commit 5). Returns None if NCC could not
-        recover coordinates.
+        found; `ooc` / `location` are populated when available). Returns None if
+        NCC could not recover coordinates.
         """
         coords = self._extract_coords_via_ncc(binary_image, enhanced_image, "ncc-first")
         if coords is None:
@@ -1283,7 +1177,6 @@ class OCRProcessor:
             "location": "Unknown",
             "x": x, "y": y, "z": z,
             "ooc": None,
-            "cam_pitch": None, "cam_roll": None, "cam_yaw": None,
         }
 
     def _ocr_single_pass(self, pass_name, img):
@@ -1301,25 +1194,11 @@ class OCRProcessor:
             "location": "Unknown",
             "x": None, "y": None, "z": None,
             "ooc": None,
-            "cam_pitch": None, "cam_roll": None, "cam_yaw": None,
         }
         score = 0
 
         for line in lines:
-            if _RE_CAMDIR_TAG.search(line):
-                values = _parse_camdir_values(line)
-                if values is not None:
-                    pitch, roll, yaw = values
-                    data["cam_pitch"] = float(pitch)
-                    data["cam_roll"] = float(roll)
-                    data["cam_yaw"] = float(yaw)
-                    logger.debug(
-                        f"[{pass_name}] CamDir extracted: pitch={pitch} roll={roll} yaw={yaw}"
-                    )
-                    score += 5
-                else:
-                    logger.warning(f"[{pass_name}] Unparseable CamDir line: {line!r}")
-            elif "Zone:" in line and "SolarSystem" in line:
+            if "Zone:" in line and "SolarSystem" in line:
                 logger.debug(f"[{pass_name}] Zone line detected: {line}")
                 zone_match = _RE_ZONE.search(line)
                 if zone_match:
@@ -1637,7 +1516,6 @@ class OCRProcessor:
                 "location": "Unknown",
                 "x": None, "y": None, "z": None,
                 "ooc": None,
-                "cam_pitch": None, "cam_roll": None, "cam_yaw": None,
             }
         return best_data
 

@@ -38,8 +38,6 @@ Files:
   `NavigationEngine.calculate_distance` corner cases.
 - `test_velocity_tracker.py` — EMA smoothing, `is_moving` gate, reset on time
   gap, `calculate_velocity_bearing` against synthetic trajectories.
-- `test_ocr_metadata.py` — metadata line parsing (zone, CamDir OCR variants),
-  absolute-frame rejection (Root/SolarSystem).
 
 Add new tests next to the module they exercise. Keep them dependency-free
 when possible — if you need cv2/numpy/torch, isolate the fixture so a
