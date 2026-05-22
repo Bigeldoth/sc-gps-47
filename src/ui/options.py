@@ -630,6 +630,7 @@ class OptionsWindow(QDialog):
             'save_position': 'Save position',
             'open_poi_manager': 'Open POI manager',
             'reset_gps_nav': 'Stop navigation',
+            'calibrate_camdir': 'Calibrate CamDir yaw',
         }
         self.hotkey_table.setRowCount(len(hotkeys))
         for row, (action, hotkey) in enumerate(hotkeys.items()):

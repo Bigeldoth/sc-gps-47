@@ -109,6 +109,7 @@ class ConfigManager:
             self.config.set('Hotkeys', 'save_position', 'shift+f3')
             self.config.set('Hotkeys', 'open_poi_manager', 'shift+f4')
             self.config.set('Hotkeys', 'reset_gps_nav', 'shift+f5')
+            self.config.set('Hotkeys', 'calibrate_camdir', 'shift+f6')
 
         self.save()
 
@@ -323,6 +324,7 @@ class ConfigManager:
             'save_position': 'shift+f3',
             'open_poi_manager': 'shift+f4',
             'reset_gps_nav': 'shift+f5',
+            'calibrate_camdir': 'shift+f6',
         }
         return self.config.get('Hotkeys', action, fallback=defaults.get(action, ''))
 
