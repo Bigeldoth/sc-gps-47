@@ -341,11 +341,25 @@ class ConfigManager:
         self.config.set('Hotkeys', action, hotkey)
 
     def get_all_hotkeys(self):
-        """Return a dictionary of all configured hotkeys."""
+        """Return a dictionary of all configured hotkeys.
+
+        Merges built-in defaults with whatever is in config.ini so that
+        newly-added actions appear even when the file predates them.
+        """
         if not self.config.has_section('Hotkeys'):
             self._create_default_config()
 
-        return dict(self.config.items('Hotkeys'))
+        defaults = {
+            'toggle_overlay': 'shift+f1',
+            'open_options': 'shift+f2',
+            'save_position': 'shift+f3',
+            'open_poi_manager': 'shift+f4',
+            'reset_gps_nav': 'shift+f5',
+            'calibrate_camdir': 'shift+f6',
+        }
+        merged = dict(defaults)
+        merged.update(dict(self.config.items('Hotkeys')))
+        return merged
 
     def get(self, section, option, fallback=None):
         """Generic method to retrieve a value."""
