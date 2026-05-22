@@ -1,75 +1,70 @@
 name: Build SpaceDrive GPS
 
+# Build the PyInstaller bundle + Inno Setup installer on every push to main
+# and on every PR. Publish a GitHub Release with the installer attached only
+# when a tag matching v* is pushed.
+
 on:
   push:
-    branches: 
-      - main
-      - develop
+    branches: [main]
+    tags: ['v*']
   pull_request:
-    branches: 
-      - main
-      - develop
+    branches: [main]
 
 jobs:
   build:
     runs-on: windows-latest
-    strategy:
-      matrix:
-        python-version: [3.9, 3.10, 3.11]
 
     steps:
-    - uses: actions/checkout@v3
-      with:
-        fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v3
-      with:
-        python-version: ${{ matrix.python-version }}
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install setuptools wheel pyinstaller
-        pip install -r requirements.txt
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-    - name: Install Tesseract OCR
-      run: |
-        choco install tesseract
-        echo "C:\Program Files\Tesseract-OCR" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8
+      - name: Install Tesseract OCR
+        run: choco install tesseract --no-progress -y
 
-    - name: Build executable
-      run: |
-        pyinstaller spaceDrive.spec
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
 
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: spacedrive-${{ matrix.python-version }}
-        path: dist/spaceDrive.exe
-        retention-days: 7
+      - name: Build installer (PyInstaller + Inno Setup)
+        shell: pwsh
+        run: .\tools\build_installer.ps1
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SpaceDrive-Setup
+          path: dist/SpaceDrive-Setup-*.exe
+          retention-days: 14
+          if-no-files-found: error
 
   release:
     needs: build
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
     steps:
-    - uses: actions/checkout@v3
-      with:
-        fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: SpaceDrive-Setup
+          path: dist
 
-    - name: Bump version and push tag
-      id: tag
-      uses: mathieudutour/github-tag-action@v6.1
-      with:
-        github_token: ${{ secrets.GITHUB_TOKEN }}
-        default_bump: patch
-
-    - name: Create Release
-      uses: softprops/action-gh-release@v1
-      with:
-        tag_name: ${{ steps.tag.outputs.new_tag }}
-        body: ${{ steps.tag.outputs.changelog }}
-        files: dist/spaceDrive.exe
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/SpaceDrive-Setup-*.exe
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
