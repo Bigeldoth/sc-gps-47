@@ -790,15 +790,22 @@ class GPSOverlay(QMainWindow):
             self._last_raw_pitch_off = None
             return
 
+        # Require meaningful horizontal speed before trusting yaw direction.
+        # Total 3D speed can exceed is_moving threshold while flying nearly
+        # vertically — horizontal components are then OCR jitter, not heading.
+        vx, vy, _ = velocity
+        vel_horiz = math.hypot(vx, vy)
+        if vel_horiz < self._velocity_tracker.MIN_SPEED_KM_S:
+            self._smoothed_yaw_off = None
+            self._smoothed_pitch_off = None
+            self._last_raw_yaw_off = None
+            self._last_raw_pitch_off = None
+            return
+
         bearing = calculate_velocity_bearing(velocity, data, self.nav.target)
         if bearing is None:
             return
         yaw_off, pitch_off = bearing
-        logger.debug(
-            "Velocity bearing: vel=(%.3f,%.3f,%.3f) km/s "
-            "→ yaw_off=%.1f° pitch_off=%.1f°",
-            velocity[0], velocity[1], velocity[2], yaw_off, pitch_off,
-        )
 
         # Skip-on-stable + EMA with wrap-around
         if (
