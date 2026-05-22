@@ -614,6 +614,12 @@ class GPSOverlay(QMainWindow):
     # Quantum jumps trigger an OOC change which bypasses these gates.
     _MAX_PLAUSIBLE_SPEED_KM_S = 10.0
     _MAX_PLAUSIBLE_3D_SPEED_KM_S = 15.0
+    # Absolute per-axis delta cap regardless of scan interval. A jump of
+    # ≥ 4 km on a single axis without an OOC change is always an OCR error
+    # (e.g. '6'↔'0' confusion in the tens digit: 16.xx → 10.xx = 6 km).
+    # Legitimate max-speed flight at 1.4 km/s for 3 s = 4.2 km, so the cap
+    # is set at 4 km — just below that and well above the 2 km 8↔6 artifact.
+    _MAX_PLAUSIBLE_AXIS_DELTA_KM = 4.0
     # Tightest gap allowed when a sign flips on one axis. A '-748.27' read
     # as '748.27' produces |new + cur| = 0; we treat anything ≤ 5 km of
     # mirror-equality as a near-certain digit-1 sign drop and reject without
@@ -667,7 +673,20 @@ class GPSOverlay(QMainWindow):
                 )
                 return True
 
-        # Gate 2 — per-axis speed cap.
+        # Gate 2a — absolute per-axis delta cap (dt-independent).
+        # Catches the '6'↔'0' tens-digit confusion (16.xx → 10.xx = 6 km)
+        # when the scan gap is long enough that the speed gate alone misses it.
+        abs_delta_cap = self._MAX_PLAUSIBLE_AXIS_DELTA_KM
+        for axis, cur, new in (("X", cur_x, new_x), ("Y", cur_y, new_y), ("Z", cur_z, new_z)):
+            delta = abs(new - cur)
+            if delta > abs_delta_cap:
+                logger.warning(
+                    f"OCR rejection: absolute {axis}-axis jump {delta:.2f} km "
+                    f"({cur:.4f} → {new:.4f}) exceeds {abs_delta_cap} km cap"
+                )
+                return True
+
+        # Gate 2b — per-axis speed cap.
         per_axis_cap = self._MAX_PLAUSIBLE_SPEED_KM_S
         for axis, cur, new in (("X", cur_x, new_x), ("Y", cur_y, new_y), ("Z", cur_z, new_z)):
             axis_speed = abs(new - cur) / dt
