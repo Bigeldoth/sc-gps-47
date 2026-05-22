@@ -214,6 +214,9 @@ def _world_arrow(abs_bearing):
     return arrow_h + arrow_v
 
 
+_CAMDIR_ALIGNED_DEG = 2.0  # "on-target" dead-zone (degrees)
+
+
 def _camdir_arrow(rel_yaw, rel_pitch):
     """Camera-relative guidance string using CamDir yaw/pitch offsets.
 
@@ -223,25 +226,33 @@ def _camdir_arrow(rel_yaw, rel_pitch):
                     line-of-sight; negative = below.
 
     Returns a compact string the player can act on immediately:
-      - ``"✓"``           when already aligned within ±5°
-      - ``"←12°"``        yaw-only correction (pitch < 5°)
-      - ``"↑8° →5°"``     combined pitch + yaw correction (largest first)
+      - ``"✓ 0° 0°"``     when aligned within ±_CAMDIR_ALIGNED_DEG on both axes
+      - ``"←12° ↑3°"``    yaw + pitch correction with numeric angles
+    The numeric angle is always shown (even when small) so OCR lag is visible.
     The vertical component is omitted for surface POIs (pitch is forced 0).
     """
-    aligned_yaw = abs(rel_yaw) < 5.0
-    aligned_pitch = abs(rel_pitch) < 5.0
-    if aligned_yaw and aligned_pitch:
-        return "✓"
+    aligned_yaw = abs(rel_yaw) < _CAMDIR_ALIGNED_DEG
+    aligned_pitch = abs(rel_pitch) < _CAMDIR_ALIGNED_DEG
 
-    parts = []
-    # Pitch first (vertical) — larger correction shown first when both present.
-    if not aligned_pitch:
-        pitch_arrow = "↑" if rel_pitch > 0 else "↓"
-        parts.append(f"{pitch_arrow}{abs(rel_pitch):.0f}°")
+    yaw_str = f"{rel_yaw:+.0f}°"
     if not aligned_yaw:
         yaw_arrow = "→" if rel_yaw > 0 else "←"
-        parts.append(f"{yaw_arrow}{abs(rel_yaw):.0f}°")
-    return " ".join(parts)
+        yaw_str = f"{yaw_arrow}{abs(rel_yaw):.0f}°"
+
+    if rel_pitch == 0.0:
+        # Surface POI: pitch suppressed
+        if aligned_yaw:
+            return f"✓ {yaw_str}"
+        return yaw_str
+
+    pitch_str = f"{rel_pitch:+.0f}°"
+    if not aligned_pitch:
+        pitch_arrow = "↑" if rel_pitch > 0 else "↓"
+        pitch_str = f"{pitch_arrow}{abs(rel_pitch):.0f}°"
+
+    if aligned_yaw and aligned_pitch:
+        return f"✓ {yaw_str} {pitch_str}"
+    return f"{yaw_str} {pitch_str}"
 
 
 # Time→color anchors for OCR data aging.
