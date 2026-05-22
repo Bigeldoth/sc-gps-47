@@ -282,7 +282,7 @@ class OptionsWindow(QDialog):
             "Text engine = tesseract → fast, requires Tesseract-OCR installed.\n"
             "Text engine = paddle → PaddleOCR (PP-OCRv4), pip-installable.\n"
             "Pipeline mode = hybrid → NCC/ONNX glyphs first, text engine as "
-            "fallback for zone/CamDir lines.\n"
+            "fallback for zone lines.\n"
             "Pipeline mode = full_text → skip glyph stage, run the text engine "
             "alone on the full HUD crop."
         ))

@@ -363,8 +363,7 @@ class GPSOverlay(QMainWindow):
         self._arrival_radius_m = self.config_manager.get_arrival_radius_m()
 
         # Directional guidance based on velocity (car GPS style).
-        # We sample position and derive movement direction,
-        # rather than reading camera orientation (CamDir).
+        # We sample position and derive movement direction.
         self._velocity_tracker = VelocityTracker()
         self._last_known_ooc = None  # to detect frame change
         self._smoothed_yaw_off = None

@@ -21,9 +21,9 @@ logger = logging.getLogger(__name__)
 # Expected characters for full HUD recognition.
 # Digits and '-' are required for coordinates; '.' is also a coordinate
 # separator (heuristically inserted by classify.py if no template exists).
-# Letters and ':' / '_' / ' ' enable end-to-end NCC parsing of zone names,
-# CamDir labels, and OOC tags — replacing Tesseract for those fields once
-# letter templates are collected via tools/dataset_builder.py.
+# Letters and ':' / '_' / ' ' enable end-to-end NCC parsing of zone names
+# and OOC tags — replacing Tesseract for those fields once letter templates
+# are collected via tools/dataset_builder.py.
 NUMERIC_CHARS = set('0123456789.-')
 UNIT_CHARS = set('km')
 ALPHA_CHARS = set('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz')
