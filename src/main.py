@@ -807,20 +807,12 @@ class GPSOverlay(QMainWindow):
             return
         yaw_off, pitch_off = bearing
 
-        # Skip-on-stable + EMA with wrap-around
-        if (
-            self._last_raw_yaw_off == yaw_off
-            and self._last_raw_pitch_off == pitch_off
-        ):
-            self._smoothed_yaw_off = yaw_off
-            self._smoothed_pitch_off = pitch_off
-        elif self._smoothed_yaw_off is None:
-            self._smoothed_yaw_off = yaw_off
-            self._smoothed_pitch_off = pitch_off
-        else:
-            a = self._ema_alpha
-            self._smoothed_yaw_off = ema_angle(self._smoothed_yaw_off, yaw_off, a)
-            self._smoothed_pitch_off = ema_angle(self._smoothed_pitch_off, pitch_off, a)
+        # VelocityTracker already applies EMA to the velocity vector itself,
+        # so yaw_off is already smoothed. A second EMA here adds 1-2 s of lag
+        # when changing direction and was causing stale arrows (e.g. ←112° when
+        # already flying straight). Assign directly.
+        self._smoothed_yaw_off = yaw_off
+        self._smoothed_pitch_off = pitch_off
         self._last_raw_yaw_off = yaw_off
         self._last_raw_pitch_off = pitch_off
 
