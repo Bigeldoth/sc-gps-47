@@ -56,6 +56,7 @@ logging.basicConfig(
     level=getattr(logging, config.get('Logging', 'level', fallback='INFO')),
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     filename=_log_file_path,
+    filemode='w',
 )
 logger = logging.getLogger(__name__)
 logger.info("Log file: %s", _log_file_path)
@@ -965,10 +966,11 @@ class GPSOverlay(QMainWindow):
           2. assets/icon.png        (cross-platform high resolution fallback)
           3. standard SP_ComputerIcon (ultimate fallback)
         """
-        if getattr(sys, 'frozen', False):
-            base_dir = os.path.dirname(sys.executable)
-        else:
-            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        # `bundle_dir()` resolves to sys._MEIPASS in a PyInstaller bundle
+        # (where assets/ actually lives — under _internal/ in PyInstaller 6+).
+        # Using dirname(sys.executable) instead misses the icon because data
+        # files are NOT alongside the exe in modern PyInstaller layouts.
+        base_dir = str(bundle_dir())
 
         for filename in ('spacedrive.ico', 'icon.png'):
             path = os.path.join(base_dir, 'assets', filename)
