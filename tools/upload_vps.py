@@ -54,7 +54,7 @@ def _upload_latest_json(
     }
     data = json.dumps(payload, indent=2).encode()
     sftp.putfo(io.BytesIO(data), f"{releases_path}/latest.json")
-    print(f"Updated latest.json → version {version}")
+    print(f"Updated latest.json -> version {version}")
 
 
 def main() -> None:
