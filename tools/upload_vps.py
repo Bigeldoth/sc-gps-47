@@ -9,7 +9,7 @@ import paramiko
 
 def _load_private_key(key_content: str) -> paramiko.PKey:
     key_io = io.StringIO(key_content)
-    for key_class in (paramiko.RSAKey, paramiko.Ed25519Key, paramiko.ECDSAKey, paramiko.DSSKey):
+    for key_class in (paramiko.RSAKey, paramiko.Ed25519Key, paramiko.ECDSAKey):
         try:
             return key_class.from_private_key(key_io)
         except paramiko.SSHException:
