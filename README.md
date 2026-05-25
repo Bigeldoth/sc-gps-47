@@ -7,6 +7,8 @@
 [![Anti-cheat](https://img.shields.io/badge/EAC-safe-green.svg)](#anti-cheat-security)
 [![Download](https://img.shields.io/github/v/release/Bigeldoth/sc-gps-47?label=download&include_prereleases)](https://github.com/Bigeldoth/sc-gps-47/releases/latest)
 
+> **Installer hosted on Cloudflare R2** — see the [latest release](https://github.com/Bigeldoth/sc-gps-47/releases/latest) for the direct download link.
+
 SpaceDrive continuously reads the coordinates displayed by the game's debug HUD (`Zone:OOC_X Pos: X.XXXX km Y.XXXX km Z.XXXX km`) and provides an always-on-top overlay with distance, heading and data freshness indicator. No memory reading — 100% screenshot-based.
 
 ---
