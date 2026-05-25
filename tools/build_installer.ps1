@@ -45,7 +45,7 @@ if (-not $SkipPyInstaller) {
 $BundleDir = Join-Path $RepoRoot "dist\spaceDrive"
 $BundleExe = Join-Path $BundleDir "spaceDrive.exe"
 if (-not (Test-Path $BundleExe)) {
-    throw "Expected $BundleExe to exist after PyInstaller — did the build succeed?"
+    throw "Expected $BundleExe to exist after PyInstaller - did the build succeed?"
 }
 Write-Host "==> Bundle OK: $BundleExe"
 
@@ -66,7 +66,7 @@ if ($LASTEXITCODE -ne 0) { throw "Inno Setup compile failed (exit $LASTEXITCODE)
 $Installer = Get-ChildItem (Join-Path $RepoRoot "dist") -Filter "SpaceDrive-Setup-*.exe" |
     Sort-Object LastWriteTime -Descending | Select-Object -First 1
 if (-not $Installer) {
-    throw "Installer .exe not produced — check the Inno Setup log above"
+    throw "Installer .exe not produced - check the Inno Setup log above"
 }
 Write-Host ""
 Write-Host "==> Installer ready: $($Installer.FullName)" -ForegroundColor Green
