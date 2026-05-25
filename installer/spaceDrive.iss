@@ -12,7 +12,7 @@
 ; Or run tools\build_installer.ps1 to chain both steps.
 
 #define MyAppName "SpaceDrive GPS"
-#define MyAppVersion "0.7.3"
+#define MyAppVersion "0.7.4"
 #define MyAppPublisher "Bigeldoth"
 #define MyAppURL "https://github.com/Bigeldoth/sc-gps-47"
 #define MyAppExeName "spaceDrive.exe"
