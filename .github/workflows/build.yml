@@ -41,13 +41,53 @@ jobs:
         shell: pwsh
         run: .\tools\build_installer.ps1
 
-      - name: Upload installer artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: SpaceDrive-Setup
-          path: dist/SpaceDrive-Setup-*.exe
-          retention-days: 14
-          if-no-files-found: error
+      - name: Upload installer to R2
+        env:
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_R2_ACCESS_KEY_ID: ${{ secrets.CF_R2_ACCESS_KEY_ID }}
+          CF_R2_SECRET_ACCESS_KEY: ${{ secrets.CF_R2_SECRET_ACCESS_KEY }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.CF_R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.CF_R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem dist/SpaceDrive-Setup-*.exe
+          if ($files.Count -eq 0) {
+            Write-Error "No installer found in dist/"
+            exit 1
+          }
+
+          # Install boto3 for S3 operations
+          pip install boto3
+
+          # Upload to R2
+          $accountId = $env:CF_ACCOUNT_ID
+          $endpointUrl = "https://$accountId.r2.cloudflarestorage.com"
+
+          foreach ($file in $files) {
+            python -c @"
+import boto3
+import sys
+
+s3 = boto3.client(
+    's3',
+    endpoint_url='$endpointUrl',
+    aws_access_key_id='$env:AWS_ACCESS_KEY_ID',
+    aws_secret_access_key='$env:AWS_SECRET_ACCESS_KEY',
+    region_name='auto'
+)
+
+try:
+    s3.upload_file('$($file.FullName)', 'spacedrive', '$($file.Name)')
+    print(f'Uploaded: $($file.Name)')
+except Exception as e:
+    print(f'Error: {e}', file=sys.stderr)
+    sys.exit(1)
+"@
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+          }
+
+          Write-Output "All files uploaded to R2 successfully"
 
   release:
     needs: build
