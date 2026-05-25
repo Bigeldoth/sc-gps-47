@@ -1,7 +1,7 @@
 name: Build SpaceDrive GPS
 
 # PRs     → build only (smoke test, no upload)
-# Tag v*  → build + upload to VPS + create GitHub Release with VPS download link
+# Tag v*  → build (Windows) + deploy to VPS (Linux) + create GitHub Release
 
 on:
   push:
@@ -42,8 +42,27 @@ jobs:
         shell: pwsh
         run: .\tools\build_installer.ps1
 
-      - name: Upload installer to VPS
+      - name: Upload installer as artifact
         if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer
+          path: dist/SpaceDrive-Setup-*.exe
+          retention-days: 1
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - name: Download installer artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: installer
+          path: dist/
+
+      - name: Upload installer to VPS
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.VPS_HOST }}
@@ -54,7 +73,6 @@ jobs:
           strip_components: 1
 
       - name: Update latest.json and prune old releases
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.VPS_HOST }}
@@ -73,7 +91,7 @@ jobs:
             ls -t $RELEASES/SpaceDrive-Setup-*.exe | tail -n +6 | xargs -r rm
 
   release:
-    needs: build
+    needs: deploy
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
