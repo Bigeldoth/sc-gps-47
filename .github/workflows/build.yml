@@ -46,48 +46,42 @@ jobs:
           CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
           CF_R2_ACCESS_KEY_ID: ${{ secrets.CF_R2_ACCESS_KEY_ID }}
           CF_R2_SECRET_ACCESS_KEY: ${{ secrets.CF_R2_SECRET_ACCESS_KEY }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.CF_R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.CF_R2_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: auto
-        shell: pwsh
         run: |
-          $files = Get-ChildItem dist/SpaceDrive-Setup-*.exe
-          if ($files.Count -eq 0) {
-            Write-Error "No installer found in dist/"
-            exit 1
-          }
-
-          # Install boto3 for S3 operations
           pip install boto3
+          python << 'EOF'
+          import boto3
+          import glob
+          import os
+          import sys
 
-          # Upload to R2
-          $accountId = $env:CF_ACCOUNT_ID
-          $endpointUrl = "https://$accountId.r2.cloudflarestorage.com"
+          account_id = os.environ['CF_ACCOUNT_ID']
+          access_key = os.environ['CF_R2_ACCESS_KEY_ID']
+          secret_key = os.environ['CF_R2_SECRET_ACCESS_KEY']
 
-          foreach ($file in $files) {
-            python -c @"
-import boto3
-import sys
+          s3 = boto3.client(
+              's3',
+              endpoint_url=f'https://{account_id}.r2.cloudflarestorage.com',
+              aws_access_key_id=access_key,
+              aws_secret_access_key=secret_key,
+              region_name='auto'
+          )
 
-s3 = boto3.client(
-    's3',
-    endpoint_url='$endpointUrl',
-    aws_access_key_id='$env:AWS_ACCESS_KEY_ID',
-    aws_secret_access_key='$env:AWS_SECRET_ACCESS_KEY',
-    region_name='auto'
-)
+          files = glob.glob('dist/SpaceDrive-Setup-*.exe')
+          if not files:
+              print('Error: No installer found in dist/', file=sys.stderr)
+              sys.exit(1)
 
-try:
-    s3.upload_file('$($file.FullName)', 'spacedrive', '$($file.Name)')
-    print(f'Uploaded: $($file.Name)')
-except Exception as e:
-    print(f'Error: {e}', file=sys.stderr)
-    sys.exit(1)
-"@
-            if ($LASTEXITCODE -ne 0) { exit 1 }
-          }
+          for file_path in files:
+              file_name = os.path.basename(file_path)
+              try:
+                  s3.upload_file(file_path, 'spacedrive', file_name)
+                  print(f'Uploaded: {file_name}')
+              except Exception as e:
+                  print(f'Error uploading {file_name}: {e}', file=sys.stderr)
+                  sys.exit(1)
 
-          Write-Output "All files uploaded to R2 successfully"
+          print('All files uploaded to R2 successfully')
+          EOF
 
   release:
     needs: build
