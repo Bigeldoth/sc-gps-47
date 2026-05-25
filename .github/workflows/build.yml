@@ -1,11 +1,9 @@
 name: Build SpaceDrive GPS
 
-# PRs     → build only (smoke test, no upload)
-# Tag v*  → build (Windows) + deploy to VPS (Linux) + create GitHub Release
+# PRs → build only (smoke test, no upload)
+# Releases are created locally via tools/release.ps1
 
 on:
-  push:
-    tags: ['v*']
   pull_request:
     branches: [main]
 
@@ -41,71 +39,3 @@ jobs:
       - name: Build installer (PyInstaller + Inno Setup)
         shell: pwsh
         run: .\tools\build_installer.ps1
-
-      - name: Upload installer as artifact
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: actions/upload-artifact@v4
-        with:
-          name: installer
-          path: dist/SpaceDrive-Setup-*.exe
-          retention-days: 1
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
-
-    steps:
-      - name: Download installer artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: installer
-          path: dist/
-
-      - name: Upload installer to VPS
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          source: "dist/SpaceDrive-Setup-*.exe"
-          target: /var/www/spacedrive/releases/
-          strip_components: 1
-
-      - name: Update latest.json and prune old releases
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          script: |
-            RELEASES=/var/www/spacedrive/releases
-            PUBLIC_URL="${{ vars.VPS_PUBLIC_URL }}"
-            LATEST=$(ls -t $RELEASES/SpaceDrive-Setup-*.exe 2>/dev/null | head -1)
-            FILENAME=$(basename "$LATEST")
-            VERSION="${FILENAME#SpaceDrive-Setup-}"
-            VERSION="${VERSION%.exe}"
-            printf '{\n  "version": "%s",\n  "url": "%s/%s",\n  "date": "%s"\n}\n' \
-              "$VERSION" "${PUBLIC_URL%/}" "$FILENAME" "$(date +%Y-%m-%d)" \
-              > $RELEASES/latest.json
-            ls -t $RELEASES/SpaceDrive-Setup-*.exe | tail -n +6 | xargs -r rm
-
-  release:
-    needs: deploy
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
-    permissions:
-      contents: write
-    steps:
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          generate_release_notes: true
-          body: |
-            ## Download
-
-            **[SpaceDrive-Setup-${{ github.ref_name }}.exe](${{ vars.VPS_PUBLIC_URL }}/SpaceDrive-Setup-${{ github.ref_name }}.exe)**
-
-            Hosted on VPS.
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

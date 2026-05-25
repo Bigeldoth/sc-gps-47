@@ -56,3 +56,6 @@ tests/*.mp4
 
 # Local Python venv (created on demand, never committed)
 .venv/
+
+# Local release credentials
+.env.local
