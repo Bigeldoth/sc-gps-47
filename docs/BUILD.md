@@ -136,11 +136,62 @@ python -m PyInstaller --clean spaceDrive.spec
 
 ---
 
-## Build via GitHub Actions
+## Releasing a new version
 
-`.github/workflows/build.yml` produces the PyInstaller bundle on every push;
-the installer step (Inno Setup) is not yet wired into CI — that's the next
-hardening step for proper release artefacts.
+Releases are produced **locally** by [`tools/release.ps1`](../tools/release.ps1).
+GitHub Actions is intentionally kept to a smoke-test build on PRs only, to avoid
+consuming the free-plan storage quota with installer artifacts.
+
+### One-shot release command
+
+```powershell
+.\tools\release.ps1 -Version v0.7.4
+.\tools\release.ps1 -Version v0.7.4 -SkipBuild   # if dist\ is already fresh
+```
+
+The script chains three steps:
+
+1. **Build** — runs [`tools/build_installer.ps1`](../tools/build_installer.ps1)
+   (PyInstaller + Inno Setup)
+2. **Upload to VPS** — SFTPs the installer to the project VPS, regenerates
+   `latest.json`, and prunes old versions (keeps the 5 most recent)
+3. **GitHub Release** — pushes the git tag and creates the release with a link
+   pointing back to the VPS-hosted installer
+
+### Prerequisites
+
+- All the build prerequisites listed above
+- [`paramiko`](https://pypi.org/project/paramiko/) (`pip install paramiko`) for the SFTP upload
+- [`gh` CLI](https://cli.github.com/) authenticated (`gh auth login`)
+- A `.env.local` file at the repo root (gitignored) with the VPS credentials:
+
+  ```ini
+  VPS_HOST=padek-interactive.tech
+  VPS_USER=root
+  VPS_SSH_KEY=C:\Users\<you>\.ssh\spacedrive_vps   # path to private key
+  VPS_PUBLIC_URL=https://padek-interactive.tech/releases
+  ```
+
+### What lives on the VPS
+
+```
+/var/www/spacedrive/releases/
+├── SpaceDrive-Setup-v0.7.4.exe   ← last 5 versions kept, older auto-pruned
+├── SpaceDrive-Setup-v0.7.3.exe
+├── ...
+└── latest.json                   ← { "version": "...", "url": "...", "date": "..." }
+```
+
+Served by nginx behind Traefik (Dokploy stack) at
+`https://padek-interactive.tech/releases/`. The `latest.json` pointer is what
+the community website fetches to surface the current download link.
+
+### CI on PRs
+
+[`.github/workflows/build.yml`](../.github/workflows/build.yml) runs on every PR
+against `main`: it installs Python, Tesseract, Inno Setup, and runs
+`build_installer.ps1` end-to-end. **No artifact is stored, nothing is uploaded** —
+the job exists solely to catch broken builds before merge.
 
 ---
 

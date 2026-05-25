@@ -53,6 +53,13 @@ between NCC/ONNX + text-engine fallback and a text-engine-only path.
 - Push the branch and open a PR toward `main` with `gh pr create`.
 - `main` is the trunk; source and target must differ for GitHub PRs.
 
+## Release workflow
+- Releases are **local**, not CI: `.\tools\release.ps1 -Version vX.Y.Z` chains build → SFTP upload to the VPS → git tag → GitHub Release.
+- Bump `MyAppVersion` in `installer/spaceDrive.iss` to match the tag before releasing.
+- The VPS hosts installers at `https://padek-interactive.tech/releases/` and a `latest.json` pointer; the 5 most recent versions are kept (older auto-pruned).
+- CI (`.github/workflows/build.yml`) only runs on PRs as a smoke-test build — no upload, no artifact (keeps the free-plan storage quota clean).
+- VPS credentials live in a gitignored `.env.local` at the repo root (see `docs/BUILD.md`).
+
 ## Tools (offline, not shipped)
 - `tools/dataset_builder.py` — auto-label glyphs from video/screen capture
 - `tools/dataset_synthetic.py` — generate synthetic glyphs from TTF fonts

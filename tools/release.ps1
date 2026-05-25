@@ -82,14 +82,20 @@ if ($LASTEXITCODE -ne 0) { throw "VPS upload failed" }
 Write-Host ""
 Write-Host "--- Step 3/3: Git tag + GitHub Release ---" -ForegroundColor Yellow
 
-# Create and push tag if it doesn't exist
-$tagExists = git tag --list $Version
-if (-not $tagExists) {
+# Create tag locally if missing
+if (-not (git tag --list $Version)) {
     git tag $Version
+    Write-Host "==> Tag $Version created locally"
+}
+
+# Push tag if missing on remote
+$remoteTag = git ls-remote --tags origin "refs/tags/$Version"
+if (-not $remoteTag) {
     git push origin $Version
-    Write-Host "==> Tag $Version pushed"
+    if ($LASTEXITCODE -ne 0) { throw "Failed to push tag $Version" }
+    Write-Host "==> Tag $Version pushed to origin"
 } else {
-    Write-Host "==> Tag $Version already exists, skipping"
+    Write-Host "==> Tag $Version already on origin"
 }
 
 # Create GitHub Release
@@ -101,6 +107,7 @@ gh release create $Version `
     --title "SpaceDrive GPS $Version" `
     --generate-notes `
     --notes $ReleaseNotes
+if ($LASTEXITCODE -ne 0) { throw "Failed to create GitHub Release for $Version" }
 
 Write-Host ""
 Write-Host "==> Release $Version published!" -ForegroundColor Green
