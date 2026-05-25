@@ -1,7 +1,7 @@
 name: Build SpaceDrive GPS
 
 # PRs     → build only (smoke test, no upload)
-# Tag v*  → build + upload to R2 + create GitHub Release with R2 download link
+# Tag v*  → build + upload to VPS + create GitHub Release with VPS download link
 
 on:
   push:
@@ -39,15 +39,17 @@ jobs:
         shell: pwsh
         run: .\tools\build_installer.ps1
 
-      - name: Upload installer to R2
+      - name: Upload installer to VPS
         if: startsWith(github.ref, 'refs/tags/v')
         env:
-          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
-          CF_R2_ACCESS_KEY_ID: ${{ secrets.CF_R2_ACCESS_KEY_ID }}
-          CF_R2_SECRET_ACCESS_KEY: ${{ secrets.CF_R2_SECRET_ACCESS_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_RELEASES_PATH: /var/www/spacedrive/releases
+          VPS_KEEP_VERSIONS: "5"
         run: |
-          pip install boto3
-          python tools/upload_r2.py "dist/SpaceDrive-Setup-*.exe"
+          pip install paramiko
+          python tools/upload_vps.py "dist/SpaceDrive-Setup-*.exe"
 
   release:
     needs: build
@@ -63,8 +65,8 @@ jobs:
           body: |
             ## Download
 
-            **[SpaceDrive-Setup-${{ github.ref_name }}.exe](${{ vars.CF_R2_PUBLIC_URL }}/SpaceDrive-Setup-${{ github.ref_name }}.exe)**
+            **[SpaceDrive-Setup-${{ github.ref_name }}.exe](${{ vars.VPS_PUBLIC_URL }}/SpaceDrive-Setup-${{ github.ref_name }}.exe)**
 
-            Hosted on Cloudflare R2.
+            Hosted on VPS.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
