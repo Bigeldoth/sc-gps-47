@@ -1,12 +1,10 @@
 name: Build SpaceDrive GPS
 
-# Build the PyInstaller bundle + Inno Setup installer on every push to main
-# and on every PR. Publish a GitHub Release with the installer attached only
-# when a tag matching v* is pushed.
+# PRs     → build only (smoke test, no upload)
+# Tag v*  → build + upload to R2 + create GitHub Release with R2 download link
 
 on:
   push:
-    branches: [main]
     tags: ['v*']
   pull_request:
     branches: [main]
@@ -42,52 +40,14 @@ jobs:
         run: .\tools\build_installer.ps1
 
       - name: Upload installer to R2
+        if: startsWith(github.ref, 'refs/tags/v')
         env:
           CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
           CF_R2_ACCESS_KEY_ID: ${{ secrets.CF_R2_ACCESS_KEY_ID }}
           CF_R2_SECRET_ACCESS_KEY: ${{ secrets.CF_R2_SECRET_ACCESS_KEY }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.CF_R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.CF_R2_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: auto
-        shell: pwsh
         run: |
-          $files = Get-ChildItem dist/SpaceDrive-Setup-*.exe
-          if ($files.Count -eq 0) {
-            Write-Error "No installer found in dist/"
-            exit 1
-          }
-
-          # Install boto3 for S3 operations
           pip install boto3
-
-          # Upload to R2
-          $accountId = $env:CF_ACCOUNT_ID
-          $endpointUrl = "https://$accountId.r2.cloudflarestorage.com"
-
-          foreach ($file in $files) {
-            python -c @"
-import boto3
-import sys
-
-s3 = boto3.client(
-    's3',
-    endpoint_url='$endpointUrl',
-    aws_access_key_id='$env:AWS_ACCESS_KEY_ID',
-    aws_secret_access_key='$env:AWS_SECRET_ACCESS_KEY',
-    region_name='auto'
-)
-
-try:
-    s3.upload_file('$($file.FullName)', 'spacedrive', '$($file.Name)')
-    print(f'Uploaded: $($file.Name)')
-except Exception as e:
-    print(f'Error: {e}', file=sys.stderr)
-    sys.exit(1)
-"@
-            if ($LASTEXITCODE -ne 0) { exit 1 }
-          }
-
-          Write-Output "All files uploaded to R2 successfully"
+          python tools/upload_r2.py "dist/SpaceDrive-Setup-*.exe"
 
   release:
     needs: build
@@ -96,15 +56,15 @@ except Exception as e:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: SpaceDrive-Setup
-          path: dist
-
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/SpaceDrive-Setup-*.exe
           generate_release_notes: true
+          body: |
+            ## Download
+
+            **[SpaceDrive-Setup-${{ github.ref_name }}.exe](${{ vars.CF_R2_PUBLIC_URL }}/SpaceDrive-Setup-${{ github.ref_name }}.exe)**
+
+            Hosted on Cloudflare R2.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
