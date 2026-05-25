@@ -44,16 +44,33 @@ jobs:
 
       - name: Upload installer to VPS
         if: startsWith(github.ref, 'refs/tags/v')
-        env:
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          VPS_USER: ${{ secrets.VPS_USER }}
-          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
-          VPS_RELEASES_PATH: /var/www/spacedrive/releases
-          VPS_KEEP_VERSIONS: "5"
-          VPS_PUBLIC_URL: ${{ vars.VPS_PUBLIC_URL }}
-        run: |
-          pip install paramiko
-          python tools/upload_vps.py "dist/SpaceDrive-Setup-*.exe"
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          source: "dist/SpaceDrive-Setup-*.exe"
+          target: /var/www/spacedrive/releases/
+          strip_components: 1
+
+      - name: Update latest.json and prune old releases
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            RELEASES=/var/www/spacedrive/releases
+            PUBLIC_URL="${{ vars.VPS_PUBLIC_URL }}"
+            LATEST=$(ls -t $RELEASES/SpaceDrive-Setup-*.exe 2>/dev/null | head -1)
+            FILENAME=$(basename "$LATEST")
+            VERSION="${FILENAME#SpaceDrive-Setup-}"
+            VERSION="${VERSION%.exe}"
+            printf '{\n  "version": "%s",\n  "url": "%s/%s",\n  "date": "%s"\n}\n' \
+              "$VERSION" "${PUBLIC_URL%/}" "$FILENAME" "$(date +%Y-%m-%d)" \
+              > $RELEASES/latest.json
+            ls -t $RELEASES/SpaceDrive-Setup-*.exe | tail -n +6 | xargs -r rm
 
   release:
     needs: build
