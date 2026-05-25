@@ -90,6 +90,11 @@ jobs:
               > $RELEASES/latest.json
             ls -t $RELEASES/SpaceDrive-Setup-*.exe | tail -n +6 | xargs -r rm
 
+      - name: Delete artifact to free storage quota
+        uses: geekyeggo/delete-artifact@v5
+        with:
+          name: installer
+
   release:
     needs: deploy
     runs-on: ubuntu-latest
