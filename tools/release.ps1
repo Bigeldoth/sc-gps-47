@@ -1,4 +1,4 @@
-# End-to-end local release script: build → upload to VPS → create GitHub Release.
+# End-to-end local release script: build -> upload to VPS -> create GitHub Release.
 #
 # Usage (from repo root):
 #   .\tools\release.ps1 -Version v0.8.4
@@ -60,17 +60,18 @@ if (-not $SkipBuild) {
 # Locate the produced installer
 $Installer = Get-ChildItem (Join-Path $RepoRoot "dist") -Filter "SpaceDrive-Setup-*.exe" |
     Sort-Object LastWriteTime -Descending | Select-Object -First 1
-if (-not $Installer) { throw "No installer found in dist\ — run without -SkipBuild" }
-Write-Host "==> Installer: $($Installer.Name) ($([math]::Round($Installer.Length / 1MB, 1)) MB)"
+if (-not $Installer) { throw "No installer found in dist\ - run without -SkipBuild" }
+$SizeMB = [math]::Round($Installer.Length / 1MB, 1)
+Write-Host "==> Installer: $($Installer.Name) ($SizeMB MB)"
 
 # Step 2: Upload to VPS
 Write-Host ""
 Write-Host "--- Step 2/3: Upload to VPS ---" -ForegroundColor Yellow
 
-# Build the SSH_KEY env var from file path
-$KeyPath = [System.Environment]::GetEnvironmentVariable("VPS_SSH_KEY")
-if (Test-Path $KeyPath) {
-    $KeyContent = Get-Content $KeyPath -Raw
+# If VPS_SSH_KEY is a file path, read its content
+$KeyValue = [System.Environment]::GetEnvironmentVariable("VPS_SSH_KEY")
+if (Test-Path $KeyValue) {
+    $KeyContent = Get-Content $KeyValue -Raw
     [System.Environment]::SetEnvironmentVariable("VPS_SSH_KEY", $KeyContent, "Process")
 }
 
@@ -92,11 +93,14 @@ if (-not $tagExists) {
 }
 
 # Create GitHub Release
-$DownloadUrl = "$([System.Environment]::GetEnvironmentVariable('VPS_PUBLIC_URL').TrimEnd('/'))/$($Installer.Name)"
+$PublicUrl = [System.Environment]::GetEnvironmentVariable("VPS_PUBLIC_URL").TrimEnd("/")
+$DownloadUrl = "$PublicUrl/$($Installer.Name)"
+$ReleaseNotes = "## Download`n`n**[$($Installer.Name)]($DownloadUrl)**`n`nHosted on VPS."
+
 gh release create $Version `
     --title "SpaceDrive GPS $Version" `
     --generate-notes `
-    --notes "## Download`n`n**[$($Installer.Name)]($DownloadUrl)**`n`nHosted on VPS."
+    --notes $ReleaseNotes
 
 Write-Host ""
 Write-Host "==> Release $Version published!" -ForegroundColor Green
