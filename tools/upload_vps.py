@@ -1,8 +1,10 @@
 """Upload build artifacts to VPS via SFTP and prune old releases."""
 import glob
 import io
+import json
 import os
 import sys
+from datetime import datetime, timezone
 
 import paramiko
 
@@ -38,12 +40,30 @@ def _cleanup_old_versions(client: paramiko.SSHClient, releases_path: str, keep: 
         print(f"Pruned: {os.path.basename(old)}")
 
 
+def _upload_latest_json(
+    sftp: paramiko.SFTPClient,
+    releases_path: str,
+    file_name: str,
+    public_url: str,
+) -> None:
+    version = file_name.removeprefix("SpaceDrive-Setup-").removesuffix(".exe")
+    payload = {
+        "version": version,
+        "url": f"{public_url.rstrip('/')}/{file_name}",
+        "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+    }
+    data = json.dumps(payload, indent=2).encode()
+    sftp.putfo(io.BytesIO(data), f"{releases_path}/latest.json")
+    print(f"Updated latest.json → version {version}")
+
+
 def main() -> None:
     host = os.environ["VPS_HOST"]
     user = os.environ["VPS_USER"]
     ssh_key_content = os.environ["VPS_SSH_KEY"]
     releases_path = os.environ.get("VPS_RELEASES_PATH", "/var/www/spacedrive/releases")
     keep_versions = int(os.environ.get("VPS_KEEP_VERSIONS", "5"))
+    public_url = os.environ.get("VPS_PUBLIC_URL", "")
 
     pattern = sys.argv[1] if len(sys.argv) > 1 else "dist/SpaceDrive-Setup-*.exe"
     files = glob.glob(pattern)
@@ -65,6 +85,8 @@ def main() -> None:
                 remote = f"{releases_path}/{file_name}"
                 sftp.put(file_path, remote)
                 print(f"Uploaded: {file_name} -> {host}:{remote}")
+                if public_url:
+                    _upload_latest_json(sftp, releases_path, file_name, public_url)
 
         _cleanup_old_versions(client, releases_path, keep_versions)
     finally:

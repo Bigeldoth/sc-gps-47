@@ -50,6 +50,7 @@ jobs:
           VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
           VPS_RELEASES_PATH: /var/www/spacedrive/releases
           VPS_KEEP_VERSIONS: "5"
+          VPS_PUBLIC_URL: ${{ vars.VPS_PUBLIC_URL }}
         run: |
           pip install paramiko
           python tools/upload_vps.py "dist/SpaceDrive-Setup-*.exe"
