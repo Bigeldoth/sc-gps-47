@@ -31,6 +31,7 @@ navigation guidance to user-defined POIs.
 - `src/hotkey_listener.py` — global hotkeys via pynput
 - `src/poi_io.py` — POI serialization + validation for clipboard/file exchange with the SpaceDrive Community hub
 - `src/poi_categories.py` — shared taxonomy (6 category slugs + UI labels)
+- `src/ui/poi_manager.py` — POI manager window; all POIs are user-owned (no system POIs)
 - `src/sc_ocr/` — glyph OCR sub-pipeline: segment on otsu → classify (NCC or ONNX CNN) on enhanced grayscale
 
 ## SC coordinate system
@@ -51,7 +52,8 @@ run on Python 3.10–3.14. `[OCR] pipeline_mode = hybrid|full_text` chooses
 between NCC/ONNX + text-engine fallback and a text-engine-only path.
 
 ## POI schema
-User POIs (`%LOCALAPPDATA%\SpaceDrive\data\user_poi.json`) and exported POIs
+All POIs are user-owned. `%LOCALAPPDATA%\SpaceDrive\data\user_poi.json` is the
+single source of truth (no bundled system POI file). Exported POIs
 share the same shape:
 
 | Field         | Type            | Notes                                                        |

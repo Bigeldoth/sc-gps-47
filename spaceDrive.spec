@@ -18,7 +18,6 @@ a = Analysis(
     binaries=[],
     datas=[
         # Static game data
-        ('data\\poi.json', 'data'),
         ('data\\templates', 'data\\templates'),  # NCC templates
         # Trained glyph classifier
         ('models\\spacedrive_ocr.onnx', 'models'),

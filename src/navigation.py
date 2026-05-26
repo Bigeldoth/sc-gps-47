@@ -201,26 +201,13 @@ def calculate_velocity_bearing(velocity, current_pos, target):
 
 
 class NavigationEngine:
-    def __init__(self, poi_file=None):
-        # Read-only assets (system POIs shipped with the app) come from the
-        # bundle dir. Writable user data (user_poi.json) goes under user_data
-        # so a Program Files install never tries to write into its own
-        # read-only folder. In dev mode both paths resolve to the repo root,
-        # preserving the historical `data/poi.json` / `data/user_poi.json`
-        # layout.
-        from app_paths import bundle_dir, user_data_dir
-        self.base_dir = str(bundle_dir())
-
-        if poi_file is None:
-            poi_file = os.path.join(self.base_dir, "data", "poi.json")
-
-        self.poi_file = poi_file
+    def __init__(self):
+        from app_paths import user_data_dir
         self.user_poi_file = os.path.join(str(user_data_dir()), "data", "user_poi.json")
 
         # Create the user data subfolder if it does not exist.
         os.makedirs(os.path.dirname(self.user_poi_file), exist_ok=True)
 
-        self.poi_data = self.load_poi(self.poi_file)
         self.user_poi = self.load_user_poi()
         self.target = None
 
@@ -298,17 +285,6 @@ class NavigationEngine:
             return False
         except:
             return False
-
-    def load_poi(self, file_path):
-        try:
-            if not os.path.exists(file_path):
-                print(f"POI file not found: {file_path}")
-                return []
-            with open(file_path, 'r') as f:
-                return json.load(f)
-        except Exception as e:
-            print(f"Error loading POI: {e}")
-            return []
 
     def set_target(self, x, y, z, name="Destination", ooc=None, kind="space"):
         """Set the destination and start zone tracking.
@@ -422,18 +398,3 @@ class NavigationEngine:
         # This engine returns deltas to help the overlay place a cursor.
         return {"dx": dx, "dy": dy, "dz": dz}
 
-    def get_all_poi_for_location(self, location_name):
-        """Return the list of POIs (system + user) for a given planet."""
-        pois = []
-        # System points
-        for system in self.poi_data:
-            for body in system["bodies"]:
-                if body["name"].lower() in location_name.lower():
-                    pois.extend(body["poi"])
-
-        # User points
-        for upoi in self.user_poi:
-            if upoi.get("location", "").lower() in location_name.lower() or location_name == "All":
-                pois.append(upoi)
-
-        return pois

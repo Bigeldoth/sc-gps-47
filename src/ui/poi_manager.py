@@ -252,41 +252,13 @@ class POIManagerWindow(QDialog):
         self.setLayout(layout)
     
     def _load_pois(self):
-        """Loads all POIs from the NavigationEngine"""
+        """Loads user POIs from the NavigationEngine."""
         try:
             self.all_pois = []
-
-            # Load system POIs (from poi.json)
-            if isinstance(self.nav.poi_data, list):
-                for system in self.nav.poi_data:
-                    if not isinstance(system, dict):
-                        continue
-                    for body in system.get("bodies", []):
-                        if not isinstance(body, dict):
-                            continue
-                        for poi in body.get("poi", []):
-                            if not isinstance(poi, dict):
-                                continue
-                            poi_entry = {
-                                "name": poi.get("name", "Unknown"),
-                                "x": poi.get("x", 0.0),
-                                "y": poi.get("y", 0.0),
-                                "z": poi.get("z", 0.0),
-                                "description": poi.get("description", ""),
-                                "location": body.get("name", "Unknown System"),
-                                "ooc": poi.get("ooc"),
-                                "category": poi.get("category", ""),
-                                "source": "system",
-                            }
-                            self.all_pois.append(poi_entry)
-            else:
-                logger.warning("Invalid poi_data structure (expected: list)")
-
-            # Load user POIs
             for poi in self.nav.user_poi or []:
                 if not isinstance(poi, dict):
                     continue
-                poi_entry = {
+                self.all_pois.append({
                     "name": poi.get("name", "Unknown"),
                     "x": poi.get("x", 0.0),
                     "y": poi.get("y", 0.0),
@@ -296,14 +268,10 @@ class POIManagerWindow(QDialog):
                     "ooc": poi.get("ooc"),
                     "kind": poi.get("kind", "space"),
                     "category": poi.get("category", ""),
-                    "source": "user",
-                }
-                self.all_pois.append(poi_entry)
+                })
 
-            # Display all POIs
             self.filtered_pois = self.all_pois.copy()
             self._update_table()
-
             logger.info(f"{len(self.all_pois)} POIs loaded")
         except Exception as e:
             logger.exception(f"Error loading POIs: {e}")
@@ -413,10 +381,6 @@ class POIManagerWindow(QDialog):
             QMessageBox.warning(self, "Warning", "Please select a POI to edit.")
             return
 
-        if poi["source"] == "system":
-            QMessageBox.warning(self, "Warning", "System POIs cannot be edited.")
-            return
-
         dialog = POIEditDialog(poi, self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             new_data = dialog.get_poi_data()
@@ -446,10 +410,6 @@ class POIManagerWindow(QDialog):
         poi = self._get_selected_poi()
         if not poi:
             QMessageBox.warning(self, "Warning", "Please select a POI to delete.")
-            return
-
-        if poi["source"] == "system":
-            QMessageBox.warning(self, "Warning", "System POIs cannot be deleted.")
             return
 
         # Confirmation dialog
@@ -514,7 +474,7 @@ class POIManagerWindow(QDialog):
     # Import / Export
     # ------------------------------------------------------------------
     def _show_context_menu(self, pos):
-        """Right-click menu on the table — export actions for user POIs only."""
+        """Right-click menu on the table — export actions."""
         index = self.poi_table.indexAt(pos)
         if not index.isValid():
             return
@@ -522,7 +482,7 @@ class POIManagerWindow(QDialog):
         # Select the row under the cursor so _get_selected_poi() picks it up
         self.poi_table.selectRow(index.row())
         poi = self._get_selected_poi()
-        if not poi or poi.get("source") != "user":
+        if not poi:
             return
 
         menu = QMenu(self)
