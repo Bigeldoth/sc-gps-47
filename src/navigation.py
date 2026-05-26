@@ -250,7 +250,7 @@ class NavigationEngine:
         except:
             return False
 
-    def add_user_point(self, name, x, y, z, location="Unknown", ooc=None, kind="space"):
+    def add_user_point(self, name, x, y, z, location="Unknown", ooc=None, kind="space", category=""):
         """Add a new custom point.
 
         ``ooc`` (ObjectContainer name, e.g. ``Stanton_1_Hurston``) identifies
@@ -259,6 +259,9 @@ class NavigationEngine:
 
         ``kind`` is either ``"surface"`` (planet/moon — Z ignored for distance
         and pitch) or ``"space"`` (3D distance and pitch as usual).
+
+        ``category`` is a SpaceDrive Community taxonomy slug (see
+        ``poi_categories``). Empty string means "Uncategorized".
         """
         point = {
             "name": name,
@@ -268,6 +271,7 @@ class NavigationEngine:
             "location": location,
             "ooc": ooc,
             "kind": kind,
+            "category": category,
         }
         self.user_poi.append(point)
         self.save_user_poi()

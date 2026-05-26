@@ -10,9 +10,13 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                              QPushButton, QTableWidget, QTableWidgetItem,
                              QHeaderView, QMessageBox, QLineEdit, QWidget,
                              QAbstractItemView, QInputDialog,
-                             QRadioButton, QButtonGroup)
+                             QRadioButton, QButtonGroup, QComboBox, QMenu,
+                             QFileDialog, QApplication)
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QPalette, QColor, QFontDatabase, QFont
+from PyQt6.QtGui import QPalette, QColor, QFontDatabase, QFont, QAction
+
+import poi_io
+from poi_categories import POI_CATEGORIES, label_for
 
 logger = logging.getLogger(__name__)
 
@@ -176,8 +180,10 @@ class POIManagerWindow(QDialog):
 
         # POI table
         self.poi_table = QTableWidget()
-        self.poi_table.setColumnCount(6)
-        self.poi_table.setHorizontalHeaderLabels(["Name", "Zone (OOC)", "X", "Y", "Z", "Description"])
+        self.poi_table.setColumnCount(7)
+        self.poi_table.setHorizontalHeaderLabels(
+            ["Name", "Zone (OOC)", "Category", "X", "Y", "Z", "Description"]
+        )
 
         # Configure columns
         header = self.poi_table.horizontalHeader()
@@ -186,7 +192,12 @@ class POIManagerWindow(QDialog):
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
+
+        # Right-click context menu for export actions on user POIs
+        self.poi_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.poi_table.customContextMenuRequested.connect(self._show_context_menu)
 
         # Enable sorting
         self.poi_table.setSortingEnabled(True)
@@ -220,6 +231,10 @@ class POIManagerWindow(QDialog):
         self.delete_button.setObjectName("delete_button")
         self.delete_button.clicked.connect(self._delete_poi)
         button_layout.addWidget(self.delete_button)
+
+        self.import_button = QPushButton("Import from clipboard")
+        self.import_button.clicked.connect(self._import_poi_from_clipboard)
+        button_layout.addWidget(self.import_button)
 
         button_layout.addStretch()
 
@@ -260,6 +275,7 @@ class POIManagerWindow(QDialog):
                                 "description": poi.get("description", ""),
                                 "location": body.get("name", "Unknown System"),
                                 "ooc": poi.get("ooc"),
+                                "category": poi.get("category", ""),
                                 "source": "system",
                             }
                             self.all_pois.append(poi_entry)
@@ -279,6 +295,7 @@ class POIManagerWindow(QDialog):
                     "location": poi.get("location", "Unknown"),
                     "ooc": poi.get("ooc"),
                     "kind": poi.get("kind", "space"),
+                    "category": poi.get("category", ""),
                     "source": "user",
                 }
                 self.all_pois.append(poi_entry)
@@ -314,22 +331,26 @@ class POIManagerWindow(QDialog):
             ooc_item = QTableWidgetItem(ooc_str)
             self.poi_table.setItem(row, 1, ooc_item)
 
+            # Category (label from slug)
+            cat_item = QTableWidgetItem(label_for(poi.get("category")))
+            self.poi_table.setItem(row, 2, cat_item)
+
             # Coordinates
             x_item = QTableWidgetItem(fmt(poi.get("x")))
             x_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            self.poi_table.setItem(row, 2, x_item)
+            self.poi_table.setItem(row, 3, x_item)
 
             y_item = QTableWidgetItem(fmt(poi.get("y")))
             y_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            self.poi_table.setItem(row, 3, y_item)
+            self.poi_table.setItem(row, 4, y_item)
 
             z_item = QTableWidgetItem(fmt(poi.get("z")))
             z_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            self.poi_table.setItem(row, 4, z_item)
+            self.poi_table.setItem(row, 5, z_item)
 
             # Description
             desc_item = QTableWidgetItem(str(poi.get("description", "")))
-            self.poi_table.setItem(row, 5, desc_item)
+            self.poi_table.setItem(row, 6, desc_item)
 
         self.poi_table.setSortingEnabled(True)  # Re-enable sorting
     
@@ -347,6 +368,7 @@ class POIManagerWindow(QDialog):
                 or search_text in str(poi["x"])
                 or search_text in str(poi["y"])
                 or search_text in str(poi["z"])
+                or search_text in label_for(poi.get("category")).lower()
             ]
 
         self._update_table()
@@ -375,6 +397,7 @@ class POIManagerWindow(QDialog):
                 poi_data["z"],
                 poi_data.get("location", "Unknown"),
                 kind=poi_data.get("kind", "space"),
+                category=poi_data.get("category", ""),
             )
 
             # Reload POIs
@@ -487,6 +510,120 @@ class POIManagerWindow(QDialog):
         # Close window
         self.accept()
 
+    # ------------------------------------------------------------------
+    # Import / Export
+    # ------------------------------------------------------------------
+    def _show_context_menu(self, pos):
+        """Right-click menu on the table — export actions for user POIs only."""
+        index = self.poi_table.indexAt(pos)
+        if not index.isValid():
+            return
+
+        # Select the row under the cursor so _get_selected_poi() picks it up
+        self.poi_table.selectRow(index.row())
+        poi = self._get_selected_poi()
+        if not poi or poi.get("source") != "user":
+            return
+
+        menu = QMenu(self)
+        copy_action = QAction("Copy to clipboard", self)
+        copy_action.triggered.connect(lambda: self._copy_poi_to_clipboard(poi))
+        menu.addAction(copy_action)
+
+        export_action = QAction("Export to JSON file...", self)
+        export_action.triggered.connect(lambda: self._export_poi_to_file(poi))
+        menu.addAction(export_action)
+
+        menu.exec(self.poi_table.viewport().mapToGlobal(pos))
+
+    def _copy_poi_to_clipboard(self, poi):
+        try:
+            payload = poi_io.to_json(poi)
+            QApplication.clipboard().setText(payload)
+            logger.info(f"POI copied to clipboard: {poi['name']}")
+            QMessageBox.information(self, "Success", f"POI '{poi['name']}' copied to clipboard.")
+        except Exception as e:
+            logger.exception("Failed to copy POI to clipboard")
+            QMessageBox.critical(self, "Error", f"Failed to copy POI: {e}")
+
+    def _export_poi_to_file(self, poi):
+        default_name = f"{poi.get('name', 'poi')}.json"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export POI", default_name, "JSON Files (*.json)"
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(poi_io.to_json(poi))
+            logger.info(f"POI exported to {path}")
+            QMessageBox.information(self, "Success", f"POI exported to {path}")
+        except OSError as e:
+            logger.exception("Failed to write POI file")
+            QMessageBox.critical(self, "Error", f"Failed to write file: {e}")
+
+    def _import_poi_from_clipboard(self):
+        text = QApplication.clipboard().text()
+        if not text or not text.strip():
+            QMessageBox.warning(self, "Clipboard empty", "The clipboard is empty.")
+            return
+
+        try:
+            poi_data = poi_io.parse_poi(text)
+        except ValueError as e:
+            QMessageBox.warning(self, "Invalid POI", f"Clipboard does not contain a valid POI:\n\n{e}")
+            return
+
+        # Duplicate detection (case-insensitive name match)
+        name_lower = poi_data["name"].lower()
+        existing_idx = next(
+            (i for i, p in enumerate(self.nav.user_poi)
+             if str(p.get("name", "")).lower() == name_lower),
+            None,
+        )
+
+        if existing_idx is not None:
+            reply = QMessageBox.question(
+                self,
+                "Duplicate POI",
+                f"A POI named '{poi_data['name']}' already exists.\n\n"
+                "Yes = Replace existing\n"
+                "No = Keep both (auto-rename imported one)\n"
+                "Cancel = Abort",
+                QMessageBox.StandardButton.Yes
+                | QMessageBox.StandardButton.No
+                | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if reply == QMessageBox.StandardButton.Cancel:
+                return
+            if reply == QMessageBox.StandardButton.Yes:
+                self.nav.user_poi.pop(existing_idx)
+            elif reply == QMessageBox.StandardButton.No:
+                poi_data["name"] = self._next_free_name(poi_data["name"])
+
+        self.nav.user_poi.append(poi_data)
+        try:
+            self.nav.save_user_poi()
+        except Exception as e:
+            logger.exception("Failed to save user POIs after import")
+            QMessageBox.critical(self, "Error", f"Failed to save POI: {e}")
+            # Roll back the in-memory append
+            self.nav.user_poi.pop()
+            return
+
+        self._load_pois()
+        logger.info(f"POI imported from clipboard: {poi_data['name']}")
+        QMessageBox.information(self, "Success", f"POI '{poi_data['name']}' imported.")
+
+    def _next_free_name(self, base_name):
+        """Find a non-colliding name by appending ' (2)', ' (3)', ..."""
+        existing = {str(p.get("name", "")).lower() for p in self.nav.user_poi}
+        i = 2
+        while f"{base_name} ({i})".lower() in existing:
+            i += 1
+        return f"{base_name} ({i})"
+
 
 class POIEditDialog(QDialog):
     """Dialog for adding or editing a POI"""
@@ -562,6 +699,15 @@ class POIEditDialog(QDialog):
         kind_layout.addWidget(self.space_radio)
         layout.addLayout(kind_layout)
 
+        # Category (SpaceDrive Community taxonomy)
+        cat_layout = QHBoxLayout()
+        cat_layout.addWidget(QLabel("Category:"))
+        self.category_combo = QComboBox()
+        for slug, label in POI_CATEGORIES:
+            self.category_combo.addItem(label, slug)
+        cat_layout.addWidget(self.category_combo)
+        layout.addLayout(cat_layout)
+
         # Description
         desc_layout = QHBoxLayout()
         desc_layout.addWidget(QLabel("Description:"))
@@ -600,6 +746,9 @@ class POIEditDialog(QDialog):
             self.surface_radio.setChecked(True)
         else:
             self.space_radio.setChecked(True)
+        slug = self.poi_data.get("category", "") or ""
+        idx = self.category_combo.findData(slug)
+        self.category_combo.setCurrentIndex(idx if idx >= 0 else 0)
 
     def _validate_and_accept(self):
         """Validates data and accepts the dialog"""
@@ -628,4 +777,5 @@ class POIEditDialog(QDialog):
             "location": self.location_input.text() or "Unknown",
             "description": self.desc_input.text(),
             "kind": "surface" if self.surface_radio.isChecked() else "space",
+            "category": self.category_combo.currentData() or "",
         }
