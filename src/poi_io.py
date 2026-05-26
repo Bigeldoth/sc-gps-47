@@ -35,30 +35,10 @@ def to_json(poi: dict[str, Any]) -> str:
     return json.dumps(serialize_poi(poi), indent=2, ensure_ascii=False)
 
 
-def parse_poi(text: str) -> dict[str, Any]:
-    """
-    Parse and validate a POI from a JSON string.
-
-    Accepts either a single object or a one-element array (tolerant of common
-    copy-paste shapes from the community site).
-
-    Raises ValueError with a user-readable message on any validation failure.
-    """
-    if text is None or not text.strip():
-        raise ValueError("Clipboard is empty.")
-
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError as e:
-        raise ValueError(f"Not a valid JSON document ({e.msg}).") from e
-
-    if isinstance(data, list):
-        if len(data) != 1:
-            raise ValueError("JSON array must contain exactly one POI.")
-        data = data[0]
-
+def _validate_poi_dict(data: Any) -> dict[str, Any]:
+    """Validate and normalise a single already-parsed POI dict."""
     if not isinstance(data, dict):
-        raise ValueError("JSON root must be an object (or a one-element array).")
+        raise ValueError("Expected a JSON object.")
 
     for field in REQUIRED_FIELDS:
         if field not in data:
@@ -91,8 +71,6 @@ def parse_poi(text: str) -> dict[str, Any]:
             f"Expected one of: {', '.join(sorted(s for s in CATEGORY_SLUGS if s))}."
         )
 
-    description = str(data.get("description") or "").strip()
-
     return {
         "name": name,
         "x": x,
@@ -102,5 +80,67 @@ def parse_poi(text: str) -> dict[str, Any]:
         "ooc": ooc,
         "kind": kind,
         "category": category,
-        "description": description,
+        "description": str(data.get("description") or "").strip(),
     }
+
+
+def parse_poi(text: str) -> dict[str, Any]:
+    """
+    Parse and validate a single POI from a JSON string.
+
+    Accepts either a single object or a one-element array (tolerant of common
+    copy-paste shapes from the community site).
+
+    Raises ValueError with a user-readable message on any validation failure.
+    """
+    if text is None or not text.strip():
+        raise ValueError("Clipboard is empty.")
+
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Not a valid JSON document ({e.msg}).") from e
+
+    if isinstance(data, list):
+        if len(data) != 1:
+            raise ValueError("JSON array must contain exactly one POI.")
+        data = data[0]
+
+    return _validate_poi_dict(data)
+
+
+def parse_poi_list(text: str) -> list[dict[str, Any]]:
+    """
+    Parse and validate a POI list from a JSON string.
+
+    Accepts:
+    - A single POI object  → returns a one-element list
+    - An array of POI objects → validates each entry and returns the list
+
+    Raises ValueError with a user-readable message on any validation failure.
+    """
+    if text is None or not text.strip():
+        raise ValueError("File is empty.")
+
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Not a valid JSON document ({e.msg}).") from e
+
+    if isinstance(data, dict):
+        return [_validate_poi_dict(data)]
+
+    if not isinstance(data, list):
+        raise ValueError("JSON root must be an object or an array.")
+
+    if not data:
+        raise ValueError("JSON array is empty — nothing to import.")
+
+    result = []
+    for i, item in enumerate(data):
+        try:
+            result.append(_validate_poi_dict(item))
+        except ValueError as e:
+            raise ValueError(f"Entry #{i + 1}: {e}") from e
+
+    return result

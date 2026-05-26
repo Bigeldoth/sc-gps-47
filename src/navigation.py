@@ -273,19 +273,6 @@ class NavigationEngine:
         except:
             return False
 
-    def import_points(self, import_path):
-        """Import points from a JSON file."""
-        try:
-            with open(import_path, 'r') as f:
-                new_points = json.load(f)
-                if isinstance(new_points, list):
-                    self.user_poi.extend(new_points)
-                    self.save_user_poi()
-                    return True
-            return False
-        except:
-            return False
-
     def set_target(self, x, y, z, name="Destination", ooc=None, kind="space"):
         """Set the destination and start zone tracking.
 

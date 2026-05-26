@@ -7,7 +7,7 @@ import configparser
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QLabel, QVBoxLayout,
                              QWidget, QFrame, QSystemTrayIcon, QMenu, QInputDialog, QFileDialog,
                              QDialog, QHBoxLayout, QLineEdit, QPushButton,
-                             QRadioButton, QButtonGroup, QComboBox)
+                             QRadioButton, QButtonGroup, QComboBox, QMessageBox)
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QObject
 from PyQt6.QtGui import QIcon, QAction, QColor, QCursor
 from app_paths import user_data_dir, bundle_dir
@@ -28,6 +28,7 @@ from velocity_tracker import VelocityTracker
 from ui.options import OptionsWindow
 from ui.poi_manager import POIManagerWindow
 from poi_categories import POI_CATEGORIES
+import poi_io
 
 # Read config.ini from the same paths ConfigManager uses so the logging
 # setup honors what the user changed in Options. Order matters: bundle is
@@ -1253,9 +1254,89 @@ class GPSOverlay(QMainWindow):
 
     def import_data(self):
         path, _ = QFileDialog.getOpenFileName(self, "Import points", "", "JSON Files (*.json)")
-        if path:
-            if self.nav.import_points(path):
-                self.tray_icon.showMessage("Success", "Points imported.", QSystemTrayIcon.MessageIcon.Information)
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                text = f.read()
+        except OSError as e:
+            QMessageBox.critical(self, "Error", f"Could not read file:\n{e}")
+            return
+
+        try:
+            pois = poi_io.parse_poi_list(text)
+        except ValueError as e:
+            QMessageBox.warning(self, "Invalid file", f"File does not contain valid POI data:\n\n{e}")
+            return
+
+        imported = skipped = replaced = renamed = 0
+        for poi_data in pois:
+            name_lower = poi_data["name"].lower()
+            existing_idx = next(
+                (i for i, p in enumerate(self.nav.user_poi)
+                 if str(p.get("name", "")).lower() == name_lower),
+                None,
+            )
+            if existing_idx is not None:
+                reply = QMessageBox.question(
+                    self,
+                    "Duplicate POI",
+                    f"A POI named '{poi_data['name']}' already exists.\n\n"
+                    "Yes = Replace existing\n"
+                    "No = Keep both (auto-rename imported one)\n"
+                    "Cancel = Skip this POI",
+                    QMessageBox.StandardButton.Yes
+                    | QMessageBox.StandardButton.No
+                    | QMessageBox.StandardButton.Cancel,
+                    QMessageBox.StandardButton.Cancel,
+                )
+                if reply == QMessageBox.StandardButton.Cancel:
+                    skipped += 1
+                    continue
+                if reply == QMessageBox.StandardButton.Yes:
+                    self.nav.user_poi.pop(existing_idx)
+                    replaced += 1
+                else:
+                    poi_data["name"] = self._next_free_poi_name(poi_data["name"])
+                    renamed += 1
+            else:
+                imported += 1
+            self.nav.user_poi.append(poi_data)
+
+        if imported + replaced + renamed == 0:
+            self.tray_icon.showMessage(
+                "Import", f"Nothing imported ({skipped} skipped).",
+                QSystemTrayIcon.MessageIcon.Warning, 3000,
+            )
+            return
+
+        try:
+            self.nav.save_user_poi()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to save POIs:\n{e}")
+            return
+
+        parts = []
+        if imported:
+            parts.append(f"{imported} added")
+        if replaced:
+            parts.append(f"{replaced} replaced")
+        if renamed:
+            parts.append(f"{renamed} renamed")
+        if skipped:
+            parts.append(f"{skipped} skipped")
+        self.tray_icon.showMessage(
+            "Import complete", ", ".join(parts) + ".",
+            QSystemTrayIcon.MessageIcon.Information, 3000,
+        )
+
+    def _next_free_poi_name(self, base_name: str) -> str:
+        """Return a non-colliding name by appending ' (2)', ' (3)', ..."""
+        existing = {str(p.get("name", "")).lower() for p in self.nav.user_poi}
+        i = 2
+        while f"{base_name} ({i})".lower() in existing:
+            i += 1
+        return f"{base_name} ({i})"
 
     def quit_application(self):
         self.hotkey_listener.cleanup()
