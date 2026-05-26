@@ -51,7 +51,7 @@ Write-Host ""
 # Step 1: Build
 if (-not $SkipBuild) {
     Write-Host "--- Step 1/3: Build installer ---" -ForegroundColor Yellow
-    & (Join-Path $PSScriptRoot "build_installer.ps1")
+    & (Join-Path $PSScriptRoot "build_installer.ps1") -Version $Version
     if ($LASTEXITCODE -ne 0) { throw "Build failed" }
 } else {
     Write-Host "--- Step 1/3: Build skipped (-SkipBuild) ---" -ForegroundColor DarkGray
