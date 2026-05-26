@@ -29,6 +29,9 @@ navigation guidance to user-defined POIs.
 - `src/velocity_tracker.py` — velocity estimation from successive OCR positions (EMA smoothed)
 - `src/config_manager.py` — config.ini R/W wrapper
 - `src/hotkey_listener.py` — global hotkeys via pynput
+- `src/poi_io.py` — POI serialization + validation for clipboard/file exchange with the SpaceDrive Community hub
+- `src/poi_categories.py` — shared taxonomy (6 category slugs + UI labels)
+- `src/ui/poi_manager.py` — POI manager window; all POIs are user-owned (no system POIs)
 - `src/sc_ocr/` — glyph OCR sub-pipeline: segment on otsu → classify (NCC or ONNX CNN) on enhanced grayscale
 
 ## SC coordinate system
@@ -47,6 +50,37 @@ Options dialog (Manage engines…) — it lives in a Python 3.12 sidecar venv
 (`.venv-paddle/`) and is invoked via JSON IPC, so the host app stays free to
 run on Python 3.10–3.14. `[OCR] pipeline_mode = hybrid|full_text` chooses
 between NCC/ONNX + text-engine fallback and a text-engine-only path.
+
+## POI schema
+All POIs are user-owned. `%LOCALAPPDATA%\SpaceDrive\data\user_poi.json` is the
+single source of truth (no bundled system POI file). Exported POIs
+share the same shape:
+
+| Field         | Type            | Notes                                                        |
+|---------------|-----------------|--------------------------------------------------------------|
+| `name`        | string          | Required, non-empty                                          |
+| `x`, `y`, `z` | number          | Required; SC OOC frame                                       |
+| `location`    | string          | Required; planet/moon/system label, "Unknown" if not set     |
+| `ooc`         | string \| null  | ObjectContainer ID (e.g. `Stanton_3a_Lyria`)                 |
+| `kind`        | `"surface" \| "space"` | Surface ignores Z for distance/pitch                  |
+| `category`    | string slug     | One of the 6 taxonomy slugs below, or `""` (Uncategorized)   |
+| `description` | string          | Optional free-form                                           |
+
+### Categories (SpaceDrive Community taxonomy)
+Source of truth: `src/poi_categories.py`.
+
+- `industry` — Industry (mining nodes, refineries, gas clouds, harvestables)
+- `exploration` — Exploration (anomalies, scannables, derelict ships, crash sites, wrecks)
+- `logistics_black_market` — Logistics & Black Market (trade routes, contraband drop-offs)
+- `hostile_combat` — Combat & Hostile Zones (bunkers, PvP/PvE hotspots)
+- `loot` — Loot (containers, ammo/medical caches, loose cargo)
+- `racing` — Racing (circuits, checkpoints, time-trial markers)
+
+Legacy POIs (no `category`) remain valid and display as "Uncategorized".
+
+### Import / export
+- Right-click on a user POI in the POI Manager → "Copy to clipboard" / "Export to JSON file...".
+- "Import from clipboard" button accepts either a single JSON object or a one-element array. Strict validation lives in `src/poi_io.parse_poi`.
 
 ## Git workflow
 - Always work on a **feature branch** (`feat/<name>`, `fix/<name>`, etc.) — never commit directly to `main`.
