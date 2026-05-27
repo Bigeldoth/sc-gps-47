@@ -16,6 +16,7 @@
 #   .\tools\build_installer.ps1 -Clean            # wipe dist\ + build\ first
 
 param(
+    [string]$Version = "",
     [switch]$SkipPyInstaller,
     [switch]$Clean
 )
@@ -60,7 +61,12 @@ if (-not (Test-Path $Iscc)) {
 Write-Host "==> Inno Setup compiler: $Iscc"
 
 Write-Host "==> Compiling installer" -ForegroundColor Cyan
-& $Iscc (Join-Path $RepoRoot "installer\spaceDrive.iss")
+$IssArgs = @(Join-Path $RepoRoot "installer\spaceDrive.iss")
+if ($Version -ne "") {
+    $bare = $Version.TrimStart("v")
+    $IssArgs += "/DMyAppVersion=$bare"
+}
+& $Iscc @IssArgs
 if ($LASTEXITCODE -ne 0) { throw "Inno Setup compile failed (exit $LASTEXITCODE)" }
 
 $Installer = Get-ChildItem (Join-Path $RepoRoot "dist") -Filter "SpaceDrive-Setup-*.exe" |
