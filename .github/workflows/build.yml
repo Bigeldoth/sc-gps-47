@@ -72,7 +72,7 @@ jobs:
 
       - name: Build installer (PyInstaller + Inno Setup)
         shell: pwsh
-        run: .\tools\build_installer.ps1
+        run: .\tools\build_installer.ps1 -Version $env:GITHUB_REF_NAME
 
       - name: Upload to VPS (SFTP — no GitHub artifact storage)
         env:
