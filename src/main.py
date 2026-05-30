@@ -68,7 +68,7 @@ logger.info("Log file: %s", _log_file_path)
 # ── PADEK design system ──────────────────────────────────────────────────────
 
 def _load_padek_fonts():
-    """Load Manrope ExtraBold for PADEK titles and labels."""
+    """Load Manrope ExtraBold for PADEK titles and labels. Requires QApplication."""
     font_id = QFontDatabase.addApplicationFont(
         str(bundle_dir() / "assets" / "fonts" / "Manrope-ExtraBold.ttf")
     )
@@ -77,7 +77,8 @@ def _load_padek_fonts():
     return "Manrope"
 
 
-PADEK_DISPLAY_FONT = _load_padek_fonts()
+# Module-level fallback — overwritten after QApplication is created (see main()).
+PADEK_DISPLAY_FONT = "Manrope"
 
 # Freshness stops (age_s) -> PADEK border colors
 _PADEK_BORDER_STOPS = [
@@ -1558,6 +1559,10 @@ class GPSOverlay(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+
+    # Load PADEK font now that QApplication exists, then update the module global.
+    PADEK_DISPLAY_FONT = _load_padek_fonts()  # noqa: F841 (read by sub-modules)
+    logger.info("PADEK display font: %s", PADEK_DISPLAY_FONT)
 
     qss_path = bundle_dir() / "assets" / "padek-theme.qss"
     if qss_path.exists():
