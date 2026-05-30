@@ -9,8 +9,9 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QLabel, QVBoxLayout,
                              QDialog, QHBoxLayout, QLineEdit, QPushButton,
                              QRadioButton, QButtonGroup, QComboBox, QMessageBox)
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QObject
-from PyQt6.QtGui import QIcon, QAction, QColor, QCursor
+from PyQt6.QtGui import QIcon, QAction, QColor, QCursor, QFontDatabase, QFont
 from app_paths import user_data_dir, bundle_dir
+from ui.widgets import SignalBarsWidget
 from capture import ScreenCapture
 from ocr import OCRProcessor
 from navigation import (
@@ -62,6 +63,74 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 logger.info("Log file: %s", _log_file_path)
+
+
+# ── PADEK design system ──────────────────────────────────────────────────────
+
+def _load_padek_fonts():
+    """Load Manrope ExtraBold for PADEK titles and labels."""
+    font_id = QFontDatabase.addApplicationFont(
+        str(bundle_dir() / "assets" / "fonts" / "Manrope-ExtraBold.ttf")
+    )
+    if font_id >= 0:
+        return QFontDatabase.applicationFontFamilies(font_id)[0]
+    return "Manrope"
+
+
+PADEK_DISPLAY_FONT = _load_padek_fonts()
+
+# Freshness stops (age_s) -> PADEK border colors
+_PADEK_BORDER_STOPS = [
+    (0.0,  "#19C28A"),   # emerald -- LIVE
+    (3.0,  "#D9A368"),   # copper  -- AGING
+    (7.0,  "#FF7A45"),   # orange  -- STALE
+    (12.0, "#E5484D"),   # danger  -- LOST
+]
+# Freshness stops (age_s) -> coordinate text colors
+_PADEK_COORD_STOPS = [
+    (0.0,  "#6FE8FF"),   # neon    -- LIVE
+    (3.0,  "#D9A368"),   # copper  -- AGING
+    (7.0,  "#FF7A45"),   # orange  -- STALE
+    (12.0, "#E5484D"),   # danger  -- LOST
+]
+
+
+def _padek_freshness_level(age_s):
+    """Return 0=LIVE / 1=AGING / 2=STALE / 3=LOST."""
+    if age_s is None:
+        return 3
+    if age_s < 3.0:
+        return 0
+    if age_s < 7.0:
+        return 1
+    if age_s < 12.0:
+        return 2
+    return 3
+
+
+def _padek_interp(stops, age_s):
+    """Linear RGB interpolation between freshness stops."""
+    if age_s is None or age_s >= stops[-1][0]:
+        return stops[-1][1]
+    if age_s <= stops[0][0]:
+        return stops[0][1]
+    for i in range(len(stops) - 1):
+        t0, c0 = stops[i]
+        t1, c1 = stops[i + 1]
+        if t0 <= age_s <= t1:
+            def _hex(c):
+                return [int(c[1:3], 16), int(c[3:5], 16), int(c[5:7], 16)]
+            r0, g0, b0 = _hex(c0)
+            r1, g1, b1 = _hex(c1)
+            t = (age_s - t0) / (t1 - t0)
+            r = int(r0 + t * (r1 - r0))
+            g = int(g0 + t * (g1 - g0))
+            b = int(b0 + t * (b1 - b0))
+            return f"#{r:02x}{g:02x}{b:02x}"
+    return stops[-1][1]
+
+
+# ── End PADEK ────────────────────────────────────────────────────────────────
 
 
 def _build_ocr_processor(cfg):
@@ -292,59 +361,120 @@ class _SavePOIDialog(QDialog):
     distance to avoid altitude-inflated readings.
     """
 
-    def __init__(self, parent=None):
+    def __init__(self, freshness_level: int = 0, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Save Point")
+        self._freshness_level = freshness_level
+        self.setWindowTitle("Enregistrer position")
         self.setModal(True)
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        self.setMinimumWidth(440)
+
+        border_colors = ["#19C28A", "#D9A368", "#FF7A45", "#E5484D"]
+        border = border_colors[min(freshness_level, 3)]
+        self.setStyleSheet(f"""
+            QDialog {{
+                background-color: #161B22;
+                border: 1px solid {border};
+                border-radius: 16px;
+            }}
+        """)
 
         layout = QVBoxLayout()
+        layout.setSpacing(10)
+        layout.setContentsMargins(20, 20, 20, 20)
 
-        layout.addWidget(QLabel("Point of interest name:"))
+        title = QLabel("ENREGISTRER POSITION")
+        title.setFont(QFont(PADEK_DISPLAY_FONT, 11, QFont.Weight.ExtraBold))
+        title.setStyleSheet("color: #EEF3F6; background: transparent;")
+        layout.addWidget(title)
+
+        layout.addWidget(QLabel("Nom du point d'intérêt :"))
         self.name_input = QLineEdit()
         layout.addWidget(self.name_input)
 
-        layout.addWidget(QLabel("Type:"))
-        radio_row = QHBoxLayout()
-        self.surface_radio = QRadioButton("Surface (planet/moon)")
-        self.space_radio = QRadioButton("Space")
-        self.surface_radio.setChecked(True)
-        self._group = QButtonGroup(self)
-        self._group.addButton(self.surface_radio)
-        self._group.addButton(self.space_radio)
-        radio_row.addWidget(self.surface_radio)
-        radio_row.addWidget(self.space_radio)
-        layout.addLayout(radio_row)
+        # Toggle Surface / Space (pill buttons)
+        type_widget = QWidget()
+        type_layout = QHBoxLayout(type_widget)
+        type_layout.setSpacing(8)
+        type_layout.setContentsMargins(0, 0, 0, 0)
 
-        layout.addWidget(QLabel("Category:"))
+        self.surface_btn = QPushButton("Surface (planète / lune)")
+        self.surface_btn.setCheckable(True)
+        self.surface_btn.setChecked(True)
+        self.space_btn = QPushButton("Espace (3D)")
+        self.space_btn.setCheckable(True)
+
+        for btn in (self.surface_btn, self.space_btn):
+            btn.setFont(QFont(PADEK_DISPLAY_FONT, 8, QFont.Weight.ExtraBold))
+            type_layout.addWidget(btn)
+
+        self._type_group = QButtonGroup(self)
+        self._type_group.addButton(self.surface_btn)
+        self._type_group.addButton(self.space_btn)
+        self._type_group.buttonClicked.connect(self._update_type_styles)
+        self._update_type_styles(self.surface_btn)
+        layout.addWidget(type_widget)
+
+        layout.addWidget(QLabel("Catégorie :"))
         self.category_combo = QComboBox()
         for slug, label in POI_CATEGORIES:
             self.category_combo.addItem(label, slug)
         layout.addWidget(self.category_combo)
 
-        layout.addWidget(QLabel("Description (optional):"))
+        layout.addWidget(QLabel("Description (optionnelle) :"))
         self.desc_input = QLineEdit()
-        self.desc_input.setPlaceholderText("Short note...")
+        self.desc_input.setPlaceholderText("Note courte…")
         layout.addWidget(self.desc_input)
 
         button_row = QHBoxLayout()
-        ok_btn = QPushButton("OK")
+        button_row.addStretch()
+        cancel_btn = QPushButton("Annuler")
+        cancel_btn.clicked.connect(self.reject)
+        button_row.addWidget(cancel_btn)
+        ok_btn = QPushButton("ENREGISTRER")
+        ok_btn.setObjectName("btn_primary")
         ok_btn.setDefault(True)
         ok_btn.clicked.connect(self.accept)
-        cancel_btn = QPushButton("Cancel")
-        cancel_btn.clicked.connect(self.reject)
         button_row.addWidget(ok_btn)
-        button_row.addWidget(cancel_btn)
         layout.addLayout(button_row)
 
         self.setLayout(layout)
         self.name_input.setFocus()
 
+    def _update_type_styles(self, checked_btn):
+        for btn in (self.surface_btn, self.space_btn):
+            active = (btn is checked_btn)
+            btn.setStyleSheet("""
+                QPushButton {
+                    background: rgba(25,194,138,0.12); color: #19C28A;
+                    border: 1.5px solid rgba(25,194,138,0.5); border-radius: 999px;
+                    padding: 8px 10px;
+                    font-family: "Manrope"; font-weight: 800; font-size: 9px;
+                }
+            """ if active else """
+                QPushButton {
+                    background: transparent; color: #7E8B97;
+                    border: 1px solid rgba(238,243,246,0.12); border-radius: 999px;
+                    padding: 8px 10px;
+                    font-family: "Manrope"; font-weight: 800; font-size: 9px;
+                }
+                QPushButton:hover { color: #B6C3CE; border-color: rgba(238,243,246,0.2); }
+            """)
+
+    # Compatibility: surface_radio/space_radio properties for existing callers
+    @property
+    def surface_radio(self):
+        return self.surface_btn
+
+    @property
+    def space_radio(self):
+        return self.space_btn
+
     def get_name(self):
         return self.name_input.text().strip()
 
     def get_kind(self):
-        return "surface" if self.surface_radio.isChecked() else "space"
+        return "surface" if self.surface_btn.isChecked() else "space"
 
     def get_category(self):
         return self.category_combo.currentData() or ""
@@ -356,6 +486,7 @@ class _SavePOIDialog(QDialog):
 class GPSOverlay(QMainWindow):
     save_point_signal = pyqtSignal()
     trigger_worker = pyqtSignal()
+    poi_data_updated = pyqtSignal(dict)   # emitted every OCR cycle with current coords
 
     def __init__(self):
         super().__init__()
@@ -408,7 +539,7 @@ class GPSOverlay(QMainWindow):
         self._overlay_message = None
 
 
-        # UI — MFD frame Star Citizen style
+        # UI — PADEK MFD frame
         self.central_widget = QWidget()
         self.central_widget.setStyleSheet("background-color: transparent;")
 
@@ -416,35 +547,73 @@ class GPSOverlay(QMainWindow):
         outer.setContentsMargins(0, 0, 0, 0)
 
         self._mfd = QFrame()
-        self._mfd.setStyleSheet("""
-            QFrame {
-                background-color: rgba(0, 0, 0, 175);
-                border: 1px solid rgba(255, 170, 0, 210);
-                border-radius: 4px;
-            }
-        """)
-        self.layout = QVBoxLayout(self._mfd)
-        self.layout.setContentsMargins(10, 7, 10, 7)
-        self.layout.setSpacing(4)
+        self._mfd.setObjectName("mfd_frame")
 
-        _lbl_css = "border: none; font-family: 'Consolas', 'Menlo', monospace;"
+        inner = QVBoxLayout(self._mfd)
+        inner.setContentsMargins(0, 0, 0, 0)
+        inner.setSpacing(0)
 
-        self.pos_label = QLabel("Scanning...")
-        self.pos_label.setStyleSheet(f"color: #c8c8c8; font-size: 13px; {_lbl_css}")
+        # Header
+        header = QWidget()
+        header.setFixedHeight(26)
+        header.setStyleSheet("background: transparent;")
+        h_layout = QHBoxLayout(header)
+        h_layout.setContentsMargins(10, 5, 10, 5)
+        h_layout.setSpacing(6)
 
-        _sep = QFrame()
-        _sep.setFrameShape(QFrame.Shape.HLine)
-        _sep.setStyleSheet("background-color: rgba(255,170,0,160); border: none; max-height: 1px;")
+        self._title_label = QLabel("SPACEDRIVE GPS")
+        self._title_label.setFont(QFont(PADEK_DISPLAY_FONT, 7, QFont.Weight.ExtraBold))
+        self._title_label.setStyleSheet("color: #7E8B97; background: transparent;")
 
-        self.nav_label = QLabel("NO TARGET")
-        self.nav_label.setStyleSheet(f"color: #00ffff; font-size: 14px; font-weight: bold; {_lbl_css}")
+        self._signal_bars = SignalBarsWidget()
 
-        self.layout.addWidget(self.pos_label)
-        self.layout.addWidget(_sep)
-        self.layout.addWidget(self.nav_label)
+        self._live_dot = QLabel("●")
+        self._live_dot.setFont(QFont("Roboto", 7))
+        self._live_dot.setFixedWidth(10)
+
+        self._live_label = QLabel("LIVE")
+        self._live_label.setFont(QFont(PADEK_DISPLAY_FONT, 7, QFont.Weight.ExtraBold))
+
+        h_layout.addWidget(self._title_label)
+        h_layout.addStretch()
+        h_layout.addWidget(self._signal_bars)
+        h_layout.addWidget(self._live_dot)
+        h_layout.addWidget(self._live_label)
+
+        inner.addWidget(header)
+
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet("background: rgba(238,243,246,18); border: none; max-height: 1px;")
+        inner.addWidget(sep)
+
+        # Coordinates
+        self.pos_label = QLabel("Scanning…")
+        self.pos_label.setFont(QFont("Consolas", 10))
+        self.pos_label.setContentsMargins(10, 7, 10, 5)
+        self.pos_label.setStyleSheet("color: #6FE8FF; background: transparent;")
+        inner.addWidget(self.pos_label)
+
+        sep2 = QFrame()
+        sep2.setFrameShape(QFrame.Shape.HLine)
+        sep2.setStyleSheet("background: rgba(238,243,246,12); border: none; max-height: 1px;")
+        inner.addWidget(sep2)
+
+        # Navigation
+        self.nav_label = QLabel("PAS DE CIBLE")
+        self.nav_label.setFont(QFont(PADEK_DISPLAY_FONT, 9, QFont.Weight.Bold))
+        self.nav_label.setContentsMargins(10, 6, 10, 9)
+        self.nav_label.setStyleSheet("color: #4F5965; background: transparent;")
+        inner.addWidget(self.nav_label)
 
         outer.addWidget(self._mfd)
         self.setCentralWidget(self.central_widget)
+
+        # Dot pulse timer
+        self._dot_timer = QTimer()
+        self._dot_timer.timeout.connect(self._tick_dot)
+        self._dot_timer.start(600)
+        self._dot_opacity = True
 
         self.init_window_properties()
         self.setup_tray_icon()
@@ -575,6 +744,7 @@ class GPSOverlay(QMainWindow):
                 f"Z: {data['z']:>10.2f}"
             )
             self._last_coord_ts = time.monotonic()
+            self.poi_data_updated.emit(data)
 
             # Updates target zone tracking (lock after 1st match,
             # grace period 3 min otherwise — see NavigationEngine).
@@ -777,19 +947,57 @@ class GPSOverlay(QMainWindow):
         )
 
     def _refresh_pos_color(self):
-        """Updates only pos_label color based on coordinate age."""
+        """Updates MFD border, signal bars, dot, and coordinate color based on OCR age."""
         age = self._coord_age_s()
+        level = _padek_freshness_level(age)
+
+        age_val = age if age is not None else 999
+        border_color = _padek_interp(_PADEK_BORDER_STOPS, age_val)
+        coord_color  = _padek_interp(_PADEK_COORD_STOPS,  age_val)
+        label_texts  = ["LIVE", "AGING", "STALE", "LOST"]
+        label_text   = label_texts[level]
+
         if age is None:
-            color = "#666666"
             text = self.pos_label.text()
-            if not text or text == "Scanning...":
-                self.pos_label.setText("Scanning...")
-        else:
-            color = _age_to_color(age)
-        self.pos_label.setStyleSheet(
-            f"color: {color}; font-size: 13px; border: none; "
-            "font-family: 'Consolas', 'Menlo', monospace;"
+            if not text or text in ("Scanning...", "Scanning…"):
+                self.pos_label.setText("Scanning…")
+
+        # MFD border color
+        self._mfd.setStyleSheet(f"""
+            QFrame#mfd_frame {{
+                background-color: rgba(14, 18, 22, 235);
+                border: 1px solid {border_color};
+                border-radius: 6px;
+            }}
+        """)
+
+        # Signal bars
+        self._signal_bars.set_level(level)
+
+        # LIVE/AGING/STALE/LOST label
+        self._live_dot.setStyleSheet(f"color: {border_color}; background: transparent;")
+        self._live_label.setStyleSheet(
+            f"color: {border_color}; background: transparent; "
+            f"font-family: '{PADEK_DISPLAY_FONT}'; font-weight: 800; font-size: 7pt;"
         )
+        self._live_label.setText(label_text)
+
+        # Coordinate text color
+        self.pos_label.setStyleSheet(
+            f"color: {coord_color}; background: transparent; "
+            "font-family: 'Consolas'; font-size: 10pt;"
+        )
+
+    def _tick_dot(self):
+        """Pulses the live dot opacity when signal is LIVE."""
+        age = self._coord_age_s()
+        if age is not None and age < 3.0:
+            col = "#19C28A"
+            opacity = "1.0" if self._dot_opacity else "0.4"
+            self._live_dot.setStyleSheet(
+                f"color: {col}; background: transparent; opacity: {opacity};"
+            )
+            self._dot_opacity = not self._dot_opacity
 
     def _update_bearing_state(self, data):
         """Updates velocity and bearing offsets from OCR coordinates."""
@@ -856,7 +1064,10 @@ class GPSOverlay(QMainWindow):
 
     def _refresh_nav_label(self):
         """Updates nav_label: target, distance and heading merged."""
-        _css = "border: none; font-family: 'Consolas', 'Menlo', monospace;"
+        _font_css = (
+            f"font-family: '{PADEK_DISPLAY_FONT}'; font-weight: 800; "
+            "background: transparent;"
+        )
 
         # Ephemeral message takes priority (e.g., "Quick save not possible").
         if self._overlay_message is not None:
@@ -864,14 +1075,14 @@ class GPSOverlay(QMainWindow):
             if time.monotonic() < expire_ts:
                 self.nav_label.setText(text)
                 self.nav_label.setStyleSheet(
-                    f"color: #ff4040; font-size: 14px; font-weight: bold; {_css}"
+                    f"color: #E5484D; font-size: 9pt; {_font_css}"
                 )
                 return
             self._overlay_message = None
 
         if not self.nav.target:
-            self.nav_label.setText("NO TARGET")
-            self.nav_label.setStyleSheet(f"color: #555555; font-size: 13px; {_css}")
+            self.nav_label.setText("PAS DE CIBLE")
+            self.nav_label.setStyleSheet(f"color: #4F5965; font-size: 9pt; {_font_css}")
             return
 
         target_ooc = self.nav.target.get("ooc")
@@ -879,42 +1090,34 @@ class GPSOverlay(QMainWindow):
 
         if target_ooc is None:
             self.nav_label.setText(f"▶ {self.nav.target['name']}\n  Legacy POI — recreate")
-            self.nav_label.setStyleSheet(f"color: #ffaa00; font-size: 13px; {_css}")
+            self.nav_label.setStyleSheet(f"color: #D9A368; font-size: 9pt; {_font_css}")
             return
 
-        # Zone tracking logic: assume in-zone while grace period active.
-        # Once locked (1st OCR match), permanent. Otherwise after 3 min without
-        # match, display out-of-zone warning.
         if not self.nav.is_target_in_same_ooc(self.current_data):
             self.nav_label.setText(
                 f"▶ {self.nav.target['name']}\n"
                 f"  zone: {_fmt_ooc(target_ooc)}\n"
                 f"  current: {_fmt_ooc(current_ooc) if current_ooc else '?'}"
             )
-            self.nav_label.setStyleSheet(f"color: #ffaa00; font-size: 12px; {_css}")
+            self.nav_label.setStyleSheet(f"color: #D9A368; font-size: 9pt; {_font_css}")
             return
 
         name = self.nav.target['name']
 
         if self._smoothed_distance_km is None:
             self.nav_label.setText(f"▶ {name}\n  ---")
-            self.nav_label.setStyleSheet(f"color: #555555; font-size: 14px; {_css}")
+            self.nav_label.setStyleSheet(f"color: #4F5965; font-size: 9pt; {_font_css}")
             return
 
-        # Reliability color linearly interpolated on age of last OCR.
-        age_color = _age_to_color(self._coord_age_s())
+        age = self._coord_age_s()
+        age_val = age if age is not None else 999
+        nav_color = _padek_interp(_PADEK_BORDER_STOPS, age_val)
 
         dist_str = format_distance(self._smoothed_distance_km)
 
-        # Navigation arrow to target.
-        # When moving: velocity-relative arrow (car-GPS style) — shows how many
-        # degrees to correct the current heading to reach the target.
-        # When stationary: world-frame 8-direction compass (absolute direction).
-        # Surface POIs: Z ignored in both modes (_effective_dz zeroes it).
         abs_bearing = calculate_absolute_bearing(self.current_data, self.nav.target)
         arrow_str = ""
         if self._smoothed_yaw_off is not None:
-            # Moving: pitch shown only for space POIs.
             is_surface = self.nav.target.get("kind") == "surface"
             pitch_arg = None if is_surface else self._smoothed_pitch_off
             arrow = _velocity_arrow(self._smoothed_yaw_off, pitch_arg)
@@ -926,19 +1129,18 @@ class GPSOverlay(QMainWindow):
                 arrow,
             )
         elif abs_bearing:
-            # Stationary fallback: 8-direction world-frame compass.
             arrow = _world_arrow(abs_bearing)
             if arrow:
                 arrow_str = f"  {arrow}"
 
         self.nav_label.setText(f"▶ {name}\n  {dist_str}{arrow_str}")
-        self.nav_label.setStyleSheet(f"color: {age_color}; font-size: 14px; font-weight: bold; {_css}")
+        self.nav_label.setStyleSheet(f"color: {nav_color}; font-size: 9pt; {_font_css}")
 
     def init_window_properties(self):
         flags = Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowTransparentForInput
         self.setWindowFlags(flags)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setGeometry(50, 50, 320, 150)
+        self.setGeometry(50, 50, 340, 155)
         self.central_widget.setStyleSheet("background-color: transparent; border: none;")
 
         if self.isVisible():
@@ -1096,6 +1298,7 @@ class GPSOverlay(QMainWindow):
                 self.poi_manager_window = POIManagerWindow(self.nav, self)
                 self.poi_manager_window.destination_changed.connect(self._on_destination_changed)
                 self.poi_manager_window.goto_requested.connect(self._on_goto_requested)
+                self.poi_data_updated.connect(self.poi_manager_window._refresh_distances)
             self._bring_dialog_to_front(self.poi_manager_window)
         except Exception:
             logger.exception("Error opening POI manager")
@@ -1202,7 +1405,9 @@ class GPSOverlay(QMainWindow):
             # Custom QDialog to force always-on-top
             # (overlay parent has WindowTransparentForInput, default dialog
             # may appear unfocused behind overlay) and prompt for POI kind.
-            dialog = _SavePOIDialog(self)
+            age = self._coord_age_s()
+            fl = _padek_freshness_level(age)
+            dialog = _SavePOIDialog(freshness_level=fl, parent=self)
             QTimer.singleShot(0, dialog.raise_)
             QTimer.singleShot(0, dialog.activateWindow)
             if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -1353,6 +1558,12 @@ class GPSOverlay(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+
+    qss_path = bundle_dir() / "assets" / "padek-theme.qss"
+    if qss_path.exists():
+        with open(qss_path, "r", encoding="utf-8") as f:
+            app.setStyleSheet(f.read())
+
     overlay = GPSOverlay()
     overlay.show()
     sys.exit(app.exec())

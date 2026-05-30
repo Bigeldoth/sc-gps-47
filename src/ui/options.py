@@ -32,112 +32,21 @@ class OptionsWindow(QDialog):
         self.config_manager = config_manager
         self.hotkey_listener = hotkey_listener
 
-        self.setWindowTitle("Star Citizen GPS Settings")
-        self.setMinimumWidth(640)
-        self.setMinimumHeight(480)
+        self.setWindowTitle("SpaceDrive GPS — Paramètres")
+        self.setMinimumWidth(680)
+        self.setMinimumHeight(530)
 
         self._apply_dark_theme()
         self._create_ui()
         self._load_current_values()
 
     def _apply_dark_theme(self):
-        font_id = QFontDatabase.addApplicationFont("tools/fonts/Electrolize-Regular.ttf")
-        if font_id >= 0:
-            font_family = QFontDatabase.applicationFontFamilies(font_id)[0]
-            self.setFont(QFont(font_family, 10))
-
-        palette = QPalette()
-        palette.setColor(QPalette.ColorRole.Window, QColor(30, 30, 30))
-        palette.setColor(QPalette.ColorRole.WindowText, QColor(220, 220, 220))
-        palette.setColor(QPalette.ColorRole.Base, QColor(40, 40, 40))
-        palette.setColor(QPalette.ColorRole.AlternateBase, QColor(50, 50, 50))
-        palette.setColor(QPalette.ColorRole.Text, QColor(220, 220, 220))
-        palette.setColor(QPalette.ColorRole.Button, QColor(50, 50, 50))
-        palette.setColor(QPalette.ColorRole.ButtonText, QColor(220, 220, 220))
-        palette.setColor(QPalette.ColorRole.Highlight, QColor(70, 130, 180))
-        palette.setColor(QPalette.ColorRole.HighlightedText, QColor(255, 255, 255))
-        self.setPalette(palette)
-
+        self.setFont(QFont("Roboto", 11))
+        # The global QSS (padek-theme.qss) handles all widget styling.
         self.setStyleSheet("""
-            QDialog { background-color: #1e1e1e; color: #dcdcdc; }
-            QLabel { color: #dcdcdc; font-size: 11pt; }
-            QTabWidget::pane {
-                border: 1px solid #555;
-                background: #1e1e1e;
-                top: -1px;
+            OptionsWindow, QDialog {
+                background-color: #0E1216;
             }
-            QTabBar::tab {
-                background: #2a2a2a;
-                color: #dcdcdc;
-                border: 1px solid #555;
-                padding: 6px 14px;
-                margin-right: 2px;
-            }
-            QTabBar::tab:selected {
-                background: #3a3a3a;
-                border-bottom: 1px solid #1e1e1e;
-                color: #4682b4;
-                font-weight: bold;
-            }
-            QSlider::groove:horizontal {
-                border: 1px solid #555; height: 8px;
-                background: #2a2a2a; margin: 2px 0; border-radius: 4px;
-            }
-            QSlider::handle:horizontal {
-                background: #4682b4; border: 1px solid #5c5c5c;
-                width: 18px; margin: -5px 0; border-radius: 9px;
-            }
-            QSlider::handle:horizontal:hover { background: #5a9fd4; }
-            QPushButton {
-                background-color: #3a3a3a; color: #dcdcdc;
-                border: 1px solid #555; padding: 8px 16px;
-                border-radius: 4px; font-size: 10pt;
-            }
-            QPushButton:hover { background-color: #4a4a4a; border: 1px solid #777; }
-            QPushButton:pressed { background-color: #2a2a2a; }
-            QTableWidget {
-                background-color: #282828; color: #dcdcdc;
-                gridline-color: #3a3a3a; border: 1px solid #555;
-            }
-            QTableWidget::item { padding: 5px; }
-            QTableWidget::item:selected { background-color: #4682b4; }
-            QHeaderView::section {
-                background-color: #3a3a3a; color: #dcdcdc;
-                padding: 5px; border: 1px solid #555; font-weight: bold;
-            }
-            QKeySequenceEdit, QSpinBox, QDoubleSpinBox, QComboBox {
-                background-color: #282828; color: #dcdcdc;
-                border: 1px solid #555; padding: 4px;
-                border-radius: 3px;
-                min-height: 22px;
-            }
-            QComboBox::drop-down {
-                subcontrol-origin: padding;
-                subcontrol-position: top right;
-                width: 18px;
-                border-left: 1px solid #555;
-                background: #3a3a3a;
-            }
-            QComboBox::down-arrow {
-                width: 0; height: 0;
-                border-left: 4px solid transparent;
-                border-right: 4px solid transparent;
-                border-top: 5px solid #dcdcdc;
-                margin-right: 5px;
-            }
-            QComboBox QAbstractItemView {
-                background-color: #282828;
-                color: #dcdcdc;
-                border: 1px solid #555;
-                selection-background-color: #4682b4;
-                selection-color: #ffffff;
-                outline: 0;
-            }
-            QComboBox QAbstractItemView::item {
-                min-height: 24px;
-                padding: 2px 6px;
-            }
-            QCheckBox { color: #dcdcdc; spacing: 6px; }
         """)
 
     def _create_ui(self):
@@ -153,7 +62,8 @@ class OptionsWindow(QDialog):
 
         button_layout = QHBoxLayout()
         button_layout.addStretch()
-        self.save_button = QPushButton("Save & Close")
+        self.save_button = QPushButton("SAUVEGARDER")
+        self.save_button.setObjectName("btn_primary")
         self.save_button.clicked.connect(self._save_and_close)
         button_layout.addWidget(self.save_button)
         layout.addLayout(button_layout)
@@ -161,8 +71,10 @@ class OptionsWindow(QDialog):
         self.setLayout(layout)
 
     def _section_title(self, text):
-        label = QLabel(text)
-        label.setStyleSheet("font-size: 12pt; font-weight: bold; color: #4682b4;")
+        from main import PADEK_DISPLAY_FONT
+        label = QLabel(text.upper())
+        label.setFont(QFont(PADEK_DISPLAY_FONT, 8, QFont.Weight.ExtraBold))
+        label.setStyleSheet("color: #19C28A; background: transparent; padding-top: 4px;")
         return label
 
     # ----- General tab -----
@@ -568,7 +480,7 @@ class OptionsWindow(QDialog):
 
     def _hint(self, text):
         label = QLabel(text)
-        label.setStyleSheet("font-size: 9pt; color: #999;")
+        label.setStyleSheet("color: #7E8B97; font-size: 11px; background: transparent;")
         label.setWordWrap(True)
         return label
 
