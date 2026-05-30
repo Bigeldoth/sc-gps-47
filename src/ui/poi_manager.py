@@ -16,7 +16,7 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QPalette, QColor, QFontDatabase, QFont, QAction
 
 import poi_io
-from poi_categories import POI_CATEGORIES, label_for
+from poi_categories import POI_CATEGORIES, label_for, color_for
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +71,6 @@ class POIManagerWindow(QDialog):
     
     def _create_ui(self):
         """Creates the user interface."""
-        from main import PADEK_DISPLAY_FONT
         layout = QVBoxLayout()
         layout.setSpacing(8)
 
@@ -84,15 +83,15 @@ class POIManagerWindow(QDialog):
         # Category chips
         layout.addWidget(self._create_category_chips())
 
-        # POI table — 8 columns: Name, Zone, Category, Distance, X, Y, Z, Description
+        # POI table — 7 columns: Name, Zone, Category, X, Y, Z, Description
         self.poi_table = QTableWidget()
-        self.poi_table.setColumnCount(8)
+        self.poi_table.setColumnCount(7)
         self.poi_table.setHorizontalHeaderLabels(
-            ["NOM", "ZONE (OOC)", "CATEGORIE", "DISTANCE", "X", "Y", "Z", "DESCRIPTION"]
+            ["NOM", "ZONE (OOC)", "CATÉGORIE", "X", "Y", "Z", "DESCRIPTION"]
         )
 
-        # Manrope header font
-        h_font = QFont(PADEK_DISPLAY_FONT, 8, QFont.Weight.ExtraBold)
+        # Roboto Bold for header (crisp at small sizes)
+        h_font = QFont("Roboto", 8, QFont.Weight.Bold)
         self.poi_table.horizontalHeader().setFont(h_font)
 
         header = self.poi_table.horizontalHeader()
@@ -102,8 +101,7 @@ class POIManagerWindow(QDialog):
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(7, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
 
         self.poi_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.poi_table.customContextMenuRequested.connect(self._show_context_menu)
@@ -152,58 +150,73 @@ class POIManagerWindow(QDialog):
 
     def _create_category_chips(self):
         """Category chip bar for filtering by category."""
+        from poi_categories import color_for
         widget = QWidget()
         layout = QHBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
 
+        # "TOUS" chip — emerald
         all_btn = QPushButton("TOUS")
         all_btn.setCheckable(True)
         all_btn.setChecked(True)
         all_btn.setObjectName("chip_all")
+        all_btn.setFont(QFont("Roboto", 8, QFont.Weight.Bold))
         all_btn.clicked.connect(lambda: self._set_category_filter(None))
-        all_btn.setStyleSheet(self._chip_style(active=True))
+        all_btn.setStyleSheet(self._chip_style(active=True, color="#19C28A"))
         layout.addWidget(all_btn)
         self._cat_buttons[None] = all_btn
 
         for slug, label in POI_CATEGORIES:
+            if not slug:          # skip empty slug (Uncategorized) in chip bar
+                continue
+            color = color_for(slug)
             btn = QPushButton(label.upper())
             btn.setCheckable(True)
             btn.setObjectName(f"chip_{slug}")
+            btn.setFont(QFont("Roboto", 8, QFont.Weight.Bold))
             btn.clicked.connect(lambda _=False, s=slug: self._set_category_filter(s))
-            btn.setStyleSheet(self._chip_style(active=False))
+            btn.setStyleSheet(self._chip_style(active=False, color=color))
             layout.addWidget(btn)
             self._cat_buttons[slug] = btn
 
         layout.addStretch()
         return widget
 
-    def _chip_style(self, active: bool) -> str:
+    @staticmethod
+    def _chip_style(active: bool, color: str) -> str:
+        """Return QSS for a chip button using its category color (no px font-size)."""
         if active:
-            return """
-                QPushButton {
-                    background: rgba(25,194,138,0.15);
-                    border: 1.5px solid rgba(25,194,138,0.5);
-                    color: #19C28A;
-                    border-radius: 999px;
-                    padding: 4px 12px;
-                    font-family: "Manrope"; font-weight: 800; font-size: 9px;
-                }"""
-        return """
-            QPushButton {
-                background: rgba(238,243,246,0.04);
-                border: 1px solid rgba(238,243,246,0.1);
-                color: #7E8B97;
-                border-radius: 999px;
-                padding: 4px 12px;
-                font-family: "Manrope"; font-weight: 800; font-size: 9px;
-            }
-            QPushButton:hover { background: rgba(238,243,246,0.08); color: #B6C3CE; }"""
+            return (
+                f"QPushButton {{"
+                f"  background: {color}26;"
+                f"  border: 1.5px solid {color}80;"
+                f"  color: {color};"
+                f"  border-radius: 999px;"
+                f"  padding: 4px 12px;"
+                f"}}"
+            )
+        return (
+            f"QPushButton {{"
+            f"  background: rgba(238,243,246,0.04);"
+            f"  border: 1px solid rgba(238,243,246,0.1);"
+            f"  color: #7E8B97;"
+            f"  border-radius: 999px;"
+            f"  padding: 4px 12px;"
+            f"}}"
+            f"QPushButton:hover {{"
+            f"  background: {color}18;"
+            f"  border-color: {color}55;"
+            f"  color: {color};"
+            f"}}"
+        )
 
     def _set_category_filter(self, slug):
+        from poi_categories import color_for
         self._active_cat = slug
         for key, btn in self._cat_buttons.items():
-            btn.setStyleSheet(self._chip_style(active=(key == slug)))
+            color = "#19C28A" if key is None else color_for(key)
+            btn.setStyleSheet(self._chip_style(active=(key == slug), color=color))
         self._filter_pois(self.search_input.text())
     
     def _load_pois(self):
@@ -234,6 +247,7 @@ class POIManagerWindow(QDialog):
     
     def _update_table(self):
         """Updates the table with filtered POIs."""
+        from poi_categories import color_for
         self.poi_table.setSortingEnabled(False)
         self.poi_table.setRowCount(len(self.filtered_pois))
 
@@ -243,8 +257,10 @@ class POIManagerWindow(QDialog):
             except (TypeError, ValueError):
                 return "?"
 
-        from PyQt6.QtGui import QColor as _QColor
         for row, poi in enumerate(self.filtered_pois):
+            slug = poi.get("category") or ""
+            cat_color = color_for(slug)
+
             # Name
             name_item = QTableWidgetItem(str(poi.get("name", "")))
             name_item.setData(Qt.ItemDataRole.UserRole, poi)
@@ -254,30 +270,27 @@ class POIManagerWindow(QDialog):
             ooc_str = poi.get("ooc") or "(legacy)"
             self.poi_table.setItem(row, 1, QTableWidgetItem(ooc_str))
 
-            # Category
-            self.poi_table.setItem(row, 2, QTableWidgetItem(label_for(poi.get("category"))))
-
-            # Distance (col 3) — filled by _refresh_distances if overlay connected
-            dist_item = QTableWidgetItem("—")
-            dist_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            dist_item.setForeground(_QColor(0x6F, 0xE8, 0xFF))
-            self.poi_table.setItem(row, 3, dist_item)
+            # Category — colored with Community Hub color
+            cat_item = QTableWidgetItem(label_for(slug).upper())
+            cat_item.setForeground(QColor(cat_color))
+            cat_item.setFont(QFont("Roboto", 8, QFont.Weight.Bold))
+            self.poi_table.setItem(row, 2, cat_item)
 
             # Coordinates
             x_item = QTableWidgetItem(fmt(poi.get("x")))
             x_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            self.poi_table.setItem(row, 4, x_item)
+            self.poi_table.setItem(row, 3, x_item)
 
             y_item = QTableWidgetItem(fmt(poi.get("y")))
             y_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            self.poi_table.setItem(row, 5, y_item)
+            self.poi_table.setItem(row, 4, y_item)
 
             z_item = QTableWidgetItem(fmt(poi.get("z")))
             z_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            self.poi_table.setItem(row, 6, z_item)
+            self.poi_table.setItem(row, 5, z_item)
 
             # Description
-            self.poi_table.setItem(row, 7, QTableWidgetItem(str(poi.get("description", ""))))
+            self.poi_table.setItem(row, 6, QTableWidgetItem(str(poi.get("description", ""))))
 
         self.poi_table.setSortingEnabled(True)
     
@@ -303,31 +316,6 @@ class POIManagerWindow(QDialog):
         self.filtered_pois = filtered
         self._update_table()
 
-    def _refresh_distances(self, pos_data: dict):
-        """Updates the Distance column with current player coordinates."""
-        if not pos_data.get("x"):
-            return
-        from PyQt6.QtGui import QColor as _QColor
-        for row in range(self.poi_table.rowCount()):
-            name_item = self.poi_table.item(row, 0)
-            if not name_item:
-                continue
-            poi = name_item.data(Qt.ItemDataRole.UserRole)
-            if not poi:
-                continue
-            try:
-                dx = poi["x"] - pos_data["x"]
-                dy = poi["y"] - pos_data["y"]
-                dz = 0 if poi.get("kind") == "surface" else (poi["z"] - pos_data.get("z", 0))
-                dist_km = (dx * dx + dy * dy + dz * dz) ** 0.5
-                from navigation import format_distance
-                dist_str = format_distance(dist_km)
-            except Exception:
-                dist_str = "—"
-            dist_item = self.poi_table.item(row, 3)
-            if dist_item:
-                dist_item.setText(dist_str)
-                dist_item.setForeground(_QColor(0x6F, 0xE8, 0xFF))
 
     def _get_selected_poi(self):
         """Returns the selected POI or None"""
@@ -585,9 +573,7 @@ class POIEditDialog(QDialog):
         self.setModal(True)
         self.setMinimumWidth(400)
 
-        # Apply same theme
-        self.setPalette(parent.palette())
-        self.setStyleSheet(parent.styleSheet())
+        # Global padek-theme.qss handles all styling automatically
 
         self._create_ui()
 

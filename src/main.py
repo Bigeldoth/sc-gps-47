@@ -1299,7 +1299,6 @@ class GPSOverlay(QMainWindow):
                 self.poi_manager_window = POIManagerWindow(self.nav, self)
                 self.poi_manager_window.destination_changed.connect(self._on_destination_changed)
                 self.poi_manager_window.goto_requested.connect(self._on_goto_requested)
-                self.poi_data_updated.connect(self.poi_manager_window._refresh_distances)
             self._bring_dialog_to_front(self.poi_manager_window)
         except Exception:
             logger.exception("Error opening POI manager")

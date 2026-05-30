@@ -71,9 +71,8 @@ class OptionsWindow(QDialog):
         self.setLayout(layout)
 
     def _section_title(self, text):
-        from main import PADEK_DISPLAY_FONT
         label = QLabel(text.upper())
-        label.setFont(QFont(PADEK_DISPLAY_FONT, 8, QFont.Weight.ExtraBold))
+        label.setFont(QFont("Roboto", 9, QFont.Weight.Bold))
         label.setStyleSheet("color: #19C28A; background: transparent; padding-top: 4px;")
         return label
 
@@ -555,15 +554,17 @@ class OptionsWindow(QDialog):
             hotkey_item.setData(Qt.ItemDataRole.UserRole, action)
             self.hotkey_table.setItem(row, 1, hotkey_item)
 
-            modify_button = QPushButton("Modifier")
-            modify_button.setFont(QFont("Manrope", 8, QFont.Weight.ExtraBold))
+            modify_button = QPushButton("✎")
+            modify_button.setFixedSize(28, 28)
+            modify_button.setFont(QFont("Segoe UI Symbol", 11))
+            modify_button.setToolTip("Modifier ce raccourci")
             modify_button.setStyleSheet("""
                 QPushButton {
-                    background: rgba(111,232,255,0.12);
+                    background: rgba(111,232,255,0.10);
                     color: #6FE8FF;
-                    border: 1px solid rgba(111,232,255,0.5);
-                    border-radius: 4px;
-                    padding: 4px 10px;
+                    border: 1px solid rgba(111,232,255,0.45);
+                    border-radius: 6px;
+                    padding: 0px;
                     min-height: 0px;
                 }
                 QPushButton:hover {

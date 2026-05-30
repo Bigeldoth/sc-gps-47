@@ -7,6 +7,27 @@
 
 All new code, comments, docstrings, and documentation must be written in English.
 
+## Localization (i18n) — FR / EN
+
+The desktop UI must support two languages: **French (FR, default)** and **English (EN)**.
+All user-visible strings (labels, button text, window titles, placeholders, tooltips,
+messages) must go through a central translation layer — never hardcode a French or
+English string directly in a widget.
+
+Design contract (mirrors the SpaceDrive Community Hub `LangContext.jsx`):
+- Source of truth: `src/i18n.py` — a `TRANSLATIONS` dict with `"FR"` and `"EN"` keys,
+  plus a `t(key: str) -> str` helper.
+- `config.ini` → `[UI] language = FR` (or `EN`). Default: `FR`.
+- `ConfigManager` exposes `get_language()` / `set_language(lang)`.
+- `t()` is imported at the top of every UI module; all `QLabel`, `QPushButton`, window
+  title, and placeholder strings call `t("key")`.
+- Adding a new string: add to both `FR` and `EN` in `src/i18n.py`, then use the key.
+- Category labels are translated through `i18n.py` (keys: `cat_industry`, `cat_exploration`, etc.).
+- The Options window (General tab) exposes a Language combo (FR / EN); saving reloads all
+  open windows or prompts the user to restart.
+
+**This spec applies to all future code changes.** Every PR touching UI must use `t()`.
+
 ## Project overview
 Star Citizen GPS overlay that reads in-game HUD coordinates via OCR and provides
 navigation guidance to user-defined POIs.
