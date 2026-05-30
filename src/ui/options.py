@@ -555,16 +555,16 @@ class OptionsWindow(QDialog):
             self.hotkey_table.setItem(row, 1, hotkey_item)
 
             modify_button = QPushButton("Modifier")
+            modify_button.setFixedHeight(24)
+            modify_button.setFont(QFont("Manrope", 8, QFont.Weight.ExtraBold))
             modify_button.setStyleSheet("""
                 QPushButton {
                     background: rgba(111,232,255,0.12);
                     color: #6FE8FF;
                     border: 1px solid rgba(111,232,255,0.5);
                     border-radius: 4px;
-                    padding: 2px 8px;
+                    padding: 0px 8px;
                     min-height: 0px;
-                    max-height: 22px;
-                    font-family: "Manrope"; font-weight: 800; font-size: 9px;
                 }
                 QPushButton:hover {
                     background: rgba(111,232,255,0.22);
