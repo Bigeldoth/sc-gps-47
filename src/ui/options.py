@@ -554,7 +554,21 @@ class OptionsWindow(QDialog):
             hotkey_item.setData(Qt.ItemDataRole.UserRole, action)
             self.hotkey_table.setItem(row, 1, hotkey_item)
 
-            modify_button = QPushButton("Modify")
+            modify_button = QPushButton("Modifier")
+            modify_button.setStyleSheet("""
+                QPushButton {
+                    background: rgba(111,232,255,0.12);
+                    color: #6FE8FF;
+                    border: 1px solid rgba(111,232,255,0.5);
+                    border-radius: 6px;
+                    padding: 4px 10px;
+                    font-family: "Manrope"; font-weight: 800; font-size: 9px;
+                }
+                QPushButton:hover {
+                    background: rgba(111,232,255,0.22);
+                    border-color: rgba(111,232,255,0.8);
+                }
+            """)
             modify_button.clicked.connect(lambda _checked, r=row: self._modify_hotkey(r))
             self.hotkey_table.setCellWidget(row, 2, modify_button)
 
