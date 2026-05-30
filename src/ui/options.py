@@ -560,8 +560,10 @@ class OptionsWindow(QDialog):
                     background: rgba(111,232,255,0.12);
                     color: #6FE8FF;
                     border: 1px solid rgba(111,232,255,0.5);
-                    border-radius: 6px;
-                    padding: 4px 10px;
+                    border-radius: 4px;
+                    padding: 2px 8px;
+                    min-height: 0px;
+                    max-height: 22px;
                     font-family: "Manrope"; font-weight: 800; font-size: 9px;
                 }
                 QPushButton:hover {
