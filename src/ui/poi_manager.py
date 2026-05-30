@@ -48,7 +48,7 @@ class POIManagerWindow(QDialog):
         self.all_pois = []  # Complete list of POIs
         self.filtered_pois = []  # List filtered by search
 
-        self.setWindowTitle("POI Manager — SpaceDrive GPS")
+        self.setWindowTitle("POI Manager — SpaceDrive GPS")  # English-only app
         self.setMinimumWidth(900)
         self.setMinimumHeight(640)
 
@@ -76,7 +76,7 @@ class POIManagerWindow(QDialog):
 
         # Search bar
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Rechercher — nom, coordonnées, description…")
+        self.search_input.setPlaceholderText("Search — name, coordinates, description…")
         self.search_input.textChanged.connect(self._filter_pois)
         layout.addWidget(self.search_input)
 
@@ -87,7 +87,7 @@ class POIManagerWindow(QDialog):
         self.poi_table = QTableWidget()
         self.poi_table.setColumnCount(7)
         self.poi_table.setHorizontalHeaderLabels(
-            ["NOM", "ZONE (OOC)", "CATÉGORIE", "X", "Y", "Z", "DESCRIPTION"]
+            ["NAME", "ZONE (OOC)", "CATEGORY", "X", "Y", "Z", "DESCRIPTION"]
         )
 
         # Roboto Bold for header (crisp at small sizes)
@@ -117,26 +117,26 @@ class POIManagerWindow(QDialog):
         # Action buttons
         button_layout = QHBoxLayout()
 
-        self.add_button = QPushButton("Ajouter")
+        self.add_button = QPushButton("Add")
         self.add_button.clicked.connect(self._add_poi)
         button_layout.addWidget(self.add_button)
 
-        self.edit_button = QPushButton("Modifier")
+        self.edit_button = QPushButton("Edit")
         self.edit_button.clicked.connect(self._edit_poi)
         button_layout.addWidget(self.edit_button)
 
-        self.delete_button = QPushButton("Supprimer")
+        self.delete_button = QPushButton("Delete")
         self.delete_button.setObjectName("btn_danger")
         self.delete_button.clicked.connect(self._delete_poi)
         button_layout.addWidget(self.delete_button)
 
-        self.import_button = QPushButton("Importer depuis le presse-papiers")
+        self.import_button = QPushButton("Import from clipboard")
         self.import_button.clicked.connect(self._import_poi_from_clipboard)
         button_layout.addWidget(self.import_button)
 
         button_layout.addStretch()
 
-        self.destination_button = QPushButton("Définir destination")
+        self.destination_button = QPushButton("Set destination")
         self.destination_button.clicked.connect(self._set_as_destination)
         button_layout.addWidget(self.destination_button)
 

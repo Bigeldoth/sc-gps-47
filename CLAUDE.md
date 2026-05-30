@@ -4,8 +4,24 @@
 - **User communication**: French (the user speaks French — always respond in French)
 - **Code (comments, docstrings, log messages)**: English only
 - **Documentation (.md files)**: English only
+- **Application UI**: English only — SpaceDrive GPS is an English-only application.
+  All widget labels, button text, window titles, placeholders, tooltips, and
+  QMessageBox strings must be in English. No French strings in any UI widget.
 
 All new code, comments, docstrings, and documentation must be written in English.
+
+## Window positioning — center + focus
+All dialog and secondary windows (Options, POI Manager, Engine Manager, Save POI dialog)
+**must open centered on the primary screen** and **receive focus immediately**.
+
+Rationale (user decision): Star Citizen is a flight sim where mouse movement controls
+the ship. Opening a window off-center forces the player to move the mouse across the
+screen to interact, which triggers ship input and risks a crash. Centering the dialog
+means the mouse is already near the controls without needing to move.
+
+Implementation: call `GPSOverlay._center_on_screen(dialog)` (or a shared equivalent)
+after `dialog.adjustSize()` and before `dialog.show()`. Then `raise_()` +
+`activateWindow()` via `QTimer.singleShot(0, ...)` for deferred focus.
 
 ## Localization (i18n) — FR / EN
 

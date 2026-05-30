@@ -32,7 +32,7 @@ class OptionsWindow(QDialog):
         self.config_manager = config_manager
         self.hotkey_listener = hotkey_listener
 
-        self.setWindowTitle("SpaceDrive GPS — Paramètres")
+        self.setWindowTitle("SpaceDrive GPS — Settings")
         self.setMinimumWidth(680)
         self.setMinimumHeight(530)
 
@@ -62,7 +62,7 @@ class OptionsWindow(QDialog):
 
         button_layout = QHBoxLayout()
         button_layout.addStretch()
-        self.save_button = QPushButton("SAUVEGARDER")
+        self.save_button = QPushButton("SAVE")
         self.save_button.setObjectName("btn_primary")
         self.save_button.clicked.connect(self._save_and_close)
         button_layout.addWidget(self.save_button)

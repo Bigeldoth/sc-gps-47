@@ -365,7 +365,7 @@ class _SavePOIDialog(QDialog):
     def __init__(self, freshness_level: int = 0, parent=None):
         super().__init__(parent)
         self._freshness_level = freshness_level
-        self.setWindowTitle("Enregistrer position")
+        self.setWindowTitle("Save Position")
         self.setModal(True)
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
         self.setMinimumWidth(440)
@@ -384,12 +384,12 @@ class _SavePOIDialog(QDialog):
         layout.setSpacing(10)
         layout.setContentsMargins(20, 20, 20, 20)
 
-        title = QLabel("ENREGISTRER POSITION")
+        title = QLabel("SAVE POSITION")
         title.setFont(QFont(PADEK_DISPLAY_FONT, 11, QFont.Weight.ExtraBold))
         title.setStyleSheet("color: #EEF3F6; background: transparent;")
         layout.addWidget(title)
 
-        layout.addWidget(QLabel("Nom du point d'intérêt :"))
+        layout.addWidget(QLabel("Point of interest name:"))
         self.name_input = QLineEdit()
         layout.addWidget(self.name_input)
 
@@ -399,10 +399,10 @@ class _SavePOIDialog(QDialog):
         type_layout.setSpacing(8)
         type_layout.setContentsMargins(0, 0, 0, 0)
 
-        self.surface_btn = QPushButton("Surface (planète / lune)")
+        self.surface_btn = QPushButton("Surface (planet / moon)")
         self.surface_btn.setCheckable(True)
         self.surface_btn.setChecked(True)
-        self.space_btn = QPushButton("Espace (3D)")
+        self.space_btn = QPushButton("Space (3D)")
         self.space_btn.setCheckable(True)
 
         for btn in (self.surface_btn, self.space_btn):
@@ -416,23 +416,23 @@ class _SavePOIDialog(QDialog):
         self._update_type_styles(self.surface_btn)
         layout.addWidget(type_widget)
 
-        layout.addWidget(QLabel("Catégorie :"))
+        layout.addWidget(QLabel("Category:"))
         self.category_combo = QComboBox()
         for slug, label in POI_CATEGORIES:
             self.category_combo.addItem(label, slug)
         layout.addWidget(self.category_combo)
 
-        layout.addWidget(QLabel("Description (optionnelle) :"))
+        layout.addWidget(QLabel("Description (optional):"))
         self.desc_input = QLineEdit()
-        self.desc_input.setPlaceholderText("Note courte…")
+        self.desc_input.setPlaceholderText("Short note…")
         layout.addWidget(self.desc_input)
 
         button_row = QHBoxLayout()
         button_row.addStretch()
-        cancel_btn = QPushButton("Annuler")
+        cancel_btn = QPushButton("Cancel")
         cancel_btn.clicked.connect(self.reject)
         button_row.addWidget(cancel_btn)
-        ok_btn = QPushButton("ENREGISTRER")
+        ok_btn = QPushButton("SAVE")
         ok_btn.setObjectName("btn_primary")
         ok_btn.setDefault(True)
         ok_btn.clicked.connect(self.accept)
@@ -601,7 +601,7 @@ class GPSOverlay(QMainWindow):
         inner.addWidget(sep2)
 
         # Navigation
-        self.nav_label = QLabel("PAS DE CIBLE")
+        self.nav_label = QLabel("NO TARGET")
         self.nav_label.setFont(QFont(PADEK_DISPLAY_FONT, 9, QFont.Weight.Bold))
         self.nav_label.setContentsMargins(10, 6, 10, 9)
         self.nav_label.setStyleSheet("color: #4F5965; background: transparent;")
@@ -1082,7 +1082,7 @@ class GPSOverlay(QMainWindow):
             self._overlay_message = None
 
         if not self.nav.target:
-            self.nav_label.setText("PAS DE CIBLE")
+            self.nav_label.setText("NO TARGET")
             self.nav_label.setStyleSheet(f"color: #4F5965; font-size: 9pt; {_font_css}")
             return
 
@@ -1270,10 +1270,30 @@ class GPSOverlay(QMainWindow):
             self.is_visible = True
             self.toggle_action.setText("Hide overlay")
 
+    @staticmethod
+    def _center_on_screen(widget):
+        """Center a top-level widget on the primary screen.
+
+        Called before show() so the geometry is applied before the window
+        becomes visible. Centering is critical for Star Citizen: mouse
+        movement on an off-center dialog causes ship input while hovering
+        on the dialog, risking an unintentional maneuver.
+        """
+        from PyQt6.QtWidgets import QApplication
+        screen = QApplication.primaryScreen()
+        if screen is None:
+            return
+        rect = screen.availableGeometry()
+        x = rect.x() + (rect.width()  - widget.width())  // 2
+        y = rect.y() + (rect.height() - widget.height()) // 2
+        widget.move(x, y)
+
     def _bring_dialog_to_front(self, dialog):
-        """Forces dialog to foreground despite overlay always-on-top."""
+        """Center, show, and focus a dialog above the overlay."""
+        dialog.adjustSize()
+        self._center_on_screen(dialog)
         dialog.show()
-        # Deferred activation so Qt processes show() event first
+        # Deferred raise+activate so Qt processes the show() event first.
         QTimer.singleShot(0, dialog.raise_)
         QTimer.singleShot(0, dialog.activateWindow)
 
@@ -1408,6 +1428,8 @@ class GPSOverlay(QMainWindow):
             age = self._coord_age_s()
             fl = _padek_freshness_level(age)
             dialog = _SavePOIDialog(freshness_level=fl, parent=self)
+            dialog.adjustSize()
+            self._center_on_screen(dialog)
             QTimer.singleShot(0, dialog.raise_)
             QTimer.singleShot(0, dialog.activateWindow)
             if dialog.exec() != QDialog.DialogCode.Accepted:
