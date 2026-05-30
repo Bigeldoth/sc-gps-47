@@ -88,16 +88,27 @@ share the same shape:
 | `description` | string          | Optional free-form                                           |
 
 ### Categories (SpaceDrive Community taxonomy)
-Source of truth: `src/poi_categories.py`.
+Source of truth: `src/poi_categories.py`. Aligned with Community Hub `pois.js` `SPACEDRIVE_TYPES`.
 
-- `industry` — Industry (mining nodes, refineries, gas clouds, harvestables)
-- `exploration` — Exploration (anomalies, scannables, derelict ships, crash sites, wrecks)
-- `logistics_black_market` — Logistics & Black Market (trade routes, contraband drop-offs)
-- `hostile_combat` — Combat & Hostile Zones (bunkers, PvP/PvE hotspots)
-- `loot` — Loot (containers, ammo/medical caches, loose cargo)
-- `racing` — Racing (circuits, checkpoints, time-trial markers)
+| Slug        | Label      | Color     | Glyph | Description                                      |
+|-------------|------------|-----------|-------|--------------------------------------------------|
+| `hidden`    | Hidden     | `#19C28A` | ◆     | Secret locations, hidden caches, unmarked sites  |
+| `cave`      | Cave       | `#6FE8FF` | ◯     | Caves, underground, underwater, derelict wrecks  |
+| `circuit`   | Circuit    | `#D9A368` | ↻     | Routes, relay points, contraband drops           |
+| `tactical`  | Tactical   | `#E5484D` | ◤     | Bunkers, PvP/PvE hotspots, hostile zones         |
+| `industry`  | Industry   | `#F97316` | ⬡     | Mining nodes, refineries, gas clouds             |
+| `logistics` | Logistics  | `#A78BFA` | ◈     | Trade routes, outposts, supply depots            |
+| `loot`      | Loot       | `#FBBF24` | ◇     | Containers, medical/ammo caches, loose cargo     |
+| `racing`    | Racing     | `#86EFAC` | ▶     | Race circuits, checkpoints, time-trial markers   |
 
-Legacy POIs (no `category`) remain valid and display as "Uncategorized".
+Empty slug `""` = Uncategorized (legacy POIs without a category).
+
+**Legacy slug migration** (`_LEGACY` in `poi_categories.py`):
+- `exploration` → `cave`
+- `logistics_black_market` → `logistics`
+- `hostile_combat` → `tactical`
+
+These old slugs remain valid for import/export backward-compat but are remapped to their v2 canonical slug on display.
 
 ### Import / export
 - Right-click on a user POI in the POI Manager → "Copy to clipboard" / "Export to JSON file...".
