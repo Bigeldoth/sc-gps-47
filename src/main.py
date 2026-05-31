@@ -727,6 +727,7 @@ class GPSOverlay(QMainWindow):
 
         if "error" in data:
             # Don't touch displayed text — it will age via color.
+            self._coast_guidance(t_capture)
             self._record_telemetry(data, "no_read", reason="ocr_error")
             self._refresh_pos_color()
             self._refresh_nav_label()
@@ -741,6 +742,7 @@ class GPSOverlay(QMainWindow):
             # around 1-2 km/s — 100 km/s gives comfortable margin
             # for post-quantum jumps.
             if self._is_velocity_implausible(data):
+                self._coast_guidance(t_capture)
                 self._record_telemetry(data, "rejected", reason="implausible_velocity")
                 self._refresh_pos_color()
                 self._refresh_nav_label()
@@ -815,7 +817,8 @@ class GPSOverlay(QMainWindow):
             self._record_telemetry(data, "ok", raw_pos=raw_pos)
         else:
             # OCR ran but parsed no coordinates (flare / scenery occlusion /
-            # partial HUD): a genuine dropout, recorded for coast-window tuning.
+            # partial HUD): a genuine dropout — dead-reckon, then record it.
+            self._coast_guidance(t_capture)
             self._record_telemetry(data, "no_read", reason="no_coords")
 
         # Always refresh color (aging), even without new data.
@@ -852,6 +855,7 @@ class GPSOverlay(QMainWindow):
             pitch_off=(self._smoothed_pitch_off if tgt else None),
             dist_km=(self._smoothed_distance_km if tgt else None),
             speed_km_s=round(self._velocity_tracker.speed_km_s, 6),
+            integrity=self._velocity_tracker.integrity,
             coord_age_s=self._coord_age_s(),
         )
 
@@ -1153,6 +1157,41 @@ class GPSOverlay(QMainWindow):
         self._last_raw_yaw_off = yaw_off
         self._last_raw_pitch_off = pitch_off
 
+    def _coast_guidance(self, t_capture):
+        """Dead-reckon guidance for a tick with no accepted OCR fix.
+
+        Advances the Kalman filter with no measurement (predict-only) and, while
+        still within the coast window, refreshes distance + the velocity arrow
+        from the predicted position so guidance survives a brief OCR dropout
+        (flare / scenery occlusion). Beyond the coast window the arrow is dropped.
+        """
+        vt = self._velocity_tracker
+        if t_capture is not None:
+            vt.predict_only(t_capture)
+        if not self.nav.target:
+            return
+        if vt.integrity == "LOST":
+            # Too stale to dead-reckon: drop the arrow (colour aging + the LOST
+            # tag already signal the loss); leave the last distance frozen.
+            self._smoothed_yaw_off = None
+            self._smoothed_pitch_off = None
+            return
+        pos = vt.position
+        if pos is None:
+            return
+        pos_dict = {
+            "x": pos[0], "y": pos[1], "z": pos[2],
+            "ooc": self.current_data.get("ooc"),
+        }
+        dist = self.nav.calculate_distance(pos_dict)
+        if dist is not None:
+            self._smoothed_distance_km = dist
+        vel = vt.velocity if vt.is_moving else None
+        if vel is not None:
+            bearing = calculate_velocity_bearing(vel, pos_dict, self.nav.target)
+            if bearing is not None:
+                self._smoothed_yaw_off, self._smoothed_pitch_off = bearing
+
     def _refresh_nav_label(self):
         """Updates nav_label: target, distance and heading merged."""
         _font_css = (
@@ -1223,6 +1262,12 @@ class GPSOverlay(QMainWindow):
             arrow = _world_arrow(abs_bearing)
             if arrow:
                 arrow_str = f"  {arrow}"
+
+        # Dead-reckoning annunciation: tag the readout while coasting through an
+        # OCR dropout (FRESH shows nothing; LOST once the coast window expired).
+        coast_age = self._velocity_tracker.coast_age_s
+        if coast_age is not None and coast_age > 0.05:
+            arrow_str += "  DR" if self._velocity_tracker.integrity == "COASTING" else "  LOST"
 
         self.nav_label.setText(f"▶ {name}\n  {dist_str}{arrow_str}")
         self.nav_label.setStyleSheet(f"color: {nav_color}; font-size: 9pt; {_font_css}")
