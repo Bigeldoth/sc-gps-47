@@ -846,12 +846,28 @@ class GPSOverlay(QMainWindow):
             ooc=data.get("ooc"),
             location=data.get("location"),
             target=(tgt.get("name") if tgt else None),
-            yaw_off=self._smoothed_yaw_off,
-            pitch_off=self._smoothed_pitch_off,
-            dist_km=self._smoothed_distance_km,
+            # Guidance fields are only meaningful with an active target — log
+            # null otherwise so a stale smoothed value never pollutes the trace.
+            yaw_off=(self._smoothed_yaw_off if tgt else None),
+            pitch_off=(self._smoothed_pitch_off if tgt else None),
+            dist_km=(self._smoothed_distance_km if tgt else None),
             speed_km_s=round(self._velocity_tracker.speed_km_s, 6),
             coord_age_s=self._coord_age_s(),
         )
+
+    def _apply_telemetry_setting(self):
+        """Enable/disable the telemetry recorder to match config, live.
+
+        Lets the Options → Debug toggle take effect without an app restart:
+        opens a fresh session file when turned on, closes it when turned off.
+        """
+        want = self.config_manager.get_record_telemetry()
+        have = self._telemetry is not None
+        if want and not have:
+            self._telemetry = create_session_recorder(True, user_data_dir() / "logs")
+        elif not want and have:
+            self._telemetry.close()
+            self._telemetry = None
 
     def _coord_age_s(self):
         """Age (s) of last valid OCR, or None if none yet."""
@@ -1412,6 +1428,9 @@ class GPSOverlay(QMainWindow):
         self._arrival_radius_m = self.config_manager.get_arrival_radius_m()
         logger.info(f"Arrival radius updated: {self._arrival_radius_m:.0f} m")
 
+        # Apply the telemetry toggle live (enable/disable without a restart).
+        self._apply_telemetry_setting()
+
         # Refresh hotkeys in case they were modified
         self.hotkey_listener.reload_hotkeys()
 
@@ -1464,6 +1483,10 @@ class GPSOverlay(QMainWindow):
         self._smoothed_pitch_off = None
         self._last_raw_yaw_off = None
         self._last_raw_pitch_off = None
+        # Clear the smoothed distance too, else it lingers as a stale readout
+        # (and a phantom value in telemetry) after navigation is stopped.
+        self._smoothed_distance_km = None
+        self._last_raw_distance_km = None
         had_target = self.nav.target is not None
         self.nav.clear_target()
         self._refresh_nav_label()
