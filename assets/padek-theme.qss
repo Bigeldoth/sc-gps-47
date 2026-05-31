@@ -1,0 +1,523 @@
+/*
+ * SpaceDrive GPS — Thème PyQt6 PADEK
+ * Basé sur le PADEK Interactive Design System (Réseau Organique)
+ *
+ * Chargement :
+ *   with open("assets/padek-theme.qss", "r", encoding="utf-8") as f:
+ *       app.setStyleSheet(f.read())
+ *
+ * Boutons spéciaux : setObjectName("btn_primary" | "btn_danger" | "btn_neon" | "btn_copper")
+ * Labels uppercase : appeler label.setText(text.upper()) côté Python
+ * Glow sur overlay : utiliser SignalGlowEffect (voir DESIGN_HANDOFF.md)
+ */
+
+/* ═══════════════════════════════════════════════════
+   TOKENS COULEUR
+   emerald  #19C28A   primary / live / success
+   neon     #6FE8FF   accent / focus / realtime
+   cobalt   #1A3FAE   secondary / deep
+   copper   #D9A368   warning / premium / aging
+   danger   #E5484D   error / lost signal
+   s900     #0E1216   page background
+   s800     #161B22   card / dialog surface
+   s700     #1B2128   elevated surface
+   s600     #2A323D   border / divider
+   s500     #3B4654   muted border / hover
+   fg1      #EEF3F6   primary text
+   fg2      #B6C3CE   secondary text
+   fg3      #7E8B97   tertiary / placeholder
+   fg4      #4F5965   disabled
+═══════════════════════════════════════════════════ */
+
+/* ── Global reset ─────────────────────────────────────────────────────── */
+QWidget {
+    background-color: #0E1216;
+    color: #EEF3F6;
+    font-family: "Roboto";
+    font-size: 13px;
+    selection-background-color: rgba(25, 194, 138, 160);
+    selection-color: #0E1216;
+}
+
+/* ── Dialogs & Windows ────────────────────────────────────────────────── */
+QDialog, QMainWindow {
+    background-color: #0E1216;
+}
+
+/* ── Labels ──────────────────────────────────────────────────────────── */
+QLabel {
+    background: transparent;
+    color: #EEF3F6;
+    font-size: 13px;
+}
+QLabel[role="eyebrow"] {
+    color: #19C28A;
+    font-family: "Manrope";
+    font-weight: 800;
+    font-size: 9px;
+}
+QLabel[role="section_title"] {
+    color: #19C28A;
+    font-family: "Manrope";
+    font-weight: 800;
+    font-size: 10px;
+    padding-top: 4px;
+    padding-bottom: 4px;
+}
+QLabel[role="hint"] {
+    color: #7E8B97;
+    font-size: 11px;
+}
+QLabel[role="muted"] {
+    color: #7E8B97;
+    font-size: 12px;
+}
+QLabel[role="coord"] {
+    /* Couleur dynamique — setStyleSheet() depuis Python */
+    font-family: "Consolas", "Courier New", monospace;
+    font-size: 12px;
+}
+
+/* ── Tabs ─────────────────────────────────────────────────────────────── */
+QTabWidget::pane {
+    border: none;
+    border-top: 1px solid rgba(238, 243, 246, 15);
+    background: #0E1216;
+    top: -1px;
+}
+QTabBar {
+    background: transparent;
+}
+QTabBar::tab {
+    background: transparent;
+    color: #7E8B97;
+    border: none;
+    border-bottom: 2px solid transparent;
+    padding: 10px 16px;
+    margin-right: 2px;
+    font-family: "Roboto";
+    font-weight: 700;
+    font-size: 10pt;
+    /* letter-spacing et text-transform non supportés — gérer en Python */
+}
+QTabBar::tab:selected {
+    color: #19C28A;
+    border-bottom: 2px solid #19C28A;
+}
+QTabBar::tab:hover:!selected {
+    color: #B6C3CE;
+}
+
+/* ── Buttons — base ghost ─────────────────────────────────────────────── */
+QPushButton {
+    background-color: rgba(238, 243, 246, 10);
+    color: #B6C3CE;
+    border: 1px solid rgba(238, 243, 246, 30);
+    border-radius: 999px;
+    padding: 7px 16px;
+    font-family: "Roboto";
+    font-weight: 700;
+    font-size: 10pt;
+    min-height: 28px;
+}
+QPushButton:hover {
+    background-color: rgba(238, 243, 246, 20);
+    border-color: rgba(238, 243, 246, 55);
+    color: #EEF3F6;
+}
+QPushButton:pressed {
+    background-color: rgba(238, 243, 246, 8);
+    padding-top: 8px;
+    padding-bottom: 6px;
+}
+QPushButton:disabled {
+    color: #4F5965;
+    border-color: rgba(238, 243, 246, 10);
+    background-color: transparent;
+}
+
+/* Bouton primary — ENREGISTRER, GO, actions positives */
+QPushButton#btn_primary {
+    background-color: #19C28A;
+    color: #0E1216;
+    border: 1px solid rgba(255, 255, 255, 30);
+    font-weight: 800;
+}
+QPushButton#btn_primary:hover {
+    background-color: #22D99A;
+    border-color: rgba(255, 255, 255, 50);
+}
+QPushButton#btn_primary:pressed {
+    background-color: #16AA7A;
+}
+
+/* Bouton neon — actions secondaires importantes (télécharger, installer) */
+QPushButton#btn_neon {
+    background-color: rgba(111, 232, 255, 18);
+    color: #6FE8FF;
+    border: 1px solid rgba(111, 232, 255, 70);
+}
+QPushButton#btn_neon:hover {
+    background-color: rgba(111, 232, 255, 30);
+    border-color: rgba(111, 232, 255, 120);
+}
+
+/* Bouton copper — avertissement / migration Blackwell */
+QPushButton#btn_copper {
+    background-color: rgba(217, 163, 104, 18);
+    color: #D9A368;
+    border: 1px solid rgba(217, 163, 104, 80);
+}
+QPushButton#btn_copper:hover {
+    background-color: rgba(217, 163, 104, 30);
+    border-color: rgba(217, 163, 104, 130);
+}
+
+/* Bouton danger — supprimer, désinstaller */
+QPushButton#btn_danger {
+    background-color: rgba(229, 72, 77, 18);
+    color: #E5484D;
+    border: 1px solid rgba(229, 72, 77, 75);
+}
+QPushButton#btn_danger:hover {
+    background-color: rgba(229, 72, 77, 30);
+    border-color: rgba(229, 72, 77, 120);
+}
+
+/* ── Inputs ──────────────────────────────────────────────────────────── */
+QLineEdit, QTextEdit, QPlainTextEdit {
+    background-color: rgba(14, 18, 22, 180);
+    color: #EEF3F6;
+    border: 1px solid rgba(238, 243, 246, 23);
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-family: "Roboto";
+    font-size: 13px;
+    selection-background-color: rgba(25, 194, 138, 150);
+    selection-color: #0E1216;
+}
+QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus {
+    border-color: rgba(111, 232, 255, 120);
+}
+QLineEdit::placeholder {
+    color: #4F5965;
+}
+
+/* Terminal output (Engine Manager) */
+QTextEdit#terminal_output, QPlainTextEdit#terminal_output {
+    background-color: rgba(5, 8, 16, 200);
+    color: #B6C3CE;
+    border: 1px solid rgba(238, 243, 246, 15);
+    border-radius: 8px;
+    font-family: "Consolas", "Courier New", monospace;
+    font-size: 11px;
+    padding: 10px 12px;
+}
+
+/* ── SpinBox & DoubleSpinBox ─────────────────────────────────────────── */
+QSpinBox, QDoubleSpinBox {
+    background-color: rgba(14, 18, 22, 180);
+    color: #EEF3F6;
+    border: 1px solid rgba(238, 243, 246, 23);
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 13px;
+    min-height: 28px;
+}
+QSpinBox:focus, QDoubleSpinBox:focus {
+    border-color: rgba(111, 232, 255, 120);
+}
+QSpinBox::up-button, QSpinBox::down-button,
+QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {
+    background: rgba(238, 243, 246, 8);
+    border: none;
+    width: 18px;
+    border-radius: 3px;
+}
+QSpinBox::up-button:hover, QSpinBox::down-button:hover,
+QDoubleSpinBox::up-button:hover, QDoubleSpinBox::down-button:hover {
+    background: rgba(238, 243, 246, 18);
+}
+
+/* ── ComboBox ─────────────────────────────────────────────────────────── */
+QComboBox {
+    background-color: rgba(14, 18, 22, 180);
+    color: #EEF3F6;
+    border: 1px solid rgba(238, 243, 246, 23);
+    border-radius: 6px;
+    padding: 7px 12px;
+    font-size: 13px;
+    min-height: 28px;
+}
+QComboBox:focus {
+    border-color: rgba(111, 232, 255, 120);
+}
+QComboBox::drop-down {
+    border: none;
+    width: 22px;
+    background: transparent;
+}
+QComboBox::down-arrow {
+    image: none;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid #7E8B97;
+    margin-right: 6px;
+}
+QComboBox QAbstractItemView {
+    background-color: #161B22;
+    color: #EEF3F6;
+    border: 1px solid rgba(238, 243, 246, 20);
+    border-radius: 6px;
+    selection-background-color: rgba(25, 194, 138, 130);
+    selection-color: #0E1216;
+    outline: none;
+    padding: 4px;
+}
+QComboBox QAbstractItemView::item {
+    min-height: 28px;
+    padding: 4px 10px;
+    border-radius: 4px;
+}
+
+/* ── Slider ──────────────────────────────────────────────────────────── */
+QSlider::groove:horizontal {
+    border: none;
+    height: 4px;
+    background: rgba(238, 243, 246, 20);
+    border-radius: 2px;
+    margin: 0;
+}
+QSlider::sub-page:horizontal {
+    background: #19C28A;
+    border-radius: 2px;
+}
+QSlider::handle:horizontal {
+    background: #19C28A;
+    border: 2px solid #0E1216;
+    width: 16px;
+    height: 16px;
+    margin: -6px 0;
+    border-radius: 8px;
+}
+QSlider::handle:horizontal:hover {
+    background: #22D99A;
+    border-color: #0E1216;
+}
+
+/* ── CheckBox ────────────────────────────────────────────────────────── */
+QCheckBox {
+    color: #EEF3F6;
+    spacing: 8px;
+    font-size: 13px;
+    background: transparent;
+}
+QCheckBox::indicator {
+    width: 18px;
+    height: 18px;
+    border-radius: 5px;
+    border: 1.5px solid #3B4654;
+    background: rgba(14, 18, 22, 150);
+}
+QCheckBox::indicator:checked {
+    background: #19C28A;
+    border-color: #19C28A;
+}
+QCheckBox::indicator:hover {
+    border-color: #19C28A;
+}
+QCheckBox:disabled {
+    color: #4F5965;
+}
+
+/* ── RadioButton ─────────────────────────────────────────────────────── */
+QRadioButton {
+    color: #EEF3F6;
+    spacing: 8px;
+    font-size: 13px;
+    background: transparent;
+}
+QRadioButton::indicator {
+    width: 16px;
+    height: 16px;
+    border-radius: 8px;
+    border: 1.5px solid #3B4654;
+    background: rgba(14, 18, 22, 150);
+}
+QRadioButton::indicator:checked {
+    background: #19C28A;
+    border-color: #19C28A;
+    /* Point central simulé via sous-widget — voir note Python */
+}
+QRadioButton::indicator:hover {
+    border-color: #19C28A;
+}
+
+/* ── ProgressBar (Engine Manager) ────────────────────────────────────── */
+QProgressBar {
+    background: rgba(238, 243, 246, 12);
+    border: 1px solid rgba(238, 243, 246, 20);
+    border-radius: 4px;
+    height: 6px;
+    text-align: center;
+    color: transparent;
+}
+QProgressBar::chunk {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+        stop:0 #19C28A, stop:1 #6FE8FF);
+    border-radius: 4px;
+}
+
+/* ── Table (POI Manager) ─────────────────────────────────────────────── */
+QTableWidget {
+    background-color: #0E1216;
+    color: #EEF3F6;
+    border: none;
+    gridline-color: rgba(238, 243, 246, 12);
+    font-size: 13px;
+    outline: none;
+}
+QTableWidget::item {
+    padding: 9px 10px;
+    border: none;
+}
+QTableWidget::item:selected {
+    background-color: rgba(25, 194, 138, 20);
+    color: #19C28A;
+}
+QTableWidget::item:hover:!selected {
+    background-color: rgba(238, 243, 246, 6);
+}
+QHeaderView::section {
+    background-color: #0E1216;
+    color: #7E8B97;
+    border: none;
+    border-bottom: 1px solid rgba(238, 243, 246, 18);
+    padding: 8px 10px;
+    font-family: "Roboto";
+    font-weight: 700;
+    font-size: 9pt;
+}
+QHeaderView::section:hover {
+    background-color: rgba(238, 243, 246, 5);
+    color: #B6C3CE;
+}
+QTableWidget QTableCornerButton::section {
+    background: #0E1216;
+    border: none;
+}
+
+/* ── Scrollbar ───────────────────────────────────────────────────────── */
+QScrollBar:vertical {
+    background: transparent;
+    width: 6px;
+    margin: 0;
+    border: none;
+}
+QScrollBar::handle:vertical {
+    background: rgba(238, 243, 246, 20);
+    border-radius: 3px;
+    min-height: 30px;
+}
+QScrollBar::handle:vertical:hover {
+    background: rgba(111, 232, 255, 55);
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0;
+    background: none;
+}
+QScrollBar:horizontal {
+    background: transparent;
+    height: 6px;
+    margin: 0;
+    border: none;
+}
+QScrollBar::handle:horizontal {
+    background: rgba(238, 243, 246, 20);
+    border-radius: 3px;
+    min-width: 30px;
+}
+QScrollBar::handle:horizontal:hover {
+    background: rgba(111, 232, 255, 55);
+}
+
+/* ── Menu (clic droit) ───────────────────────────────────────────────── */
+QMenu {
+    background-color: #161B22;
+    color: #EEF3F6;
+    border: 1px solid rgba(238, 243, 246, 18);
+    border-radius: 8px;
+    padding: 4px;
+}
+QMenu::item {
+    padding: 8px 14px;
+    border-radius: 5px;
+    font-size: 13px;
+}
+QMenu::item:selected {
+    background-color: rgba(25, 194, 138, 130);
+    color: #0E1216;
+}
+QMenu::separator {
+    height: 1px;
+    background: rgba(238, 243, 246, 15);
+    margin: 4px 8px;
+}
+
+/* ── ToolTip ─────────────────────────────────────────────────────────── */
+QToolTip {
+    background-color: #1B2128;
+    color: #B6C3CE;
+    border: 1px solid rgba(111, 232, 255, 50);
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 11px;
+}
+
+/* ── MessageBox ──────────────────────────────────────────────────────── */
+QMessageBox {
+    background-color: #161B22;
+}
+QMessageBox QLabel {
+    color: #EEF3F6;
+    font-size: 13px;
+}
+
+/* ── Overlay MFD frame — couleur dynamique via Python ────────────────── */
+/*
+   Le QFrame#mfd_frame a sa border-color et son glow mis à jour
+   dynamiquement depuis _refresh_pos_color() via setStyleSheet().
+   Voir DESIGN_HANDOFF.md § Overlay pour l'implémentation.
+
+   Valeur statique initiale (état LIVE) :
+*/
+QFrame#mfd_frame {
+    background-color: rgba(14, 18, 22, 235);
+    border: 1px solid #19C28A;
+    border-radius: 6px;
+}
+
+/* ── KeySequenceEdit (onglet Raccourcis) ──────────────────────────────── */
+QKeySequenceEdit {
+    background-color: rgba(14, 18, 22, 180);
+    color: #6FE8FF;
+    border: 1px solid rgba(111, 232, 255, 60);
+    border-radius: 6px;
+    padding: 6px 12px;
+    font-family: "Consolas", "Courier New", monospace;
+    font-size: 12px;
+}
+
+/* ── Frame / Divider ─────────────────────────────────────────────────── */
+QFrame[frameShape="4"],   /* HLine */
+QFrame[frameShape="5"] {  /* VLine */
+    color: rgba(238, 243, 246, 15);
+    border: none;
+    background: rgba(238, 243, 246, 15);
+    max-height: 1px;
+}
+
+/* ── System tray ─────────────────────────────────────────────────────── */
+QSystemTrayIcon {
+    /* Pas de style applicable — gérer l'icône dans le code Python */
+}

@@ -4,8 +4,45 @@
 - **User communication**: French (the user speaks French — always respond in French)
 - **Code (comments, docstrings, log messages)**: English only
 - **Documentation (.md files)**: English only
+- **Application UI**: English only — SpaceDrive GPS is an English-only application.
+  All widget labels, button text, window titles, placeholders, tooltips, and
+  QMessageBox strings must be in English. No French strings in any UI widget.
 
 All new code, comments, docstrings, and documentation must be written in English.
+
+## Window positioning — center + focus
+All dialog and secondary windows (Options, POI Manager, Engine Manager, Save POI dialog)
+**must open centered on the primary screen** and **receive focus immediately**.
+
+Rationale (user decision): Star Citizen is a flight sim where mouse movement controls
+the ship. Opening a window off-center forces the player to move the mouse across the
+screen to interact, which triggers ship input and risks a crash. Centering the dialog
+means the mouse is already near the controls without needing to move.
+
+Implementation: call `GPSOverlay._center_on_screen(dialog)` (or a shared equivalent)
+after `dialog.adjustSize()` and before `dialog.show()`. Then `raise_()` +
+`activateWindow()` via `QTimer.singleShot(0, ...)` for deferred focus.
+
+## Localization (i18n) — FR / EN
+
+The desktop UI must support two languages: **French (FR, default)** and **English (EN)**.
+All user-visible strings (labels, button text, window titles, placeholders, tooltips,
+messages) must go through a central translation layer — never hardcode a French or
+English string directly in a widget.
+
+Design contract (mirrors the SpaceDrive Community Hub `LangContext.jsx`):
+- Source of truth: `src/i18n.py` — a `TRANSLATIONS` dict with `"FR"` and `"EN"` keys,
+  plus a `t(key: str) -> str` helper.
+- `config.ini` → `[UI] language = FR` (or `EN`). Default: `FR`.
+- `ConfigManager` exposes `get_language()` / `set_language(lang)`.
+- `t()` is imported at the top of every UI module; all `QLabel`, `QPushButton`, window
+  title, and placeholder strings call `t("key")`.
+- Adding a new string: add to both `FR` and `EN` in `src/i18n.py`, then use the key.
+- Category labels are translated through `i18n.py` (keys: `cat_industry`, `cat_exploration`, etc.).
+- The Options window (General tab) exposes a Language combo (FR / EN); saving reloads all
+  open windows or prompts the user to restart.
+
+**This spec applies to all future code changes.** Every PR touching UI must use `t()`.
 
 ## Project overview
 Star Citizen GPS overlay that reads in-game HUD coordinates via OCR and provides
@@ -67,16 +104,27 @@ share the same shape:
 | `description` | string          | Optional free-form                                           |
 
 ### Categories (SpaceDrive Community taxonomy)
-Source of truth: `src/poi_categories.py`.
+Source of truth: `src/poi_categories.py`. Aligned with Community Hub `pois.js` `SPACEDRIVE_TYPES`.
 
-- `industry` — Industry (mining nodes, refineries, gas clouds, harvestables)
-- `exploration` — Exploration (anomalies, scannables, derelict ships, crash sites, wrecks)
-- `logistics_black_market` — Logistics & Black Market (trade routes, contraband drop-offs)
-- `hostile_combat` — Combat & Hostile Zones (bunkers, PvP/PvE hotspots)
-- `loot` — Loot (containers, ammo/medical caches, loose cargo)
-- `racing` — Racing (circuits, checkpoints, time-trial markers)
+| Slug        | Label      | Color     | Glyph | Description                                      |
+|-------------|------------|-----------|-------|--------------------------------------------------|
+| `hidden`    | Hidden     | `#19C28A` | ◆     | Secret locations, hidden caches, unmarked sites  |
+| `cave`      | Cave       | `#6FE8FF` | ◯     | Caves, underground, underwater, derelict wrecks  |
+| `circuit`   | Circuit    | `#D9A368` | ↻     | Routes, relay points, contraband drops           |
+| `tactical`  | Tactical   | `#E5484D` | ◤     | Bunkers, PvP/PvE hotspots, hostile zones         |
+| `industry`  | Industry   | `#F97316` | ⬡     | Mining nodes, refineries, gas clouds             |
+| `logistics` | Logistics  | `#A78BFA` | ◈     | Trade routes, outposts, supply depots            |
+| `loot`      | Loot       | `#FBBF24` | ◇     | Containers, medical/ammo caches, loose cargo     |
+| `racing`    | Racing     | `#86EFAC` | ▶     | Race circuits, checkpoints, time-trial markers   |
 
-Legacy POIs (no `category`) remain valid and display as "Uncategorized".
+Empty slug `""` = Uncategorized (legacy POIs without a category).
+
+**Legacy slug migration** (`_LEGACY` in `poi_categories.py`):
+- `exploration` → `cave`
+- `logistics_black_market` → `logistics`
+- `hostile_combat` → `tactical`
+
+These old slugs remain valid for import/export backward-compat but are remapped to their v2 canonical slug on display.
 
 ### Import / export
 - Right-click on a user POI in the POI Manager → "Copy to clipboard" / "Export to JSON file...".

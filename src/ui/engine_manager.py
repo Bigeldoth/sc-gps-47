@@ -140,6 +140,7 @@ class EngineManagerDialog(QDialog):
         tess_row.addWidget(self.locate_tesseract_button)
 
         self.reinstall_tesseract_button = QPushButton("Download / Reinstall")
+        self.reinstall_tesseract_button.setObjectName("btn_neon")
         self.reinstall_tesseract_button.setToolTip(
             "Open the UB-Mannheim Tesseract download page in your browser"
         )
@@ -161,19 +162,23 @@ class EngineManagerDialog(QDialog):
 
         paddle_row = QHBoxLayout()
         self.install_paddle_cpu_button = QPushButton("Install Paddle (CPU)")
+        self.install_paddle_cpu_button.setObjectName("btn_primary")
         self.install_paddle_cpu_button.clicked.connect(self._on_install_paddle_cpu)
         paddle_row.addWidget(self.install_paddle_cpu_button)
 
         self.install_paddle_gpu_button = QPushButton("Install Paddle (GPU)")
+        self.install_paddle_gpu_button.setObjectName("btn_neon")
         self.install_paddle_gpu_button.clicked.connect(self._on_install_paddle_gpu)
         paddle_row.addWidget(self.install_paddle_gpu_button)
 
         self.uninstall_paddle_button = QPushButton("Uninstall Paddle")
+        self.uninstall_paddle_button.setObjectName("btn_danger")
         self.uninstall_paddle_button.clicked.connect(self._on_uninstall_paddle)
         paddle_row.addWidget(self.uninstall_paddle_button)
 
         # Shown only on Blackwell GPUs when the installed paddle is too old.
         self.migrate_paddle_button = QPushButton("Migrate to Blackwell wheel (cu129)")
+        self.migrate_paddle_button.setObjectName("btn_copper")
         self.migrate_paddle_button.setToolTip(
             "Replace the installed paddlepaddle-gpu with the cu129 / 3.2.1 wheel "
             "that ships sm_120 kernels for RTX 50 GPUs"
@@ -201,10 +206,12 @@ class EngineManagerDialog(QDialog):
 
         vl_row = QHBoxLayout()
         self.install_paddle_vl_button = QPushButton("Install Paddle-VL (sidecar)")
+        self.install_paddle_vl_button.setObjectName("btn_neon")
         self.install_paddle_vl_button.clicked.connect(self._on_install_paddle_vl)
         vl_row.addWidget(self.install_paddle_vl_button)
 
         self.uninstall_paddle_vl_button = QPushButton("Uninstall Paddle-VL")
+        self.uninstall_paddle_vl_button.setObjectName("btn_danger")
         self.uninstall_paddle_vl_button.clicked.connect(self._on_uninstall_paddle_vl)
         vl_row.addWidget(self.uninstall_paddle_vl_button)
 
@@ -228,8 +235,11 @@ class EngineManagerDialog(QDialog):
         layout.addLayout(progress_row)
 
         self.output = QTextEdit()
+        self.output.setObjectName("terminal_output")
         self.output.setReadOnly(True)
-        self.output.setPlaceholderText("Installer output will appear here.")
+        self.output.setPlaceholderText("La sortie de l'installeur s'affiche ici…")
+        from PyQt6.QtGui import QFont as _QFont
+        self.output.setFont(_QFont("Consolas", 10))
         layout.addWidget(self.output, stretch=1)
 
         close_row = QHBoxLayout()
@@ -240,6 +250,39 @@ class EngineManagerDialog(QDialog):
         layout.addLayout(close_row)
 
         self.setLayout(layout)
+
+    # ----- PADEK status badge -----
+
+    def _make_status_badge(self, ok: bool, text: str):
+        from PyQt6.QtWidgets import QLabel as _QLabel
+        from PyQt6.QtGui import QFont as _QFont
+        try:
+            from main import PADEK_DISPLAY_FONT
+        except Exception:
+            PADEK_DISPLAY_FONT = "Manrope"
+        badge = _QLabel(text)
+        badge.setFont(_QFont(PADEK_DISPLAY_FONT, 8, _QFont.Weight.ExtraBold))
+        if ok:
+            badge.setStyleSheet("""
+                QLabel {
+                    color: #19C28A;
+                    background: rgba(25,194,138,0.13);
+                    border: 1px solid rgba(25,194,138,0.4);
+                    border-radius: 999px;
+                    padding: 3px 10px;
+                }
+            """)
+        else:
+            badge.setStyleSheet("""
+                QLabel {
+                    color: #E5484D;
+                    background: rgba(229,72,77,0.10);
+                    border: 1px solid rgba(229,72,77,0.35);
+                    border-radius: 999px;
+                    padding: 3px 10px;
+                }
+            """)
+        return badge
 
     # ----- Status refresh -----
 
