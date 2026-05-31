@@ -9,7 +9,7 @@ covered.
 | I want to… | Use |
 |---|---|
 | Verify a code change didn't regress core logic | `pytest tests/` |
-| Diagnose a "red overlay / bad coordinate" gameplay issue | Run app + read `spacedrive.log` — see §3 |
+| Diagnose a "red overlay / bad coordinate" gameplay issue | Run app + read `logs/spacedrive.log` — see §3 |
 | Improve glyph-level recognition (digits, letters) | Retrain TinyGlyphCNN — see §4 |
 | Improve full-line OCR (faster engine, full HUD reads) | Fine-tune PaddleOCR rec — see §5 |
 | A/B-test two OCR engines on the same scene | `tools/paddle_diagnose.py` or record + replay (see §6) |
@@ -68,8 +68,9 @@ The primary "is this fix working" loop is run-the-app + read-the-log.
 
 ### Log location
 
-`spacedrive.log` (project root). Level controlled by `config.ini → [Logging]
-level = DEBUG`. The default is `DEBUG` while developing.
+`logs/spacedrive.log` (under the user data dir; repo root in dev). Level
+controlled by `config.ini → [Logging] level = DEBUG`. The default is `DEBUG`
+while developing.
 
 ### Things to grep for
 
@@ -87,10 +88,10 @@ level = DEBUG`. The default is `DEBUG` while developing.
 ### Quick stats over a session
 
 ```bash
-grep -c "Position extracted" spacedrive.log    # total per-pass reads
-grep -c "Multi-pass consensus" spacedrive.log  # consensus hits
-grep -c "OCR rejection" spacedrive.log         # rejected by velocity/sign gates
-grep "paddle-stats" spacedrive.log | tail -1   # final accumulated counters
+grep -c "Position extracted" logs/spacedrive.log    # total per-pass reads
+grep -c "Multi-pass consensus" logs/spacedrive.log  # consensus hits
+grep -c "OCR rejection" logs/spacedrive.log         # rejected by velocity/sign gates
+grep "paddle-stats" logs/spacedrive.log | tail -1   # final accumulated counters
 ```
 
 Healthy session targets: consensus hits > 50 % of acceptances, rejections

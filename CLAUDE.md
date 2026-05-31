@@ -88,6 +88,19 @@ Options dialog (Manage engines…) — it lives in a Python 3.12 sidecar venv
 run on Python 3.10–3.14. `[OCR] pipeline_mode = hybrid|full_text` chooses
 between NCC/ONNX + text-engine fallback and a text-engine-only path.
 
+## Logging & debug
+- **All runtime logs live under `user_data_dir()/logs/`**: the application log
+  (`logs/spacedrive.log`) and per-session navigation telemetry
+  (`logs/telemetry-*.jsonl`). Every new log/trace type must go in this folder so
+  the user has one coherent, readable location — never scatter logs at the repo
+  root or in `user_data_dir()` directly.
+- **Every `[Debug]` flag must be toggleable from the Options dialog.** The
+  flags in `config.ini` `[Debug]` (`record_telemetry`, `save_ocr_images`,
+  `save_glyph_crops`, `verbose_mode`, …) are user-facing
+  switches: each must have a matching checkbox in `src/ui/options.py`, persisted
+  via `ConfigManager`. Adding a new debug flag means adding its toggle too —
+  never ini-edit-only.
+
 ## POI schema
 All POIs are user-owned. `%LOCALAPPDATA%\SpaceDrive\data\user_poi.json` is the
 single source of truth (no bundled system POI file). Exported POIs

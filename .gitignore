@@ -42,6 +42,9 @@ Thumbs.db
 spacedrive.log
 user_poi.json
 
+# Runtime logs folder (app log + per-session navigation telemetry) — local-only
+logs/
+
 # PaddleOCR diagnostic runs (captured frames + summaries) — local-only
 diagnostics/
 

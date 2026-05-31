@@ -103,7 +103,7 @@ SpaceDrive\
 ├── downloads\            # Python 3.12 installer cache             [transient]
 ├── config.ini            # User overrides (read-write)             [first run]
 ├── user_poi.json         # User-defined POIs                       [first run]
-└── spacedrive.log        # App log                                 [runtime]
+└── logs\                 # App log + telemetry (spacedrive.log, …) [runtime]
 ```
 
 The bundle in `Program Files\SpaceDrive\` stays read-only — clean uninstall
@@ -197,12 +197,13 @@ the job exists solely to catch broken builds before merge.
 
 ## Local debugging
 
-- App log: `%LOCALAPPDATA%\SpaceDrive\spacedrive.log` (level via `[Logging] level` in `config.ini`).
+- App log: `%LOCALAPPDATA%\SpaceDrive\logs\spacedrive.log` (level via `[Logging] level` in `config.ini`).
+- Navigation telemetry: `%LOCALAPPDATA%\SpaceDrive\logs\telemetry-*.jsonl` when `[Debug] record_telemetry = True`.
 - Debug captures: enable `[Debug] save_ocr_images = True` → writes
   `debug_capture_*.png` next to the log on each scan.
 - Replay a static capture without the game:
   `[Debug] test_screenshot = path\to\screenshot.png` in `config.ini`.
-- Sidecar Paddle logs: lines prefixed with `paddle |` in `spacedrive.log`.
+- Sidecar Paddle logs: lines prefixed with `paddle |` in `logs/spacedrive.log`.
 
 ---
 

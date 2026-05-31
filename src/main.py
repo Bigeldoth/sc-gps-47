@@ -54,7 +54,12 @@ _log_file_setting = config.get('Logging', 'file', fallback='spacedrive.log')
 if os.path.isabs(_log_file_setting):
     _log_file_path = _log_file_setting
 else:
-    _log_file_path = str(user_data_dir() / _log_file_setting)
+    # All runtime logs live under user_data_dir()/logs/, alongside the
+    # per-session telemetry-*.jsonl traces, for one coherent and readable
+    # location (see CLAUDE.md "Logging & debug").
+    _logs_dir = user_data_dir() / "logs"
+    _logs_dir.mkdir(parents=True, exist_ok=True)
+    _log_file_path = str(_logs_dir / _log_file_setting)
 
 logging.basicConfig(
     level=getattr(logging, config.get('Logging', 'level', fallback='INFO')),
@@ -1376,7 +1381,7 @@ class GPSOverlay(QMainWindow):
             logger.exception("Error opening options")
             self.tray_icon.showMessage(
                 "Error",
-                "Could not open options window. See spacedrive.log.",
+                "Could not open options window. See logs/spacedrive.log.",
                 QSystemTrayIcon.MessageIcon.Critical,
                 3000,
             )
@@ -1393,7 +1398,7 @@ class GPSOverlay(QMainWindow):
             logger.exception("Error opening POI manager")
             self.tray_icon.showMessage(
                 "Error",
-                "Could not open POI manager. See spacedrive.log.",
+                "Could not open POI manager. See logs/spacedrive.log.",
                 QSystemTrayIcon.MessageIcon.Critical,
                 3000,
             )
@@ -1537,7 +1542,7 @@ class GPSOverlay(QMainWindow):
             logger.exception("Error saving position")
             self.tray_icon.showMessage(
                 "Error",
-                "Could not save position. See spacedrive.log.",
+                "Could not save position. See logs/spacedrive.log.",
                 QSystemTrayIcon.MessageIcon.Critical,
                 3000,
             )
