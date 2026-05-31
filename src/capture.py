@@ -32,6 +32,7 @@ The previous `otsu_inv` pass was removed: in all observed cases it destroyed
 characters rather than recovering them, and Tesseract performed worst on it.
 The HSV pass was removed earlier as automatic channel isolation made it redundant.
 """
+import time
 import mss
 import numpy as np
 import cv2
@@ -116,6 +117,11 @@ class ScreenCapture:
             logger.info(f"Capture {CAPTURE_WIDTH}x{CAPTURE_HEIGHT} top-right, region={self._region}")
 
     def capture(self):
+        # Stamp the frame instant up front so downstream velocity estimation
+        # uses the *measurement* time, not the (variable) time the OCR result
+        # is later handled on the UI thread. Monotonic clock: immune to wall
+        # clock adjustments, and the only thing dt comparisons need.
+        t_capture = time.monotonic()
         if self._test_screenshot:
             r = self._region
             img = self._test_img[r["top"]:r["top"] + r["height"],
@@ -178,7 +184,7 @@ class ScreenCapture:
                 save_glyph_crops(otsu, glyphs)
                 glyph_data = seg_result
 
-        return images, glyph_data
+        return images, glyph_data, t_capture
 
     def stop(self):
         pass
@@ -186,7 +192,7 @@ class ScreenCapture:
 
 if __name__ == "__main__":
     cap = ScreenCapture()
-    images = cap.capture()
+    images, _glyph, _t_capture = cap.capture()
     if images:
         cv2.imwrite("test_capture.png", images.get('otsu'))
         print("Test capture done: test_capture.png")

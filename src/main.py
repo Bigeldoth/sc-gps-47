@@ -26,6 +26,7 @@ from navigation import (
 from config_manager import ConfigManager
 from hotkey_listener import HotkeyListener
 from velocity_tracker import VelocityTracker
+from telemetry import create_session_recorder
 from ui.options import OptionsWindow
 from ui.poi_manager import POIManagerWindow
 from poi_categories import POI_CATEGORIES
@@ -207,8 +208,11 @@ class GPSWorker(QObject):
         if not self._running:
             return
         try:
-            images, glyph_data = self.capture.capture()
+            images, glyph_data, t_capture = self.capture.capture()
             data = self.ocr.extract_data(images)
+            # Carry the capture instant alongside the OCR result so the UI
+            # thread can derive velocity from measurement time, not handling time.
+            data["t_capture"] = t_capture
             self.result_ready.emit(data)
         except Exception as e:
             # 0xC000013A (3221225786 = STATUS_CONTROL_C_EXIT) is the Tesseract
@@ -220,7 +224,7 @@ class GPSWorker(QObject):
                 logger.debug("Tesseract subprocess interrupted (cleanup noise): %s", e)
             else:
                 logger.error(f"GPS worker error: {e}")
-            self.result_ready.emit({"x": None, "y": None, "z": None, "location": "Unknown", "error": str(e)})
+            self.result_ready.emit({"x": None, "y": None, "z": None, "location": "Unknown", "error": str(e), "t_capture": time.monotonic()})
 
     def _reload_ocr(self):
         """Rebuilds the OCR processor from the on-disk config.ini.
@@ -289,23 +293,27 @@ def _world_arrow(abs_bearing):
 def _velocity_arrow(yaw_off, pitch_off=None):
     """Velocity-relative guidance arrow (car-GPS style).
 
-    ``yaw_off``   — signed degrees: positive = target is to the left of the
-                    current movement direction; negative = to the right.
+    ``yaw_off``   — signed degrees: positive = target is to the right of the
+                    current movement direction; negative = to the left.
     ``pitch_off`` — signed degrees or None; ignored for surface POIs.
 
     Returns a compact string showing the correction needed:
-      - ``"↑"``      already heading toward the target (< 10°)
-      - ``"←15°"``   turn left 15°
-      - ``"→8°"``    turn right 8°
+      - ``"↑"``      already heading toward the target (< 20°)
+      - ``"→15°"``   turn right 15°
+      - ``"←8°"``    turn left 8°
+      - ``"↓"``      target is behind (> 150°) — U-turn needed
     A vertical indicator (▲/▼) is appended for space POIs when pitch > 25°.
     """
     parts = []
-    if abs(yaw_off) < 10.0:
+    abs_off = abs(yaw_off)
+    if abs_off < 20.0:
         parts.append("↑")
+    elif abs_off > 150.0:
+        parts.append("↓")
     elif yaw_off > 0:
-        parts.append(f"←{yaw_off:.0f}°")
+        parts.append(f"→{yaw_off:.0f}°")
     else:
-        parts.append(f"→{abs(yaw_off):.0f}°")
+        parts.append(f"←{abs_off:.0f}°")
 
     if pitch_off is not None:
         if pitch_off > 25.0:
@@ -523,6 +531,14 @@ class GPSOverlay(QMainWindow):
         self._last_raw_yaw_off = None
         self._last_raw_pitch_off = None
 
+        # Optional per-tick navigation telemetry (off by default). Records a
+        # JSONL trace of positions, dropouts and rejects for offline replay /
+        # filter tuning. See src/telemetry.py and [Debug] record_telemetry.
+        self._telemetry = create_session_recorder(
+            self.config_manager.get_record_telemetry(),
+            user_data_dir() / "logs",
+        )
+
         # Snapshot of coordinates frozen at hotkey save press moment.
         # Preserves value even if OCR fails between press and dialog confirmation.
         # None = no save in progress via hotkey.
@@ -699,8 +715,14 @@ class GPSOverlay(QMainWindow):
     def _on_worker_result(self, data):
         self._worker_busy = False
 
+        # Measurement time stamped at capture (see ScreenCapture.capture).
+        # Fed to the velocity tracker so dt reflects the frame interval, not the
+        # variable OCR-handling latency on this thread.
+        t_capture = data.get("t_capture")
+
         if "error" in data:
             # Don't touch displayed text — it will age via color.
+            self._record_telemetry(data, "no_read", reason="ocr_error")
             self._refresh_pos_color()
             self._refresh_nav_label()
             return
@@ -714,9 +736,13 @@ class GPSOverlay(QMainWindow):
             # around 1-2 km/s — 100 km/s gives comfortable margin
             # for post-quantum jumps.
             if self._is_velocity_implausible(data):
+                self._record_telemetry(data, "rejected", reason="implausible_velocity")
                 self._refresh_pos_color()
                 self._refresh_nav_label()
                 return
+
+            # Raw OCR position (pre-median) — the input an offline filter needs.
+            raw_pos = (data["x"], data["y"], data["z"])
 
             # Apply per-axis median smoothing over the last N accepted reads.
             # Resets on OOC change (legitimate teleport — buffer is stale).
@@ -751,7 +777,7 @@ class GPSOverlay(QMainWindow):
             # grace period 3 min otherwise — see NavigationEngine).
             self.nav.update_zone_tracking(data)
 
-            self._update_bearing_state(data)
+            self._update_bearing_state(data, t_capture)
 
             dist_km = self.nav.calculate_distance(data)
             if dist_km is None:
@@ -781,9 +807,46 @@ class GPSOverlay(QMainWindow):
                     self._smoothed_distance_km = a * dist_km + (1 - a) * prev
             self._last_raw_distance_km = dist_km
 
+            self._record_telemetry(data, "ok", raw_pos=raw_pos)
+        else:
+            # OCR ran but parsed no coordinates (flare / scenery occlusion /
+            # partial HUD): a genuine dropout, recorded for coast-window tuning.
+            self._record_telemetry(data, "no_read", reason="no_coords")
+
         # Always refresh color (aging), even without new data.
         self._refresh_pos_color()
         self._refresh_nav_label()
+
+    def _record_telemetry(self, data, status, reason=None, raw_pos=None):
+        """Append one navigation telemetry record (no-op when disabled).
+
+        ``status`` is one of ``"ok"`` (accepted read), ``"rejected"`` (misread
+        caught by the plausibility gate) or ``"no_read"`` (OCR dropout — flare
+        / occlusion / error). ``raw_pos`` is the OCR ``(x, y, z)`` *before*
+        median smoothing — the raw input an offline filter must replay.
+        """
+        rec = self._telemetry
+        if rec is None:
+            return
+        tgt = self.nav.target
+        if raw_pos is not None:
+            rx, ry, rz = raw_pos
+        else:
+            rx, ry, rz = data.get("x"), data.get("y"), data.get("z")
+        rec.record(
+            t_capture=data.get("t_capture"),
+            status=status,
+            reason=reason,
+            x=rx, y=ry, z=rz,
+            ooc=data.get("ooc"),
+            location=data.get("location"),
+            target=(tgt.get("name") if tgt else None),
+            yaw_off=self._smoothed_yaw_off,
+            pitch_off=self._smoothed_pitch_off,
+            dist_km=self._smoothed_distance_km,
+            speed_km_s=round(self._velocity_tracker.speed_km_s, 6),
+            coord_age_s=self._coord_age_s(),
+        )
 
     def _coord_age_s(self):
         """Age (s) of last valid OCR, or None if none yet."""
@@ -1000,8 +1063,13 @@ class GPSOverlay(QMainWindow):
             )
             self._dot_opacity = not self._dot_opacity
 
-    def _update_bearing_state(self, data):
-        """Updates velocity and bearing offsets from OCR coordinates."""
+    def _update_bearing_state(self, data, t_capture=None):
+        """Updates velocity and bearing offsets from OCR coordinates.
+
+        ``t_capture`` is the monotonic timestamp of the frame grab. When
+        available it is used as the velocity sample time so dt matches the
+        capture interval; otherwise we fall back to the handling time.
+        """
         # If OOC changed, coordinates are in different frame → reset
         # tracker to avoid spurious velocity. Uses fuzzy comparison
         # to ignore OCR variations in zone name.
@@ -1017,7 +1085,8 @@ class GPSOverlay(QMainWindow):
 
         if data.get("x") is not None:
             self._velocity_tracker.add_sample(
-                data["x"], data["y"], data["z"], time.monotonic()
+                data["x"], data["y"], data["z"],
+                t_capture if t_capture is not None else time.monotonic(),
             )
             if self.nav.target:
                 logger.debug(
@@ -1570,6 +1639,8 @@ class GPSOverlay(QMainWindow):
         self._worker.stop()
         self._worker_thread.quit()
         self._worker_thread.wait(2000)
+        if self._telemetry is not None:
+            self._telemetry.close()
         self.tray_icon.hide()
         QApplication.quit()
 

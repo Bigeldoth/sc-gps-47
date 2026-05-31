@@ -415,7 +415,7 @@ def run_diagnostic(
     for i in range(max_samples):
         if progress:
             progress(i, max_samples, f"Capturing frame {i+1}/{max_samples}…")
-        images, _glyph = capture.capture()
+        images, _glyph, _t_capture = capture.capture()
         raw = images.get("raw")
         if raw is None:
             logger.warning("diagnostic: no 'raw' image in capture dict — aborting")
