@@ -81,6 +81,7 @@ class ConfigManager:
             self.config.set('Debug', 'save_ocr_images', 'False')
             self.config.set('Debug', 'save_glyph_crops', 'False')
             self.config.set('Debug', 'verbose_mode', 'False')
+            self.config.set('Debug', 'record_telemetry', 'False')
 
         if not self.config.has_section('Features'):
             self.config.add_section('Features')
@@ -306,6 +307,16 @@ class ConfigManager:
         if not self.config.has_section('Navigation'):
             self.config.add_section('Navigation')
         self.config.set('Navigation', 'arrival_radius_m', str(max(1.0, float(radius_m))))
+
+    def get_record_telemetry(self):
+        """Whether to record per-tick navigation telemetry to a JSONL file.
+
+        Off by default. Intended for offline analysis and filter/coast-window
+        tuning — see ``src/telemetry.py``."""
+        try:
+            return self.config.getboolean('Debug', 'record_telemetry', fallback=False)
+        except Exception:
+            return False
 
     def get_hotkey(self, action):
         """
