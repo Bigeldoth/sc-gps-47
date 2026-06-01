@@ -1245,9 +1245,16 @@ class GPSOverlay(QMainWindow):
 
         dist_str = format_distance(self._smoothed_distance_km)
 
-        abs_bearing = calculate_absolute_bearing(self.current_data, self.nav.target)
+        # Terminal logic (A5): within the arrival radius the line-of-sight angle
+        # becomes unstable (it swings wildly as range -> 0), so suppress the
+        # directional arrow and show a terminal marker. Distance and freshness
+        # colour still update; the DR/LOST tag below is kept.
+        within_arrival = (self._smoothed_distance_km * 1000.0) < self._arrival_radius_m
+
         arrow_str = ""
-        if self._smoothed_yaw_off is not None:
+        if within_arrival:
+            arrow_str = "  ●"
+        elif self._smoothed_yaw_off is not None:
             is_surface = self.nav.target.get("kind") == "surface"
             pitch_arg = None if is_surface else self._smoothed_pitch_off
             arrow = _velocity_arrow(self._smoothed_yaw_off, pitch_arg)
@@ -1258,10 +1265,12 @@ class GPSOverlay(QMainWindow):
                 f"{self._smoothed_pitch_off:.1f}°" if self._smoothed_pitch_off is not None else "N/A",
                 arrow,
             )
-        elif abs_bearing:
-            arrow = _world_arrow(abs_bearing)
-            if arrow:
-                arrow_str = f"  {arrow}"
+        else:
+            abs_bearing = calculate_absolute_bearing(self.current_data, self.nav.target)
+            if abs_bearing:
+                arrow = _world_arrow(abs_bearing)
+                if arrow:
+                    arrow_str = f"  {arrow}"
 
         # Dead-reckoning annunciation: tag the readout while coasting through an
         # OCR dropout (FRESH shows nothing; LOST once the coast window expired).
