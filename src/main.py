@@ -54,7 +54,12 @@ _log_file_setting = config.get('Logging', 'file', fallback='spacedrive.log')
 if os.path.isabs(_log_file_setting):
     _log_file_path = _log_file_setting
 else:
-    _log_file_path = str(user_data_dir() / _log_file_setting)
+    # All runtime logs live under user_data_dir()/logs/, alongside the
+    # per-session telemetry-*.jsonl traces, for one coherent and readable
+    # location (see CLAUDE.md "Logging & debug").
+    _logs_dir = user_data_dir() / "logs"
+    _logs_dir.mkdir(parents=True, exist_ok=True)
+    _log_file_path = str(_logs_dir / _log_file_setting)
 
 logging.basicConfig(
     level=getattr(logging, config.get('Logging', 'level', fallback='INFO')),
@@ -722,6 +727,7 @@ class GPSOverlay(QMainWindow):
 
         if "error" in data:
             # Don't touch displayed text — it will age via color.
+            self._coast_guidance(t_capture)
             self._record_telemetry(data, "no_read", reason="ocr_error")
             self._refresh_pos_color()
             self._refresh_nav_label()
@@ -736,6 +742,7 @@ class GPSOverlay(QMainWindow):
             # around 1-2 km/s — 100 km/s gives comfortable margin
             # for post-quantum jumps.
             if self._is_velocity_implausible(data):
+                self._coast_guidance(t_capture)
                 self._record_telemetry(data, "rejected", reason="implausible_velocity")
                 self._refresh_pos_color()
                 self._refresh_nav_label()
@@ -810,7 +817,8 @@ class GPSOverlay(QMainWindow):
             self._record_telemetry(data, "ok", raw_pos=raw_pos)
         else:
             # OCR ran but parsed no coordinates (flare / scenery occlusion /
-            # partial HUD): a genuine dropout, recorded for coast-window tuning.
+            # partial HUD): a genuine dropout — dead-reckon, then record it.
+            self._coast_guidance(t_capture)
             self._record_telemetry(data, "no_read", reason="no_coords")
 
         # Always refresh color (aging), even without new data.
@@ -841,12 +849,29 @@ class GPSOverlay(QMainWindow):
             ooc=data.get("ooc"),
             location=data.get("location"),
             target=(tgt.get("name") if tgt else None),
-            yaw_off=self._smoothed_yaw_off,
-            pitch_off=self._smoothed_pitch_off,
-            dist_km=self._smoothed_distance_km,
+            # Guidance fields are only meaningful with an active target — log
+            # null otherwise so a stale smoothed value never pollutes the trace.
+            yaw_off=(self._smoothed_yaw_off if tgt else None),
+            pitch_off=(self._smoothed_pitch_off if tgt else None),
+            dist_km=(self._smoothed_distance_km if tgt else None),
             speed_km_s=round(self._velocity_tracker.speed_km_s, 6),
+            integrity=self._velocity_tracker.integrity,
             coord_age_s=self._coord_age_s(),
         )
+
+    def _apply_telemetry_setting(self):
+        """Enable/disable the telemetry recorder to match config, live.
+
+        Lets the Options → Debug toggle take effect without an app restart:
+        opens a fresh session file when turned on, closes it when turned off.
+        """
+        want = self.config_manager.get_record_telemetry()
+        have = self._telemetry is not None
+        if want and not have:
+            self._telemetry = create_session_recorder(True, user_data_dir() / "logs")
+        elif not want and have:
+            self._telemetry.close()
+            self._telemetry = None
 
     def _coord_age_s(self):
         """Age (s) of last valid OCR, or None if none yet."""
@@ -1132,6 +1157,41 @@ class GPSOverlay(QMainWindow):
         self._last_raw_yaw_off = yaw_off
         self._last_raw_pitch_off = pitch_off
 
+    def _coast_guidance(self, t_capture):
+        """Dead-reckon guidance for a tick with no accepted OCR fix.
+
+        Advances the Kalman filter with no measurement (predict-only) and, while
+        still within the coast window, refreshes distance + the velocity arrow
+        from the predicted position so guidance survives a brief OCR dropout
+        (flare / scenery occlusion). Beyond the coast window the arrow is dropped.
+        """
+        vt = self._velocity_tracker
+        if t_capture is not None:
+            vt.predict_only(t_capture)
+        if not self.nav.target:
+            return
+        if vt.integrity == "LOST":
+            # Too stale to dead-reckon: drop the arrow (colour aging + the LOST
+            # tag already signal the loss); leave the last distance frozen.
+            self._smoothed_yaw_off = None
+            self._smoothed_pitch_off = None
+            return
+        pos = vt.position
+        if pos is None:
+            return
+        pos_dict = {
+            "x": pos[0], "y": pos[1], "z": pos[2],
+            "ooc": self.current_data.get("ooc"),
+        }
+        dist = self.nav.calculate_distance(pos_dict)
+        if dist is not None:
+            self._smoothed_distance_km = dist
+        vel = vt.velocity if vt.is_moving else None
+        if vel is not None:
+            bearing = calculate_velocity_bearing(vel, pos_dict, self.nav.target)
+            if bearing is not None:
+                self._smoothed_yaw_off, self._smoothed_pitch_off = bearing
+
     def _refresh_nav_label(self):
         """Updates nav_label: target, distance and heading merged."""
         _font_css = (
@@ -1202,6 +1262,12 @@ class GPSOverlay(QMainWindow):
             arrow = _world_arrow(abs_bearing)
             if arrow:
                 arrow_str = f"  {arrow}"
+
+        # Dead-reckoning annunciation: tag the readout while coasting through an
+        # OCR dropout (FRESH shows nothing; LOST once the coast window expired).
+        coast_age = self._velocity_tracker.coast_age_s
+        if coast_age is not None and coast_age > 0.05:
+            arrow_str += "  DR" if self._velocity_tracker.integrity == "COASTING" else "  LOST"
 
         self.nav_label.setText(f"▶ {name}\n  {dist_str}{arrow_str}")
         self.nav_label.setStyleSheet(f"color: {nav_color}; font-size: 9pt; {_font_css}")
@@ -1376,7 +1442,7 @@ class GPSOverlay(QMainWindow):
             logger.exception("Error opening options")
             self.tray_icon.showMessage(
                 "Error",
-                "Could not open options window. See spacedrive.log.",
+                "Could not open options window. See logs/spacedrive.log.",
                 QSystemTrayIcon.MessageIcon.Critical,
                 3000,
             )
@@ -1393,7 +1459,7 @@ class GPSOverlay(QMainWindow):
             logger.exception("Error opening POI manager")
             self.tray_icon.showMessage(
                 "Error",
-                "Could not open POI manager. See spacedrive.log.",
+                "Could not open POI manager. See logs/spacedrive.log.",
                 QSystemTrayIcon.MessageIcon.Critical,
                 3000,
             )
@@ -1406,6 +1472,9 @@ class GPSOverlay(QMainWindow):
         # Pick up the new arrival radius for the next OCR tick.
         self._arrival_radius_m = self.config_manager.get_arrival_radius_m()
         logger.info(f"Arrival radius updated: {self._arrival_radius_m:.0f} m")
+
+        # Apply the telemetry toggle live (enable/disable without a restart).
+        self._apply_telemetry_setting()
 
         # Refresh hotkeys in case they were modified
         self.hotkey_listener.reload_hotkeys()
@@ -1459,6 +1528,10 @@ class GPSOverlay(QMainWindow):
         self._smoothed_pitch_off = None
         self._last_raw_yaw_off = None
         self._last_raw_pitch_off = None
+        # Clear the smoothed distance too, else it lingers as a stale readout
+        # (and a phantom value in telemetry) after navigation is stopped.
+        self._smoothed_distance_km = None
+        self._last_raw_distance_km = None
         had_target = self.nav.target is not None
         self.nav.clear_target()
         self._refresh_nav_label()
@@ -1537,7 +1610,7 @@ class GPSOverlay(QMainWindow):
             logger.exception("Error saving position")
             self.tray_icon.showMessage(
                 "Error",
-                "Could not save position. See spacedrive.log.",
+                "Could not save position. See logs/spacedrive.log.",
                 QSystemTrayIcon.MessageIcon.Critical,
                 3000,
             )

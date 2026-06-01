@@ -77,7 +77,6 @@ class ConfigManager:
 
         if not self.config.has_section('Debug'):
             self.config.add_section('Debug')
-            self.config.set('Debug', 'capture_screenshot', 'False')
             self.config.set('Debug', 'save_ocr_images', 'False')
             self.config.set('Debug', 'save_glyph_crops', 'False')
             self.config.set('Debug', 'verbose_mode', 'False')

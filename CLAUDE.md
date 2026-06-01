@@ -49,10 +49,15 @@ Star Citizen GPS overlay that reads in-game HUD coordinates via OCR and provides
 navigation guidance to user-defined POIs.
 
 ## Navigation design
-- **Velocity-based guidance (car-GPS style)**: derives movement direction from consecutive
-  OCR position samples (VelocityTracker, EMA-smoothed). Shows `↑` / `←N°` / `→N°` arrow
-  indicating required turn toward target when moving.
-- **Stationary world compass** (`_world_arrow`): 8-direction compass rose fallback when
+- **Velocity-based guidance (car-GPS style)**: derives the movement direction from the OCR
+  position stream via a per-axis constant-velocity Kalman filter (`VelocityTracker`). Shows
+  `↑` (on course) / `→N°` / `←N°` (turn right/left) / `↓` (target behind — U-turn) for the
+  required turn toward the target when moving.
+- **Dead-reckoning + integrity**: on an OCR dropout (flare / occlusion) the filter coasts on
+  the last velocity (`predict_only`) so the arrow survives a brief loss; integrity is
+  annunciated FRESH / COASTING (a `DR` tag) / LOST. OCR misreads are rejected by the
+  filter's innovation gate.
+- **Stationary world compass** (`_world_arrow`): 8-direction compass rose fallback when the
   player is stationary.
 
 ## Architecture
@@ -63,7 +68,7 @@ navigation guidance to user-defined POIs.
 - `src/engine_installer.py` + `src/ui/engine_manager.py` — on-demand install of Paddle into `.venv-paddle/`, CUDA detection
 - `src/capture.py` — mss screen capture + channel isolation; emits 2 binary passes (otsu, adaptive) + CLAHE-enhanced grayscale + raw BGR crop (for Paddle's own detection net)
 - `src/navigation.py` — bearing/distance calculations (SC coordinate frame: X-axis inverted)
-- `src/velocity_tracker.py` — velocity estimation from successive OCR positions (EMA smoothed)
+- `src/velocity_tracker.py` — per-axis constant-velocity Kalman filter (position + velocity); innovation gating rejects OCR misreads, predict-only coasting dead-reckons through dropouts
 - `src/config_manager.py` — config.ini R/W wrapper
 - `src/hotkey_listener.py` — global hotkeys via pynput
 - `src/poi_io.py` — POI serialization + validation for clipboard/file exchange with the SpaceDrive Community hub
@@ -87,6 +92,19 @@ Options dialog (Manage engines…) — it lives in a Python 3.12 sidecar venv
 (`.venv-paddle/`) and is invoked via JSON IPC, so the host app stays free to
 run on Python 3.10–3.14. `[OCR] pipeline_mode = hybrid|full_text` chooses
 between NCC/ONNX + text-engine fallback and a text-engine-only path.
+
+## Logging & debug
+- **All runtime logs live under `user_data_dir()/logs/`**: the application log
+  (`logs/spacedrive.log`) and per-session navigation telemetry
+  (`logs/telemetry-*.jsonl`). Every new log/trace type must go in this folder so
+  the user has one coherent, readable location — never scatter logs at the repo
+  root or in `user_data_dir()` directly.
+- **Every `[Debug]` flag must be toggleable from the Options dialog.** The
+  flags in `config.ini` `[Debug]` (`record_telemetry`, `save_ocr_images`,
+  `save_glyph_crops`, `verbose_mode`, …) are user-facing
+  switches: each must have a matching checkbox in `src/ui/options.py`, persisted
+  via `ConfigManager`. Adding a new debug flag means adding its toggle too —
+  never ini-edit-only.
 
 ## POI schema
 All POIs are user-owned. `%LOCALAPPDATA%\SpaceDrive\data\user_poi.json` is the

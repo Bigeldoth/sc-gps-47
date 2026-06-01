@@ -298,9 +298,13 @@ class OptionsWindow(QDialog):
         self.save_ocr_check = QCheckBox("Save OCR debug images (debug_capture_*.png)")
         self.save_glyph_check = QCheckBox("Save segmented glyph crops (data/glyphs/)")
         self.verbose_check = QCheckBox("Verbose OCR logging")
+        self.record_telemetry_check = QCheckBox(
+            "Record navigation telemetry (logs/telemetry-*.jsonl)"
+        )
         layout.addWidget(self.save_ocr_check)
         layout.addWidget(self.save_glyph_check)
         layout.addWidget(self.verbose_check)
+        layout.addWidget(self.record_telemetry_check)
 
         form = QFormLayout()
         self.log_level_combo = QComboBox()
@@ -529,6 +533,7 @@ class OptionsWindow(QDialog):
         self.save_ocr_check.setChecked(self._cfg_bool('Debug', 'save_ocr_images', False))
         self.save_glyph_check.setChecked(self._cfg_bool('Debug', 'save_glyph_crops', False))
         self.verbose_check.setChecked(self._cfg_bool('Debug', 'verbose_mode', False))
+        self.record_telemetry_check.setChecked(self._cfg_bool('Debug', 'record_telemetry', False))
         level = cfg.get('Logging', 'level', fallback='INFO').upper()
         idx = self.log_level_combo.findText(level)
         if idx >= 0:
@@ -619,6 +624,7 @@ class OptionsWindow(QDialog):
             self._set_cfg('Debug', 'save_ocr_images', self.save_ocr_check.isChecked())
             self._set_cfg('Debug', 'save_glyph_crops', self.save_glyph_check.isChecked())
             self._set_cfg('Debug', 'verbose_mode', self.verbose_check.isChecked())
+            self._set_cfg('Debug', 'record_telemetry', self.record_telemetry_check.isChecked())
             self._set_cfg('Logging', 'level', self.log_level_combo.currentText())
 
             # Hotkeys
