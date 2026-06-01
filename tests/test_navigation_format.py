@@ -1,10 +1,11 @@
 """Unit tests for navigation.format_distance and calculate_distance."""
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from navigation import NavigationEngine, format_distance
+from navigation import NavigationEngine, format_distance, _ZONE_GRACE_PERIOD_S
 
 
 def test_format_distance_none():
@@ -65,13 +66,27 @@ def test_calculate_distance_same_point():
 # ---- Distance with OOC mismatch ----
 
 def test_distance_ooc_mismatch_returns_none():
-    """Target on Hurston, player on Microtech: distance makes no sense."""
+    """Target on Hurston, player on Microtech: once the in-zone grace period has
+    elapsed without an OCR-confirmed zone match, the distance is None."""
     nav = NavigationEngine()
     nav.set_target(130.0, 50.0, 990.0, "Target_Hurston", ooc="Stanton_1_Hurston")
+    # Simulate the grace window having expired with no confirmed zone lock.
+    nav._zone_last_match_ts = time.monotonic() - (_ZONE_GRACE_PERIOD_S + 10)
     d = nav.calculate_distance(
         {"x": 200.0, "y": 100.0, "z": 50.0, "ooc": "Stanton_4_Microtech"}
     )
     assert d is None
+
+
+def test_distance_ooc_mismatch_within_grace_assumes_in_zone():
+    """Right after set_target the player is assumed in-zone (3-min grace), so a
+    distance is returned even before any OCR zone match — even on a mismatch."""
+    nav = NavigationEngine()
+    nav.set_target(100.0, 0.0, 0.0, "Target_H", ooc="Stanton_1_Hurston")
+    d = nav.calculate_distance(
+        {"x": 0.0, "y": 0.0, "z": 0.0, "ooc": "Stanton_4_Microtech"}
+    )
+    assert abs(d - 100.0) < 1e-6
 
 
 def test_distance_ooc_match_computed():
@@ -84,9 +99,11 @@ def test_distance_ooc_match_computed():
 
 
 def test_distance_legacy_target_no_ooc_returns_none():
-    """Legacy POI without ooc → cannot navigate."""
+    """Legacy POI without ooc: no zone can ever be confirmed (update_zone_tracking
+    needs both OOCs), so once the grace window expires it is out-of-zone → None."""
     nav = NavigationEngine()
     nav.set_target(100.0, 200.0, 300.0, "POI_legacy", ooc=None)
+    nav._zone_last_match_ts = time.monotonic() - (_ZONE_GRACE_PERIOD_S + 10)
     d = nav.calculate_distance(
         {"x": 100.0, "y": 200.0, "z": 300.0, "ooc": "Stanton_1_Hurston"}
     )
@@ -96,10 +113,27 @@ def test_distance_legacy_target_no_ooc_returns_none():
 def test_is_target_in_same_ooc():
     nav = NavigationEngine()
     nav.set_target(0, 0, 0, "T", ooc="A")
+    # During the grace window the player is assumed in-zone regardless of the
+    # currently-read zone (matching, mismatched, or missing).
     assert nav.is_target_in_same_ooc({"x": 1, "ooc": "A"}) is True
+    assert nav.is_target_in_same_ooc({"x": 1, "ooc": "B"}) is True
+    assert nav.is_target_in_same_ooc({"x": 1, "ooc": None}) is True
+    assert nav.is_target_in_same_ooc({"x": 1}) is True
+
+    # Once OCR confirms the zone the lock is permanent: a later mismatch or an
+    # expired grace timer still reads as in-zone.
+    nav.update_zone_tracking({"x": 1, "ooc": "A"})
+    nav._zone_last_match_ts = time.monotonic() - (_ZONE_GRACE_PERIOD_S + 10)
+    assert nav.is_target_in_same_ooc({"x": 1, "ooc": "B"}) is True
+
+
+def test_is_target_out_of_zone_after_grace_without_lock():
+    """No confirmed lock + expired grace window → out of zone."""
+    nav = NavigationEngine()
+    nav.set_target(0, 0, 0, "T", ooc="A")
+    nav._zone_last_match_ts = time.monotonic() - (_ZONE_GRACE_PERIOD_S + 10)
+    assert nav.is_target_in_same_ooc({"x": 1, "ooc": "A"}) is False
     assert nav.is_target_in_same_ooc({"x": 1, "ooc": "B"}) is False
-    assert nav.is_target_in_same_ooc({"x": 1, "ooc": None}) is False
-    assert nav.is_target_in_same_ooc({"x": 1}) is False
 
 
 def test_add_user_point_records_ooc():
