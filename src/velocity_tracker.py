@@ -36,20 +36,22 @@ logger = logging.getLogger(__name__)
 class _KalmanCV1D:
     """1-D constant-velocity Kalman filter. State = [position, velocity]."""
 
-    def __init__(self, sigma_a, sigma_z):
+    def __init__(self, sigma_a, sigma_z, v_var0=1e6):
         self._q = sigma_a * sigma_a   # acceleration (process) noise PSD
         self._r = sigma_z * sigma_z   # measurement noise variance
+        self._v_var0 = v_var0         # initial velocity variance (bounded)
         self.p = 0.0
         self.v = 0.0
         # 2x2 covariance, row-major [[P00, P01], [P10, P11]].
-        self.P = [[1e6, 0.0], [0.0, 1e6]]
+        self.P = [[1e6, 0.0], [0.0, v_var0]]
 
     def initialize(self, z):
-        """Seed position from the first measurement; velocity stays diffuse so
-        the next update sets it close to the finite difference."""
+        """Seed position from the first measurement. Initial velocity variance
+        is bounded (``v_var0``) so an early noisy finite difference cannot latch
+        the filter onto an impossible speed."""
         self.p = z
         self.v = 0.0
-        self.P = [[self._r, 0.0], [0.0, 1e6]]
+        self.P = [[self._r, 0.0], [0.0, self._v_var0]]
 
     def predict(self, dt):
         """Advance state + covariance by ``dt`` seconds (no measurement)."""
@@ -108,6 +110,11 @@ class VelocityTracker:
     GATE_NIS = 30.0
     # Max dead-reckoning window before integrity degrades to LOST.
     COAST_S = 2.0
+    # Physical speed ceiling (SC tops out ~1.4 km/s/axis; 2.5 km/s 3D leaves
+    # margin). The velocity estimate is clamped to this and the initial velocity
+    # covariance is bounded by it, so the filter can never latch onto an
+    # impossible speed (e.g. from an early misread or a diverged coast).
+    MAX_SPEED_KM_S = 2.5
 
     def __init__(self, min_speed_km_s=None, smoothing_alpha=None,
                  sigma_a=None, sigma_z=None):
@@ -118,9 +125,10 @@ class VelocityTracker:
         # tuned is gone); it no longer has any effect.
         sa = sigma_a if sigma_a is not None else self.SIGMA_A_KM_S2
         sz = sigma_z if sigma_z is not None else self.SIGMA_Z_KM
-        self._fx = _KalmanCV1D(sa, sz)
-        self._fy = _KalmanCV1D(sa, sz)
-        self._fz = _KalmanCV1D(sa, sz)
+        v_var0 = self.MAX_SPEED_KM_S ** 2
+        self._fx = _KalmanCV1D(sa, sz, v_var0)
+        self._fy = _KalmanCV1D(sa, sz, v_var0)
+        self._fz = _KalmanCV1D(sa, sz, v_var0)
         self._init = False          # filter seeded with a first sample
         self._has_velocity = False  # at least one predict+update done
         self._moving = False
@@ -150,6 +158,13 @@ class VelocityTracker:
             logger.debug("VelocityTracker reset (dt=%.1fs > %.1fs)", dt, self.MAX_DT_S)
             self._seed(x, y, z, t)
             return True
+        if self._last_accept_t is not None and (t - self._last_accept_t) > self.COAST_S:
+            # Coasted past the integrity window (LOST): the velocity estimate is
+            # stale/diverged. Re-seed from this fix (v=0) rather than correcting
+            # a bad filter — prevents the velocity lock-up seen in the field.
+            logger.debug("VelocityTracker re-seed on LOST recovery")
+            self._seed(x, y, z, t)
+            return True
 
         self._fx.predict(dt)
         self._fy.predict(dt)
@@ -169,6 +184,7 @@ class VelocityTracker:
         self._fx.update(x)
         self._fy.update(y)
         self._fz.update(z)
+        self._clamp_speed()
         self._has_velocity = True
         self._last_accept_t = t
         self._update_moving()
@@ -200,6 +216,20 @@ class VelocityTracker:
         self._moving = False
         self._last_t = t
         self._last_accept_t = t
+
+    def _clamp_speed(self):
+        """Bound the 3D velocity magnitude to MAX_SPEED_KM_S (physical ceiling).
+
+        Hard guarantee against impossible speeds regardless of filter dynamics —
+        the last line of defence behind the bounded init covariance and the
+        LOST-recovery re-seed.
+        """
+        spd = math.sqrt(self._fx.v ** 2 + self._fy.v ** 2 + self._fz.v ** 2)
+        if spd > self.MAX_SPEED_KM_S:
+            s = self.MAX_SPEED_KM_S / spd
+            self._fx.v *= s
+            self._fy.v *= s
+            self._fz.v *= s
 
     def _update_moving(self):
         spd = self.speed_km_s
@@ -269,9 +299,10 @@ class VelocityTracker:
         """Discard all state and restart estimation."""
         sa = math.sqrt(self._fx._q)
         sz = math.sqrt(self._fx._r)
-        self._fx = _KalmanCV1D(sa, sz)
-        self._fy = _KalmanCV1D(sa, sz)
-        self._fz = _KalmanCV1D(sa, sz)
+        v_var0 = self.MAX_SPEED_KM_S ** 2
+        self._fx = _KalmanCV1D(sa, sz, v_var0)
+        self._fy = _KalmanCV1D(sa, sz, v_var0)
+        self._fz = _KalmanCV1D(sa, sz, v_var0)
         self._init = False
         self._has_velocity = False
         self._moving = False

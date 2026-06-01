@@ -33,19 +33,21 @@ def test_second_sample_basic_velocity():
     vt.add_sample(0.0, 0.0, 0.0, t=0.0)
     vt.add_sample(1.0, 0.0, 0.0, t=1.0)  # 1 km in 1 s ~= 1 km/s
     vx, vy, vz = vt.velocity
-    # Diffuse prior => first velocity estimate tracks the finite difference.
-    assert abs(vx - 1.0) < 1e-3
-    assert abs(vy) < 1e-3
-    assert abs(vz) < 1e-3
-    assert abs(vt.speed_km_s - 1.0) < 1e-3
+    # Bounded-init prior => the first velocity estimate is close to (slightly
+    # damped vs) the finite difference; it converges over the next few samples.
+    assert abs(vx - 1.0) < 0.1
+    assert abs(vy) < 0.05
+    assert abs(vz) < 0.05
+    assert abs(vt.speed_km_s - 1.0) < 0.1
     assert vt.is_moving is True
 
 
 def test_diagonal_velocity():
+    # 3-4-5 ratio at a physical speed (0.5 km/s, below the MAX_SPEED clamp).
     vt = VelocityTracker()
     vt.add_sample(0.0, 0.0, 0.0, t=0.0)
-    vt.add_sample(3.0, 4.0, 0.0, t=1.0)  # speed 5 km/s (3-4-5 triangle)
-    assert abs(vt.speed_km_s - 5.0) < 1e-2
+    vt.add_sample(0.3, 0.4, 0.0, t=1.0)  # speed 0.5 km/s
+    assert abs(vt.speed_km_s - 0.5) < 0.05
 
 
 def test_velocity_converges_constant():
@@ -111,14 +113,44 @@ def test_innovation_gate_rejects_outlier():
 
 
 def test_gate_widens_after_gap():
-    # After a coast the covariance grows, so a large but legitimate continued
-    # move is accepted instead of being rejected as an implausible jump.
+    # Within the coast window the covariance grows, so a larger-than-usual but
+    # plausible continued move is accepted (the gate widens), not rejected.
     vt = VelocityTracker()
     vt.add_sample(0.0, 0.0, 0.0, t=0.0)
     vt.add_sample(0.2, 0.0, 0.0, t=0.4)   # ~0.5 km/s
-    vt.predict_only(2.6)                  # ~2.2 s dropout
-    accepted = vt.add_sample(1.3, 0.0, 0.0, t=2.8)
+    vt.predict_only(1.4)                  # 1.0 s dropout, still within COAST_S
+    accepted = vt.add_sample(0.7, 0.0, 0.0, t=1.6)
     assert accepted is True
+
+
+def test_speed_never_exceeds_physical_max():
+    # A2.1 hardening: whatever the filter does on a pathological track, the
+    # reported speed must stay within the physical ceiling (no 17 km/s lock-up).
+    vt = VelocityTracker()
+    t = 0.0
+    p = 0.0
+    for _ in range(15):
+        p += 3.0          # 3 km per 0.4 s step = 7.5 km/s (impossible)
+        t += 0.4
+        vt.add_sample(p, 0.0, 0.0, t=t)
+        assert vt.speed_km_s <= VelocityTracker.MAX_SPEED_KM_S + 1e-9
+
+
+def test_reseed_on_lost_recovery():
+    # A2.1 hardening: a fix that arrives after the coast window expired must
+    # re-seed (velocity not carried over) rather than correcting a diverged
+    # filter — this is what fixed the field velocity lock-up.
+    vt = VelocityTracker()
+    vt.add_sample(0.0, 0.0, 0.0, t=0.0)
+    vt.add_sample(0.4, 0.0, 0.0, t=1.0)            # ~0.4 km/s, FRESH
+    assert vt.velocity is not None
+    vt.predict_only(1.0 + VelocityTracker.COAST_S + 0.5)  # coast past the window
+    assert vt.integrity == "LOST"
+    accepted = vt.add_sample(0.42, 0.0, 0.0, t=1.0 + VelocityTracker.COAST_S + 0.9)
+    assert accepted is True
+    assert vt.integrity == "FRESH"      # recovered
+    assert vt.velocity is None          # re-seeded: velocity not yet re-built
+    assert vt.speed_km_s == 0.0
 
 
 def test_predict_only_dead_reckons():
