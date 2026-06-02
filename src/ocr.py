@@ -588,6 +588,11 @@ class OCRProcessor:
         }
         self._paddle_stats_last_log = 0
         self.engine = engine.lower()
+        # Track the requested engine and any fallback so the UI can warn the
+        # user when the engine they chose isn't actually running (e.g. Paddle
+        # selected but its sidecar venv isn't installed).
+        self.requested_engine = self.engine
+        self.fallback_reason = None
         self.pipeline_mode = (pipeline_mode or "hybrid").lower()
         if self.pipeline_mode not in ("hybrid", "full_text"):
             logger.warning(
@@ -611,6 +616,10 @@ class OCRProcessor:
                     "PaddleOCR init failed (%s) — falling back to Tesseract", exc
                 )
                 self.engine = "tesseract"
+                self.fallback_reason = (
+                    "Paddle engine unavailable - running on Tesseract. "
+                    "Install Paddle via Options > Manage engines."
+                )
                 self._init_tesseract(tesseract_path)
         elif self.engine == "paddle-vl":
             try:
@@ -631,15 +640,23 @@ class OCRProcessor:
                         device="cpu", model_dir=paddle_model_dir, lang=paddle_lang,
                     )
                     self.engine = "paddle"
+                    self.fallback_reason = (
+                        "Paddle-VL unavailable - running on Paddle (CPU)."
+                    )
                 except Exception as exc2:
                     logger.error(
                         "Paddle fallback also failed (%s) — using Tesseract", exc2,
                     )
                     self.engine = "tesseract"
+                    self.fallback_reason = (
+                        "Paddle-VL/Paddle unavailable - running on Tesseract. "
+                        "Install Paddle via Options > Manage engines."
+                    )
                     self._init_tesseract(tesseract_path)
         else:
             logger.warning(f"Unknown OCR engine '{engine}', falling back to Tesseract")
             self.engine = "tesseract"
+            self.fallback_reason = f"Unknown OCR engine '{engine}' - running on Tesseract."
             self._init_tesseract(tesseract_path)
 
         self._pool = ThreadPoolExecutor(max_workers=3)

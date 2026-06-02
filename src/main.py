@@ -651,6 +651,11 @@ class GPSOverlay(QMainWindow):
         self.setup_tray_icon()
         self._setup_worker_thread()
 
+        # Surface an engine fallback (e.g. Paddle selected but its sidecar isn't
+        # installed) so the user isn't silently left on Tesseract. Deferred so
+        # the tray icon and overlay are ready.
+        QTimer.singleShot(1500, self._check_engine_fallback)
+
         scan_interval = self.config_manager.get_scan_interval()
         self.timer = QTimer()
         self.timer.timeout.connect(self._request_update)
@@ -712,6 +717,24 @@ class GPSOverlay(QMainWindow):
         """Displays ephemeral message in nav_label in red."""
         self._overlay_message = (text, time.monotonic() + duration_s)
         self._refresh_nav_label()
+
+    def _check_engine_fallback(self):
+        """Warn (tray + overlay) when the configured OCR text engine fell back
+        to another — e.g. Paddle selected but its sidecar venv isn't installed,
+        so the app is silently running on Tesseract."""
+        ocr = getattr(self._worker, "ocr", None)
+        reason = getattr(ocr, "fallback_reason", None) if ocr is not None else None
+        if not reason:
+            return
+        logger.warning("OCR engine fallback surfaced to user: %s", reason)
+        self._show_overlay_message(reason, duration_s=8.0)
+        try:
+            self.tray_icon.showMessage(
+                "OCR engine fallback", reason,
+                QSystemTrayIcon.MessageIcon.Warning, 6000,
+            )
+        except Exception:
+            pass
 
     def _setup_worker_thread(self):
         self._worker_thread = QThread()
@@ -1520,6 +1543,10 @@ class GPSOverlay(QMainWindow):
             self._worker.reload_requested.emit()
         except Exception as exc:
             logger.error("Could not request OCR reload: %s", exc)
+
+        # After the (async) reload, surface any engine fallback so changing the
+        # text engine in Options to one that can't start is visible, not silent.
+        QTimer.singleShot(2500, self._check_engine_fallback)
 
     def _on_destination_changed(self, poi):
         self.nav.set_target(
