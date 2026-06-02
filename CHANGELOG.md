@@ -10,6 +10,26 @@ All notable changes to this project. Format inspired by [Keep a Changelog](https
 - Phase A of OCR optimization plan: color channel preprocessing (inspired by SC_OCR).
 - See [`docs/OCR_OPTIMIZATION_PLAN.md`](docs/OCR_OPTIMIZATION_PLAN.md).
 
+### Modified
+- **Daylight OCR preprocessing**: the binary threshold passes now run on a
+  white-tophat **background-flattened** channel (`sc_ocr.preprocess.flatten_background`),
+  which strips the bright, textured, slowly-varying daylight background
+  (desert/terrain) that global Otsu / small-block adaptive could not separate
+  from the thin HUD text. Field frames: km/m coordinate-token extraction roughly
+  doubled (30 → 61 across 22 frames) with no night regression; washout frames
+  that previously yielded *zero* parseable coordinates now produce a structured
+  OOC line. The CLAHE `enhanced` grayscale (NCC/ONNX classifier input) is left on
+  its own recipe, so the trained classifier's input distribution is unchanged.
+- Removed the `luminance > 140 → invert grayscale` channel branch: on real
+  daylight frames it made OCR worse (inverting light-on-light leaves the text in
+  the background). Text is now always kept bright; background suppression is
+  structural (tophat).
+
+### Added
+- `sc_ocr.preprocess.flatten_background()` (white-tophat) + `tests/test_preprocess.py`.
+- `[Debug] save_ocr_images` also dumps `debug_capture_flat.png` (the flattened
+  channel feeding the binary passes), to aid future daylight diagnosis.
+
 ---
 
 ## [0.6.0] — 2026-05-10
