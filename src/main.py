@@ -295,6 +295,11 @@ def _world_arrow(abs_bearing):
     return arrow_h + arrow_v
 
 
+_HEADING_FLIP_DEG = 60.0    # tick-to-tick velocity-heading swing above this is
+                            # jitter/jockeying, not a smooth turn
+_HEADING_RECOVER_S = 1.5    # show the stable world bearing for this long after
+
+
 def _velocity_arrow(yaw_off, pitch_off=None):
     """Velocity-relative guidance arrow (car-GPS style).
 
@@ -535,6 +540,11 @@ class GPSOverlay(QMainWindow):
         self._smoothed_pitch_off = None
         self._last_raw_yaw_off = None
         self._last_raw_pitch_off = None
+        # Velocity-heading confidence: the last heading and a cooldown timestamp.
+        # While the heading is jumpy (jockeying near the target) the overlay
+        # shows the stable world bearing instead of a flipping turn arrow.
+        self._last_vel_heading = None
+        self._heading_unstable_until = 0.0
 
         # Optional per-tick navigation telemetry (off by default). Records a
         # JSONL trace of positions, dropouts and rejects for offline replay /
@@ -1148,6 +1158,16 @@ class GPSOverlay(QMainWindow):
             return
         yaw_off, pitch_off = bearing
 
+        # Track velocity-heading stability: a large tick-to-tick swing means the
+        # player is jockeying / the heading is jittery, so flag a cooldown during
+        # which _refresh_nav_label shows the stable world bearing instead.
+        vel_heading = math.degrees(math.atan2(-vx, vy))
+        if self._last_vel_heading is not None:
+            dh = abs(((vel_heading - self._last_vel_heading + 180.0) % 360.0) - 180.0)
+            if dh > _HEADING_FLIP_DEG:
+                self._heading_unstable_until = time.monotonic() + _HEADING_RECOVER_S
+        self._last_vel_heading = vel_heading
+
         # VelocityTracker already applies EMA to the velocity vector itself,
         # so yaw_off is already smoothed. A second EMA here adds 1-2 s of lag
         # when changing direction and was causing stale arrows (e.g. ←112° when
@@ -1156,6 +1176,12 @@ class GPSOverlay(QMainWindow):
         self._smoothed_pitch_off = pitch_off
         self._last_raw_yaw_off = yaw_off
         self._last_raw_pitch_off = pitch_off
+
+    def _velocity_heading_confident(self):
+        """True when the velocity heading is steady enough to drive the turn
+        arrow. After a large heading swing (jockeying / jitter) we stay
+        un-confident for HEADING_RECOVER_S and show the stable world bearing."""
+        return time.monotonic() >= self._heading_unstable_until
 
     def _coast_guidance(self, t_capture):
         """Dead-reckon guidance for a tick with no accepted OCR fix.
@@ -1254,7 +1280,7 @@ class GPSOverlay(QMainWindow):
         arrow_str = ""
         if within_arrival:
             arrow_str = "  ●"
-        elif self._smoothed_yaw_off is not None:
+        elif self._smoothed_yaw_off is not None and self._velocity_heading_confident():
             is_surface = self.nav.target.get("kind") == "surface"
             pitch_arg = None if is_surface else self._smoothed_pitch_off
             arrow = _velocity_arrow(self._smoothed_yaw_off, pitch_arg)
@@ -1541,6 +1567,8 @@ class GPSOverlay(QMainWindow):
         # (and a phantom value in telemetry) after navigation is stopped.
         self._smoothed_distance_km = None
         self._last_raw_distance_km = None
+        self._last_vel_heading = None
+        self._heading_unstable_until = 0.0
         had_target = self.nav.target is not None
         self.nav.clear_target()
         self._refresh_nav_label()
