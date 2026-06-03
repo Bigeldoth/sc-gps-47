@@ -48,7 +48,7 @@ from sc_ocr.preprocess import isolate_channel, flatten_background
 logger = logging.getLogger(__name__)
 
 CAPTURE_WIDTH = 600
-CAPTURE_HEIGHT = 45
+CAPTURE_HEIGHT = 60
 
 # Canonical upscale factor applied to the HUD strip before OCR / classification.
 # ×3 brings the average HUD char height from ~16 px native to ~48 px — the
