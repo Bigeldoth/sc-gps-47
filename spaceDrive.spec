@@ -8,7 +8,7 @@
 #
 # The Paddle sidecar (.venv-paddle/) is NOT bundled here — it lives under
 # %LOCALAPPDATA%\SpaceDrive\ and is provisioned post-install by the Engine
-# Manager via scripts/install_paddle.ps1. Same for paddle-vl.
+# Manager via scripts/install_paddle.ps1.
 
 block_cipher = None
 
@@ -32,7 +32,6 @@ a = Analysis(
         # Sidecar provisioners + worker (Engine Manager calls these post-install)
         ('scripts\\paddle_worker.py', 'scripts'),
         ('scripts\\install_paddle.ps1', 'scripts'),
-        ('scripts\\install_paddle_vl.ps1', 'scripts'),
     ],
     hiddenimports=[
         'mss',
@@ -59,8 +58,6 @@ a = Analysis(
         'engine_installer',
         'paddle_adapter',
         'paddle_service',
-        'paddle_vl_adapter',
-        'paddle_vl_service',
         'sc_ocr',
         'sc_ocr.preprocess',
         'sc_ocr.segment',

@@ -14,7 +14,6 @@ venv/
 env/
 .env/
 .venv-paddle/
-.venv-paddle-vl/
 
 # IDE and Editor files
 .vscode/

@@ -16,10 +16,32 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                              QHeaderView, QMessageBox, QKeySequenceEdit, QWidget,
                              QTabWidget, QCheckBox, QComboBox, QSpinBox, QDoubleSpinBox,
                              QFormLayout)
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QPalette, QColor, QFontDatabase, QFont
 
 logger = logging.getLogger(__name__)
+
+
+class _GpuProbeThread(QThread):
+    """Probes CUDA / paddle-GPU status off the UI thread.
+
+    The probe can spawn nvidia-smi and a sidecar-venv paddle import (~2.7 s
+    cold), so it must never run on the UI thread — otherwise the Options dialog
+    freezes for seconds on open. Results are memoised in engine_installer, so a
+    warm probe returns in ~5 ms.
+    """
+
+    done = pyqtSignal(bool, str, str)  # cuda_available, gpu_status, gpu_msg
+
+    def run(self):
+        cuda_available, gpu_status, gpu_msg = False, "no_gpu", ""
+        try:
+            from engine_installer import detect_cuda, detect_gpu_paddle_status
+            cuda_available = detect_cuda()
+            gpu_status, gpu_msg = detect_gpu_paddle_status()
+        except Exception:
+            logger.debug("GPU availability probe failed", exc_info=True)
+        self.done.emit(cuda_available, gpu_status, gpu_msg)
 
 
 class OptionsWindow(QDialog):
@@ -152,7 +174,7 @@ class OptionsWindow(QDialog):
         form = QFormLayout()
 
         self.text_engine_combo = QComboBox()
-        self.text_engine_combo.addItems(["tesseract", "paddle", "paddle-vl"])
+        self.text_engine_combo.addItems(["tesseract", "paddle"])
         form.addRow("Text engine:", self.text_engine_combo)
 
         self.pipeline_mode_combo = QComboBox()
@@ -184,10 +206,9 @@ class OptionsWindow(QDialog):
         layout.addLayout(button_row)
 
         # Disable the GPU option if CUDA cannot be detected on this machine.
-        self._apply_gpu_availability()
-        # Grey out 'paddle-vl' in the text engine combo if its venv isn't
-        # provisioned yet (avoids selecting an engine the worker can't load).
-        self._apply_paddle_vl_availability()
+        # Probed asynchronously so the dialog opens instantly (see
+        # _start_gpu_availability_probe); the GPU entry is greyed when it returns.
+        self._start_gpu_availability_probe()
 
         layout.addWidget(self._hint(
             "Text engine = tesseract → fast, requires Tesseract-OCR installed.\n"
@@ -201,7 +222,18 @@ class OptionsWindow(QDialog):
         widget.setLayout(layout)
         return widget
 
-    def _apply_gpu_availability(self):
+    def _start_gpu_availability_probe(self):
+        """Kicks off the background CUDA/paddle-GPU probe.
+
+        Non-blocking: the GPU combo entry starts enabled (optimistic) and is
+        greyed by `_apply_gpu_status` once the probe finishes. Keeps a reference
+        to the thread so it isn't garbage-collected mid-run.
+        """
+        self._gpu_probe = _GpuProbeThread(self)
+        self._gpu_probe.done.connect(self._apply_gpu_status)
+        self._gpu_probe.start()
+
+    def _apply_gpu_status(self, cuda_available, gpu_status, gpu_msg):
         """Greys out the GPU choice when CUDA is missing or the local GPU is
         too new for the current paddlepaddle build. Tristate-aware:
           - 'ok'                     → GPU enabled
@@ -209,16 +241,6 @@ class OptionsWindow(QDialog):
                                        Manage engines… → Migrate
           - 'too_new' / 'no_gpu'     → GPU disabled, generic tooltip
         """
-        cuda_available = False
-        gpu_status = "no_gpu"
-        gpu_msg = ""
-        try:
-            from engine_installer import detect_cuda, detect_gpu_paddle_status
-            cuda_available = detect_cuda()
-            gpu_status, gpu_msg = detect_gpu_paddle_status()
-        except Exception:
-            pass
-
         gpu_index = self.paddle_device_combo.findText("gpu")
         if gpu_index < 0:
             return
@@ -234,6 +256,14 @@ class OptionsWindow(QDialog):
                 gpu_index, "", Qt.ItemDataRole.ToolTipRole,
             )
             return
+
+        # GPU turned out unavailable — if it is the current selection, fall
+        # back to CPU (mirrors the saved-device handling in _load_current_values).
+        if self.paddle_device_combo.currentText() == "gpu":
+            cpu_idx = self.paddle_device_combo.findText("cpu")
+            if cpu_idx >= 0:
+                self.paddle_device_combo.setCurrentIndex(cpu_idx)
+
         if gpu_status == "needs_blackwell_wheel":
             tooltip = (
                 gpu_msg + "\n\nClick 'Manage engines…' → 'Migrate to Blackwell "
@@ -247,33 +277,6 @@ class OptionsWindow(QDialog):
             gpu_index, tooltip, Qt.ItemDataRole.ToolTipRole,
         )
 
-    def _apply_paddle_vl_availability(self):
-        """Greys out the 'paddle-vl' text engine entry when its venv is missing.
-
-        Lets the user see the option (so they know it exists) but prevents
-        them from selecting it before the sidecar is installed via
-        Manage engines… → Install Paddle-VL.
-        """
-        vl_index = self.text_engine_combo.findText("paddle-vl")
-        if vl_index < 0:
-            return
-        try:
-            from engine_installer import detect_paddle_vl
-            installed = detect_paddle_vl().installed
-        except Exception:
-            installed = False
-        model = self.text_engine_combo.model()
-        item = model.item(vl_index)
-        if item is not None:
-            item.setEnabled(installed)
-        tooltip = (
-            "" if installed
-            else "Install via Manage engines… → Install Paddle-VL (advanced)"
-        )
-        self.text_engine_combo.setItemData(
-            vl_index, tooltip, Qt.ItemDataRole.ToolTipRole,
-        )
-
     def _open_engine_manager(self):
         try:
             from ui.engine_manager import EngineManagerDialog
@@ -285,9 +288,9 @@ class OptionsWindow(QDialog):
             return
         dlg = EngineManagerDialog(self, config_manager=self.config_manager)
         dlg.exec()
-        # Re-evaluate availability after the user may have installed/migrated.
-        self._apply_gpu_availability()
-        self._apply_paddle_vl_availability()
+        # Re-evaluate availability after the user may have installed/migrated
+        # (the manager cleared the detection cache, so this re-probes).
+        self._start_gpu_availability_probe()
 
     # ----- Debug tab -----
     def _create_debug_tab(self):

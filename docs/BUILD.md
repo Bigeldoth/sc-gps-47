@@ -78,7 +78,7 @@ Close the Sandbox window to discard everything.
 | ONNX glyph classifier | `models\spacedrive_ocr.onnx` | `C:\Program Files\SpaceDrive\models\` |
 | NCC templates | `data\templates\` | `C:\Program Files\SpaceDrive\data\` |
 | Default `config.ini` | `config.ini` | `C:\Program Files\SpaceDrive\` |
-| Sidecar provisioners | `scripts\paddle_worker.py`, `scripts\install_paddle.ps1`, `scripts\install_paddle_vl.ps1` | `C:\Program Files\SpaceDrive\scripts\` |
+| Sidecar provisioners | `scripts\paddle_worker.py`, `scripts\install_paddle.ps1` | `C:\Program Files\SpaceDrive\scripts\` |
 | Tesseract OCR | Downloaded from UB-Mannheim during install | `C:\Program Files\Tesseract-OCR\` |
 
 What the installer does **NOT** ship (handled in-app post-install):
@@ -88,7 +88,6 @@ What the installer does **NOT** ship (handled in-app post-install):
 | Python 3.12 (for Paddle sidecar) | First *Install PaddleOCR* click | per-user (no admin) |
 | `.venv-paddle/` + paddleocr + paddlepaddle (CPU) | *Install PaddleOCR (CPU)* | `%LOCALAPPDATA%\SpaceDrive\.venv-paddle\` |
 | `.venv-paddle/` + paddlepaddle-gpu | *Install PaddleOCR (GPU)* or *(Blackwell)* | same |
-| `.venv-paddle-vl/` + paddleocr[doc-parser] | *Install Paddle-VL* | `%LOCALAPPDATA%\SpaceDrive\.venv-paddle-vl\` |
 
 ---
 
@@ -99,7 +98,6 @@ What the installer does **NOT** ship (handled in-app post-install):
 ```
 SpaceDrive\
 ├── .venv-paddle\         # PaddleOCR sidecar (Python 3.12)        [optional]
-├── .venv-paddle-vl\      # PaddleOCR-VL sidecar (Python 3.12)     [optional]
 ├── downloads\            # Python 3.12 installer cache             [transient]
 ├── config.ini            # User overrides (read-write)             [first run]
 ├── user_poi.json         # User-defined POIs                       [first run]
