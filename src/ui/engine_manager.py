@@ -22,15 +22,13 @@ from engine_installer import (
     detect_cuda_version,
     detect_gpu_paddle_status,
     detect_gpu_unsupported_by_paddle,
-    detect_paddle_vl,
     detect_paddleocr,
     detect_paddlepaddle_gpu,
     detect_tesseract,
-    install_paddle_vl,
     install_paddleocr_cpu,
     install_paddleocr_gpu,
     migrate_paddle_to_blackwell,
-    uninstall_paddle_vl,
+    reset_detection_cache,
     uninstall_paddleocr,
 )
 
@@ -190,34 +188,6 @@ class EngineManagerDialog(QDialog):
         paddle_row.addStretch()
         layout.addLayout(paddle_row)
 
-        # ── PaddleOCR-VL (advanced sidecar) ─────────────────────────────
-        layout.addSpacing(12)
-        self.paddle_vl_label = QLabel()
-        self.paddle_vl_label.setTextFormat(Qt.TextFormat.RichText)
-        layout.addWidget(self.paddle_vl_label)
-
-        vl_hint = QLabel(
-            "<span style='color:#888'>Advanced: heavy VL pipeline "
-            "(PaddleOCR-VL-1.5-0.9B, ~3-5 GB VRAM, ~10× slower). "
-            "Recommended only for snapshot/export, not real-time HUD scan.</span>"
-        )
-        vl_hint.setWordWrap(True)
-        layout.addWidget(vl_hint)
-
-        vl_row = QHBoxLayout()
-        self.install_paddle_vl_button = QPushButton("Install Paddle-VL (sidecar)")
-        self.install_paddle_vl_button.setObjectName("btn_neon")
-        self.install_paddle_vl_button.clicked.connect(self._on_install_paddle_vl)
-        vl_row.addWidget(self.install_paddle_vl_button)
-
-        self.uninstall_paddle_vl_button = QPushButton("Uninstall Paddle-VL")
-        self.uninstall_paddle_vl_button.setObjectName("btn_danger")
-        self.uninstall_paddle_vl_button.clicked.connect(self._on_uninstall_paddle_vl)
-        vl_row.addWidget(self.uninstall_paddle_vl_button)
-
-        vl_row.addStretch()
-        layout.addLayout(vl_row)
-
         progress_row = QHBoxLayout()
         self.progress = QProgressBar()
         self.progress.setRange(0, 0)  # busy indicator
@@ -287,6 +257,10 @@ class EngineManagerDialog(QDialog):
     # ----- Status refresh -----
 
     def _refresh_status(self):
+        # The Engine Manager is the authority on install state and is shown
+        # right after installs/uninstalls — drop the memoised detection results
+        # so the labels below reflect the real, current state.
+        reset_detection_cache()
         tess = detect_tesseract()
         if tess.installed:
             self.tesseract_label.setText(
@@ -346,32 +320,6 @@ class EngineManagerDialog(QDialog):
             paddle.installed and gpu_status == "needs_blackwell_wheel"
         )
         self.uninstall_paddle_button.setEnabled(paddle.installed)
-
-        # ── PaddleOCR-VL ────────────────────────────────────────────────
-        vl = detect_paddle_vl()
-        if vl.installed:
-            running = False
-            try:
-                from paddle_vl_service import get_service
-                running = get_service().is_running()
-            except Exception:
-                pass
-            badge = (
-                " <span style='color:#5c5'>● Service running on port 8118</span>"
-                if running else ""
-            )
-            self.paddle_vl_label.setText(
-                f"<b>PaddleOCR-VL</b>: ✓ Installed{badge}<br>"
-                f"<span style='color:#888'>{vl.detail}</span>"
-            )
-            self.install_paddle_vl_button.setText("Reinstall Paddle-VL")
-            self.uninstall_paddle_vl_button.setEnabled(True)
-        else:
-            self.paddle_vl_label.setText(
-                "<b>PaddleOCR-VL</b>: ✗ Not installed"
-            )
-            self.install_paddle_vl_button.setText("Install Paddle-VL (sidecar)")
-            self.uninstall_paddle_vl_button.setEnabled(False)
 
     # ----- Tesseract locate -----
 
@@ -558,7 +506,6 @@ class EngineManagerDialog(QDialog):
         gpu_status, _ = detect_gpu_paddle_status()
         cuda = detect_cuda()
         paddle_installed = detect_paddleocr().installed
-        vl_installed = detect_paddle_vl().installed
         self.install_paddle_cpu_button.setEnabled(enabled)
         self.install_paddle_gpu_button.setEnabled(
             enabled and cuda and gpu_status in ("ok", "needs_blackwell_wheel")
@@ -567,8 +514,6 @@ class EngineManagerDialog(QDialog):
         self.migrate_paddle_button.setEnabled(
             enabled and paddle_installed and gpu_status == "needs_blackwell_wheel"
         )
-        self.install_paddle_vl_button.setEnabled(enabled)
-        self.uninstall_paddle_vl_button.setEnabled(enabled and vl_installed)
 
     # ----- Button handlers -----
 
@@ -629,28 +574,3 @@ class EngineManagerDialog(QDialog):
             self._start_worker(
                 migrate_paddle_to_blackwell, "Migrating Paddle to cu129 wheel",
             )
-
-    def _on_install_paddle_vl(self):
-        confirm = QMessageBox.question(
-            self, "Install Paddle-VL",
-            "Install PaddleOCR-VL in a dedicated venv at "
-            "<code>.venv-paddle-vl/</code>?<br><br>"
-            "<b>Heavy install</b>: ~6 GB on disk, downloads the "
-            "PaddleOCR-VL-1.5-0.9B model on first run, and requires the "
-            "transformers backend (vLLM/SGLang unsupported on Windows).<br><br>"
-            "This is only useful for snapshot/export — it is ~10× slower "
-            "than standard paddle and not suited to real-time HUD scan.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        )
-        if confirm == QMessageBox.StandardButton.Yes:
-            self._start_worker(install_paddle_vl, "Installing PaddleOCR-VL")
-
-    def _on_uninstall_paddle_vl(self):
-        confirm = QMessageBox.question(
-            self, "Uninstall Paddle-VL",
-            "Remove the entire <code>.venv-paddle-vl/</code> directory? "
-            "(this frees ~6 GB)",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        )
-        if confirm == QMessageBox.StandardButton.Yes:
-            self._start_worker(uninstall_paddle_vl, "Removing PaddleOCR-VL venv")

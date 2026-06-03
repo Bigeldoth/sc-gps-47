@@ -152,7 +152,7 @@ class OptionsWindow(QDialog):
         form = QFormLayout()
 
         self.text_engine_combo = QComboBox()
-        self.text_engine_combo.addItems(["tesseract", "paddle", "paddle-vl"])
+        self.text_engine_combo.addItems(["tesseract", "paddle"])
         form.addRow("Text engine:", self.text_engine_combo)
 
         self.pipeline_mode_combo = QComboBox()
@@ -185,9 +185,6 @@ class OptionsWindow(QDialog):
 
         # Disable the GPU option if CUDA cannot be detected on this machine.
         self._apply_gpu_availability()
-        # Grey out 'paddle-vl' in the text engine combo if its venv isn't
-        # provisioned yet (avoids selecting an engine the worker can't load).
-        self._apply_paddle_vl_availability()
 
         layout.addWidget(self._hint(
             "Text engine = tesseract → fast, requires Tesseract-OCR installed.\n"
@@ -247,33 +244,6 @@ class OptionsWindow(QDialog):
             gpu_index, tooltip, Qt.ItemDataRole.ToolTipRole,
         )
 
-    def _apply_paddle_vl_availability(self):
-        """Greys out the 'paddle-vl' text engine entry when its venv is missing.
-
-        Lets the user see the option (so they know it exists) but prevents
-        them from selecting it before the sidecar is installed via
-        Manage engines… → Install Paddle-VL.
-        """
-        vl_index = self.text_engine_combo.findText("paddle-vl")
-        if vl_index < 0:
-            return
-        try:
-            from engine_installer import detect_paddle_vl
-            installed = detect_paddle_vl().installed
-        except Exception:
-            installed = False
-        model = self.text_engine_combo.model()
-        item = model.item(vl_index)
-        if item is not None:
-            item.setEnabled(installed)
-        tooltip = (
-            "" if installed
-            else "Install via Manage engines… → Install Paddle-VL (advanced)"
-        )
-        self.text_engine_combo.setItemData(
-            vl_index, tooltip, Qt.ItemDataRole.ToolTipRole,
-        )
-
     def _open_engine_manager(self):
         try:
             from ui.engine_manager import EngineManagerDialog
@@ -287,7 +257,6 @@ class OptionsWindow(QDialog):
         dlg.exec()
         # Re-evaluate availability after the user may have installed/migrated.
         self._apply_gpu_availability()
-        self._apply_paddle_vl_availability()
 
     # ----- Debug tab -----
     def _create_debug_tab(self):

@@ -206,39 +206,6 @@ class ConfigManager:
             self.config.add_section('OCR')
         self.config.set('OCR', 'paddle_lang', lang)
 
-    # ── PaddleOCR-VL sidecar ────────────────────────────────────────────
-
-    def get_paddle_vl_endpoint(self):
-        return self.config.get(
-            'OCR', 'paddle_vl_endpoint', fallback='http://127.0.0.1:8118',
-        )
-
-    def set_paddle_vl_endpoint(self, endpoint):
-        if not self.config.has_section('OCR'):
-            self.config.add_section('OCR')
-        self.config.set('OCR', 'paddle_vl_endpoint', endpoint)
-
-    def get_paddle_vl_model(self):
-        return self.config.get(
-            'OCR', 'paddle_vl_model', fallback='PaddleOCR-VL-1.5-0.9B',
-        )
-
-    def set_paddle_vl_model(self, model):
-        if not self.config.has_section('OCR'):
-            self.config.add_section('OCR')
-        self.config.set('OCR', 'paddle_vl_model', model)
-
-    def get_paddle_vl_backend(self):
-        value = self.config.get(
-            'OCR', 'paddle_vl_backend', fallback='transformers',
-        ).lower()
-        return value if value in ('transformers', 'vllm', 'sglang') else 'transformers'
-
-    def set_paddle_vl_backend(self, backend):
-        if not self.config.has_section('OCR'):
-            self.config.add_section('OCR')
-        self.config.set('OCR', 'paddle_vl_backend', backend.lower())
-
     def get_tesseract_lang(self):
         """Tesseract language pack to use (`eng` is the stock pretrained
         English model; `spacedrive` is the project's fine-tuned LSTM —

@@ -561,9 +561,6 @@ class OCRProcessor:
         paddle_device="cpu",
         paddle_model_dir="",
         paddle_lang="en",
-        paddle_vl_endpoint="http://127.0.0.1:8118",
-        paddle_vl_model="PaddleOCR-VL-1.5-0.9B",
-        paddle_vl_backend="transformers",
         paddle_min_confidence=0.30,
         tesseract_lang="eng",
         tesseract_tessdata_dir="",
@@ -600,11 +597,8 @@ class OCRProcessor:
             )
             self.pipeline_mode = "hybrid"
         self.tesseract_config = _build_tesseract_config()
-        # `_paddle_adapter` is used uniformly for both `paddle` and `paddle-vl`
-        # — only the concrete class behind it differs. `_paddle_vl_service`
-        # is set only in the `paddle-vl` path so shutdown() can stop it.
+        # Lazily created when the `paddle` engine is selected.
         self._paddle_adapter = None
-        self._paddle_vl_service = None
 
         if self.engine == "tesseract":
             self._init_tesseract(tesseract_path)
@@ -621,38 +615,6 @@ class OCRProcessor:
                     "Install Paddle via Options > Manage engines."
                 )
                 self._init_tesseract(tesseract_path)
-        elif self.engine == "paddle-vl":
-            try:
-                self._init_paddle_vl(
-                    endpoint=paddle_vl_endpoint,
-                    model=paddle_vl_model,
-                    backend=paddle_vl_backend,
-                )
-            except Exception as exc:
-                logger.error(
-                    "PaddleOCR-VL init failed (%s) — falling back to paddle (CPU)",
-                    exc,
-                )
-                # Best-effort fallback: try standard paddle on CPU. If that
-                # also fails (no paddle install at all), drop to tesseract.
-                try:
-                    self._init_paddle(
-                        device="cpu", model_dir=paddle_model_dir, lang=paddle_lang,
-                    )
-                    self.engine = "paddle"
-                    self.fallback_reason = (
-                        "Paddle-VL unavailable - running on Paddle (CPU)."
-                    )
-                except Exception as exc2:
-                    logger.error(
-                        "Paddle fallback also failed (%s) — using Tesseract", exc2,
-                    )
-                    self.engine = "tesseract"
-                    self.fallback_reason = (
-                        "Paddle-VL/Paddle unavailable - running on Tesseract. "
-                        "Install Paddle via Options > Manage engines."
-                    )
-                    self._init_tesseract(tesseract_path)
         else:
             logger.warning(f"Unknown OCR engine '{engine}', falling back to Tesseract")
             self.engine = "tesseract"
@@ -740,39 +702,6 @@ class OCRProcessor:
 
         logger.info("Tesseract OCR initialized")
 
-    def _init_paddle_vl(self, endpoint: str, model: str, backend: str):
-        """Starts the PaddleOCR-VL sidecar (if needed) and points the adapter
-        at its HTTP endpoint.
-
-        The sidecar lives in its own venv (`.venv-paddle-vl/`) and exposes an
-        OpenAI-style chat completions API. We block here for up to 90s so the
-        worker thread can know recognize() will succeed by the time we return.
-        """
-        from paddle_vl_service import get_service
-        from paddle_vl_adapter import PaddleVLAdapter
-
-        # Parse host/port out of the endpoint so the service singleton can be
-        # rebuilt on config changes (different port/backend → new service).
-        from urllib.parse import urlparse
-        parsed = urlparse(endpoint)
-        port = parsed.port or 8118
-
-        self._paddle_vl_service = get_service(
-            model=model, backend=backend, port=port,
-        )
-        started = self._paddle_vl_service.start(blocking=True, timeout=90.0)
-        if not started:
-            raise RuntimeError(
-                "PaddleOCR-VL sidecar did not become ready within 90s"
-            )
-        self._paddle_adapter = PaddleVLAdapter(
-            endpoint=endpoint, model=model,
-        )
-        logger.info(
-            "OCR engine: paddle-vl (endpoint=%s, model=%s, backend=%s)",
-            endpoint, model, backend,
-        )
-
     def _init_paddle(self, device: str, model_dir: str, lang: str):
         """Lazily creates the PaddleOCR adapter."""
         from paddle_adapter import PaddleAdapter
@@ -787,8 +716,7 @@ class OCRProcessor:
         )
 
     def _ocr_image_to_text(self, img):
-        # Both `paddle` and `paddle-vl` go through the same adapter interface.
-        if self.engine in ("paddle", "paddle-vl") and self._paddle_adapter is not None:
+        if self.engine == "paddle" and self._paddle_adapter is not None:
             return self._paddle_adapter.recognize(img)
         return pytesseract.image_to_string(
             img,
@@ -917,11 +845,11 @@ class OCRProcessor:
         tesseract_images = {k: v for k, v in images.items() if k in ('otsu', 'adaptive')}
 
         # full_text mode: skip NCC/ONNX entirely and run the configured text
-        # engine on whichever image source it prefers. Paddle / paddle-vl get
-        # the raw BGR crop (both have their own detection); Tesseract keeps
-        # the binary passes + multi-pass consensus.
+        # engine on whichever image source it prefers. Paddle gets the raw BGR
+        # crop (it has its own detection); Tesseract keeps the binary passes +
+        # multi-pass consensus.
         if self.pipeline_mode == "full_text":
-            if self.engine in ("paddle", "paddle-vl"):
+            if self.engine == "paddle":
                 source = raw_image if raw_image is not None else self._enhanced_image
                 if source is None:
                     logger.warning("full_text/%s: no image source available", self.engine)
@@ -960,10 +888,10 @@ class OCRProcessor:
                     return ncc_full
                 logger.debug("[ncc-first] NCC coords cached, Tesseract still needed for zone/metadata")
 
-        if self.engine in ("paddle", "paddle-vl"):
-            # Hybrid fallback for any paddle variant: single pass on the raw
-            # BGR crop (paddle/paddle-vl have their own detection — no need
-            # for binary thresholding nor multi-pass consensus).
+        if self.engine == "paddle":
+            # Hybrid fallback for paddle: single pass on the raw BGR crop
+            # (paddle has its own detection — no need for binary thresholding
+            # nor multi-pass consensus).
             source = raw_image if raw_image is not None else self._enhanced_image
             if source is not None:
                 result = self._extract_full_text_paddle(source, self._enhanced_image)
@@ -986,14 +914,11 @@ class OCRProcessor:
     def _extract_full_text_paddle(self, image, enhanced_image=None):
         """Runs PaddleOCR (one or two passes) and applies HUD parsing.
 
-        For the local `paddle` engine, a second pass on the CLAHE-enhanced
-        grayscale crop is run when available and the two passes are fed to
-        the same `_consensus_coords` voting used by Tesseract. This compensates
-        for Paddle's lack of native multi-pass: a single misrecognition
-        (clipped `km`, mangled `Pos:`, etc.) would otherwise drop the frame.
-
-        The remote `paddle-vl` engine is single-pass only — round-tripping
-        through its HTTP sidecar twice per frame would blow the budget.
+        For the `paddle` engine, a second pass on the CLAHE-enhanced grayscale
+        crop is run when available and the two passes are fed to the same
+        `_consensus_coords` voting used by Tesseract. This compensates for
+        Paddle's lack of native multi-pass: a single misrecognition (clipped
+        `km`, mangled `Pos:`, etc.) would otherwise drop the frame.
 
         Per-line confidences are exposed by `recognize_detailed()`. Lines
         below `self.paddle_min_confidence` are dropped before regex parsing.
@@ -1004,7 +929,7 @@ class OCRProcessor:
             return self._empty_data()
 
         self._paddle_stats["frames"] += 1
-        tag = self.engine  # 'paddle' or 'paddle-vl'
+        tag = self.engine  # 'paddle'
 
         # Single-pass only. The 2nd pass on the CLAHE-enhanced grayscale was
         # tried but never converged with the raw pass (consensus_hits=0 over
@@ -1070,7 +995,7 @@ class OCRProcessor:
         import time as _time
         t0 = _time.perf_counter()
         # Prefer recognize_detailed() (confidences exposed). Fall back to
-        # recognize() if the adapter pre-dates it (e.g. paddle-vl adapter).
+        # recognize() if the adapter does not implement it.
         if hasattr(self._paddle_adapter, "recognize_detailed"):
             detailed = self._paddle_adapter.recognize_detailed(image)
             texts = detailed.get("texts", []) or []
@@ -1543,14 +1468,6 @@ class OCRProcessor:
 
     def shutdown(self):
         self._pool.shutdown(wait=False)
-        # Stop the VL sidecar if this processor owns it. We keep the service
-        # alive on engine switches at runtime (it's expensive to restart), but
-        # on app exit / engine reload we tear it down.
-        if self._paddle_vl_service is not None:
-            try:
-                self._paddle_vl_service.stop()
-            except Exception as exc:
-                logger.warning("paddle-vl: stop() raised: %s", exc)
 
 
 if __name__ == "__main__":

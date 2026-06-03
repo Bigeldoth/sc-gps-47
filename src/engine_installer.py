@@ -11,6 +11,7 @@ want the app to run on 3.13/3.14. All paddle detection and install hits
 that venv via subprocess.
 """
 import ctypes
+import functools
 import importlib.util
 import json
 import logging
@@ -419,8 +420,13 @@ def detect_tesseract() -> EngineStatus:
     return EngineStatus(installed=False)
 
 
+@functools.lru_cache(maxsize=1)
 def detect_paddleocr() -> EngineStatus:
-    """Returns status for paddleocr inside the sidecar venv."""
+    """Returns status for paddleocr inside the sidecar venv.
+
+    Cached: probing the sidecar venv spawns a subprocess. Call
+    `reset_detection_cache()` after any install/uninstall to force a re-probe.
+    """
     if not venv_installed():
         return EngineStatus(installed=False, detail=f"venv missing at {VENV_DIR}")
     ok, out = _venv_query(
@@ -432,6 +438,7 @@ def detect_paddleocr() -> EngineStatus:
     return EngineStatus(installed=True, version=out, detail=str(VENV_DIR))
 
 
+@functools.lru_cache(maxsize=1)
 def detect_paddlepaddle_gpu() -> bool:
     """True if the sidecar venv has a GPU-enabled paddlepaddle build."""
     ok, out = _venv_query(
@@ -440,9 +447,12 @@ def detect_paddlepaddle_gpu() -> bool:
     return ok and out == "1"
 
 
+@functools.lru_cache(maxsize=1)
 def detect_gpu_compute_cap() -> str | None:
     """Returns the highest GPU compute capability on this machine (e.g. '12.0').
-    Falls back to None if nvidia-smi is absent or fails."""
+    Falls back to None if nvidia-smi is absent or fails.
+
+    Cached: invokes nvidia-smi (subprocess, ~1-3 s on first call)."""
     nvidia_smi = shutil.which("nvidia-smi")
     if not nvidia_smi:
         return None
@@ -459,6 +469,7 @@ def detect_gpu_compute_cap() -> str | None:
     return line[0].strip() if line else None
 
 
+@functools.lru_cache(maxsize=1)
 def _paddle_version_tuple() -> tuple[int, int, int] | None:
     """Returns the paddle version inside the sidecar venv as (major, minor, patch)."""
     ok, out = _venv_query(
@@ -483,6 +494,7 @@ def _paddle_is_blackwell_capable() -> bool:
     return _has_blackwell_sentinel()
 
 
+@functools.lru_cache(maxsize=1)
 def detect_gpu_paddle_status() -> tuple[str, str]:
     """Tristate GPU/Paddle compatibility check.
 
@@ -551,6 +563,7 @@ def detect_gpu_unsupported_by_paddle() -> str | None:
     return None
 
 
+@functools.lru_cache(maxsize=1)
 def detect_cuda() -> bool:
     """Best-effort check for a CUDA runtime on the machine.
 
@@ -579,6 +592,26 @@ def detect_cuda() -> bool:
             pass
 
     return detect_paddlepaddle_gpu()
+
+
+def reset_detection_cache() -> None:
+    """Clears the cached engine/GPU detection results.
+
+    The detect_* helpers are memoised so the Options dialog can open instantly
+    instead of re-running nvidia-smi and sidecar-venv subprocess probes on every
+    open. The results only change when the user installs/uninstalls/migrates an
+    engine, so the Engine Manager calls this after any such operation to force a
+    fresh probe.
+    """
+    for fn in (
+        detect_cuda,
+        detect_gpu_compute_cap,
+        detect_gpu_paddle_status,
+        detect_paddleocr,
+        detect_paddlepaddle_gpu,
+        _paddle_version_tuple,
+    ):
+        fn.cache_clear()
 
 
 # ─── Installation ────────────────────────────────────────────────────────
@@ -979,86 +1012,3 @@ def uninstall_paddleocr(on_line=None, on_proc=None) -> tuple[bool, str]:
 
 
 TESSERACT_WINDOWS_URL = "https://github.com/UB-Mannheim/tesseract/wiki"
-
-
-# ─── PaddleOCR-VL (advanced sidecar) ─────────────────────────────────────
-
-def detect_paddle_vl() -> EngineStatus:
-    """Returns status for the optional PaddleOCR-VL venv sidecar.
-
-    Looks for `.venv-paddle-vl/Scripts/paddleocr.exe` next to the repo root.
-    """
-    from paddle_vl_service import VENV_PADDLEOCR
-    if not VENV_PADDLEOCR.is_file():
-        return EngineStatus(installed=False)
-    return EngineStatus(
-        installed=True,
-        version="(see .venv-paddle-vl)",
-        detail=str(VENV_PADDLEOCR),
-    )
-
-
-def install_paddle_vl(on_line=None, backend: str = "transformers", on_proc=None) -> tuple[bool, str]:
-    """Runs scripts/install_paddle_vl.ps1 to provision the VL sidecar venv.
-
-    `backend` is forwarded to the script so the user can pick transformers
-    (Windows-safe default) / vllm / sglang.
-    """
-    if sys.platform != "win32":
-        return False, "paddle-vl install script is currently Windows-only"
-
-    from app_paths import scripts_dir
-    script = scripts_dir() / "install_paddle_vl.ps1"
-    if not script.is_file():
-        return False, f"install script missing: {script}"
-
-    cmd = [
-        "powershell.exe",
-        "-NoProfile",
-        "-ExecutionPolicy", "Bypass",
-        "-File", str(script),
-        "-Backend", backend,
-    ]
-    logger.info("paddle-vl install: %s", " ".join(cmd))
-    if on_line is not None:
-        on_line(f"→ Running {script.name} (backend={backend})…")
-        on_line(
-            "  (this venv is large — expect ~6 GB of downloads on first run)"
-        )
-    try:
-        proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, bufsize=1,
-        )
-    except Exception as exc:
-        return False, f"paddle-vl install failed to start: {exc}"
-    if on_proc is not None:
-        try:
-            on_proc(proc)
-        except Exception:
-            pass
-    lines = _stream_with_heartbeat(
-        proc, on_line=on_line,
-        heartbeat_msg="   ... still working (large VL model download in progress)",
-    )
-    proc.wait()
-    if on_proc is not None:
-        try:
-            on_proc(None)
-        except Exception:
-            pass
-    return proc.returncode == 0, "".join(lines)
-
-
-def uninstall_paddle_vl(on_line=None, on_proc=None) -> tuple[bool, str]:
-    """Deletes the .venv-paddle-vl directory tree."""
-    from paddle_vl_service import VENV_DIR
-    if not VENV_DIR.exists():
-        return True, "paddle-vl venv was not installed — nothing to do."
-    try:
-        shutil.rmtree(VENV_DIR)
-    except Exception as exc:
-        return False, f"could not remove {VENV_DIR}: {exc}"
-    if on_line is not None:
-        on_line(f"Removed {VENV_DIR}")
-    return True, f"Removed {VENV_DIR}\n"

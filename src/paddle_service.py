@@ -4,9 +4,8 @@ The host process (Python 3.10-3.14) spawns `scripts/paddle_worker.py` inside
 a separate Python 3.12 venv (`.venv-paddle/`) where PaddleOCR is installed,
 and communicates over stdin/stdout using newline-delimited JSON.
 
-This is the analogue of `paddle_vl_service.py` for the standard PaddleOCR
-recognizer, but uses pipe-based IPC instead of HTTP — no port to manage, no
-extra HTTP server dependency in the sidecar venv.
+It uses pipe-based IPC (newline-delimited JSON over stdin/stdout) — no port to
+manage, no extra HTTP server dependency in the sidecar venv.
 
 The module is intentionally process-only (no Qt) so it can be imported from
 the worker thread as well as the UI.
@@ -332,8 +331,7 @@ def get_service(
     """Returns the shared PaddleService instance, building it on first call.
 
     If any constructor argument changes versus the previous call, tears down
-    the existing sidecar and rebuilds — same idiom as
-    `paddle_vl_service.get_service()`.
+    the existing sidecar and rebuilds.
     """
     global _service, _service_key
     key = (device, model_dir, lang, upscale)

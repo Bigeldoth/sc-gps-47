@@ -3,6 +3,7 @@ import os
 import math
 import time
 import logging
+import threading
 import configparser
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QLabel, QVBoxLayout,
                              QWidget, QFrame, QSystemTrayIcon, QMenu, QInputDialog, QFileDialog,
@@ -151,15 +152,6 @@ def _build_ocr_processor(cfg):
     paddle_device = cfg.get('OCR', 'paddle_device', fallback='cpu')
     paddle_model_dir = cfg.get('OCR', 'paddle_model_dir', fallback='')
     paddle_lang = cfg.get('OCR', 'paddle_lang', fallback='en')
-    paddle_vl_endpoint = cfg.get(
-        'OCR', 'paddle_vl_endpoint', fallback='http://127.0.0.1:8118',
-    )
-    paddle_vl_model = cfg.get(
-        'OCR', 'paddle_vl_model', fallback='PaddleOCR-VL-1.5-0.9B',
-    )
-    paddle_vl_backend = cfg.get(
-        'OCR', 'paddle_vl_backend', fallback='transformers',
-    )
     try:
         paddle_min_confidence = float(cfg.get(
             'OCR', 'paddle_min_confidence', fallback='0.30'))
@@ -181,9 +173,6 @@ def _build_ocr_processor(cfg):
         paddle_device=paddle_device,
         paddle_model_dir=paddle_model_dir,
         paddle_lang=paddle_lang,
-        paddle_vl_endpoint=paddle_vl_endpoint,
-        paddle_vl_model=paddle_vl_model,
-        paddle_vl_backend=paddle_vl_backend,
         paddle_min_confidence=paddle_min_confidence,
         tesseract_lang=tesseract_lang,
         tesseract_tessdata_dir=tesseract_tessdata_dir,
@@ -1800,4 +1789,21 @@ if __name__ == "__main__":
 
     overlay = GPSOverlay()
     overlay.show()
+
+    # Warm the engine-detection cache off the UI thread so the first Options
+    # dialog open (Shift+F2) does not block on nvidia-smi / sidecar-venv probes.
+    # Results are memoised in engine_installer; the Engine Manager invalidates
+    # them after an install/uninstall via reset_detection_cache().
+    def _warm_engine_detection():
+        try:
+            from engine_installer import detect_cuda, detect_gpu_paddle_status
+            detect_cuda()
+            detect_gpu_paddle_status()
+        except Exception:
+            logger.debug("engine detection warm-up failed", exc_info=True)
+
+    threading.Thread(
+        target=_warm_engine_detection, name="engine-detect-warmup", daemon=True
+    ).start()
+
     sys.exit(app.exec())
