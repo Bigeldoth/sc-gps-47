@@ -256,6 +256,28 @@ def _fmt_ooc(ooc):
 
 _ARROWS_8 = ("↑", "↗", "→", "↘", "↓", "↙", "←", "↖")
 
+# A4 graded pitch: below this magnitude the vertical offset is treated as
+# aligned and no ▲/▼ indicator is shown. Lower than the old binary 25°
+# threshold because the indicator now carries the angle itself.
+_PITCH_DEADBAND_DEG = 10.0
+
+
+def _pitch_indicator(pitch_deg):
+    """Graded vertical indicator for the nav arrow (A4).
+
+    ``pitch_deg`` — signed degrees, positive = target/correction is *up*.
+    Only meaningful for space POIs; callers pass ``None`` (or a 0 produced by
+    ``_effective_dz``) for surface POIs, where altitude is ignored.
+
+    Returns ``""`` within ``_PITCH_DEADBAND_DEG``, else a graded indicator with
+    the magnitude rounded to whole degrees: ``▲N°`` (climb) / ``▼N°`` (dive).
+    """
+    if pitch_deg is None or abs(pitch_deg) < _PITCH_DEADBAND_DEG:
+        return ""
+    if pitch_deg > 0:
+        return f"▲{pitch_deg:.0f}°"
+    return f"▼{abs(pitch_deg):.0f}°"
+
 
 def _world_arrow(abs_bearing):
     """8-direction navigation arrow to target (SC frame corrected).
@@ -264,9 +286,9 @@ def _world_arrow(abs_bearing):
     X- = right (→), X+ = left (←). X correction is already
     applied in calculate_absolute_bearing (yaw_deg uses -dx).
 
-    Returns 'horizontal_arrow + vertical_indicator':
-      - ▲ if target is notably above (pitch > 25°)
-      - ▼ if notably below
+    Returns 'horizontal_arrow + graded vertical indicator' (``▲N°`` / ``▼N°``,
+    see _pitch_indicator). Surface POIs have pitch 0 (Z ignored) so no vertical
+    indicator is appended.
 
     Shown when the ship is stationary (no velocity vector available).
     """
@@ -274,14 +296,7 @@ def _world_arrow(abs_bearing):
         return ""
     yaw_norm = (abs_bearing["yaw_deg"] + 360.0) % 360.0
     arrow_h = _ARROWS_8[int((yaw_norm + 22.5) / 45) % 8]
-    pitch = abs_bearing["pitch_deg"]
-    if pitch > 25.0:
-        arrow_v = "▲"
-    elif pitch < -25.0:
-        arrow_v = "▼"
-    else:
-        arrow_v = ""
-    return arrow_h + arrow_v
+    return arrow_h + _pitch_indicator(abs_bearing["pitch_deg"])
 
 
 _HEADING_FLIP_DEG = 60.0    # tick-to-tick velocity-heading swing above this is
@@ -301,7 +316,8 @@ def _velocity_arrow(yaw_off, pitch_off=None):
       - ``"→15°"``   turn right 15°
       - ``"←8°"``    turn left 8°
       - ``"↓"``      target is behind (> 150°) — U-turn needed
-    A vertical indicator (▲/▼) is appended for space POIs when pitch > 25°.
+    A graded vertical indicator (``▲N°`` / ``▼N°``, see _pitch_indicator) is
+    appended for space POIs; surface POIs pass ``pitch_off=None``.
     """
     parts = []
     abs_off = abs(yaw_off)
@@ -314,11 +330,9 @@ def _velocity_arrow(yaw_off, pitch_off=None):
     else:
         parts.append(f"←{abs_off:.0f}°")
 
-    if pitch_off is not None:
-        if pitch_off > 25.0:
-            parts.append("▲")
-        elif pitch_off < -25.0:
-            parts.append("▼")
+    vert = _pitch_indicator(pitch_off)
+    if vert:
+        parts.append(vert)
 
     return " ".join(parts)
 
