@@ -161,6 +161,60 @@ class OptionsWindow(QDialog):
             "and the raw OCR distance is shown directly. Lower values give a "
             "more reactive readout near the destination."
         ))
+
+        # ── Kalman filter tuning (advanced) ─────────────────────────────
+        layout.addSpacing(12)
+        layout.addWidget(self._section_title("Filter Tuning (Advanced)"))
+
+        kalman_form = QFormLayout()
+
+        self.kalman_max_speed_spin = QDoubleSpinBox()
+        self.kalman_max_speed_spin.setRange(0.1, 50.0)
+        self.kalman_max_speed_spin.setSingleStep(0.1)
+        self.kalman_max_speed_spin.setDecimals(2)
+        self.kalman_max_speed_spin.setSuffix(" km/s")
+        kalman_form.addRow("Max speed:", self.kalman_max_speed_spin)
+
+        self.kalman_sigma_a_spin = QDoubleSpinBox()
+        self.kalman_sigma_a_spin.setRange(0.001, 100.0)
+        self.kalman_sigma_a_spin.setSingleStep(0.1)
+        self.kalman_sigma_a_spin.setDecimals(3)
+        self.kalman_sigma_a_spin.setSuffix(" km/s²")
+        kalman_form.addRow("Process noise (sigma_a):", self.kalman_sigma_a_spin)
+
+        self.kalman_sigma_z_spin = QDoubleSpinBox()
+        self.kalman_sigma_z_spin.setRange(0.0001, 10.0)
+        self.kalman_sigma_z_spin.setSingleStep(0.01)
+        self.kalman_sigma_z_spin.setDecimals(4)
+        self.kalman_sigma_z_spin.setSuffix(" km")
+        kalman_form.addRow("Measurement noise (sigma_z):", self.kalman_sigma_z_spin)
+
+        self.kalman_gate_nis_spin = QDoubleSpinBox()
+        self.kalman_gate_nis_spin.setRange(0.1, 100000.0)
+        self.kalman_gate_nis_spin.setSingleStep(1.0)
+        self.kalman_gate_nis_spin.setDecimals(1)
+        kalman_form.addRow("Reject gate (NIS):", self.kalman_gate_nis_spin)
+
+        self.kalman_coast_s_spin = QDoubleSpinBox()
+        self.kalman_coast_s_spin.setRange(0.0, 30.0)
+        self.kalman_coast_s_spin.setSingleStep(0.5)
+        self.kalman_coast_s_spin.setDecimals(1)
+        self.kalman_coast_s_spin.setSuffix(" s")
+        kalman_form.addRow("Coast window:", self.kalman_coast_s_spin)
+
+        layout.addLayout(kalman_form)
+        layout.addWidget(self._hint(
+            "Advanced Kalman tuning knobs for the velocity/heading filter. "
+            "Defaults are seeded from live telemetry — only change these if you "
+            "know what you are doing.\n"
+            "Max speed = physical velocity clamp.\n"
+            "sigma_a = how fast the filter follows turns (higher = snappier, noisier).\n"
+            "sigma_z = how much OCR position noise to assume (higher = smoother).\n"
+            "Reject gate = innovation threshold above which a read is dropped as a misread.\n"
+            "Coast window = how long dead-reckoning lasts through an OCR dropout "
+            "before the filter re-seeds."
+        ))
+
         layout.addStretch()
         widget.setLayout(layout)
         return widget
@@ -505,6 +559,11 @@ class OptionsWindow(QDialog):
 
         # Navigation
         self.arrival_radius_spin.setValue(int(round(cfg.get_arrival_radius_m())))
+        self.kalman_max_speed_spin.setValue(cfg.get_kalman_max_speed_km_s())
+        self.kalman_sigma_a_spin.setValue(cfg.get_kalman_sigma_a())
+        self.kalman_sigma_z_spin.setValue(cfg.get_kalman_sigma_z())
+        self.kalman_gate_nis_spin.setValue(cfg.get_kalman_gate_nis())
+        self.kalman_coast_s_spin.setValue(cfg.get_kalman_coast_s())
 
         # OCR
         engine = cfg.get_ocr_engine()
@@ -615,6 +674,11 @@ class OptionsWindow(QDialog):
 
             # Navigation
             cfg.set_arrival_radius_m(self.arrival_radius_spin.value())
+            cfg.set_kalman_max_speed_km_s(self.kalman_max_speed_spin.value())
+            cfg.set_kalman_sigma_a(self.kalman_sigma_a_spin.value())
+            cfg.set_kalman_sigma_z(self.kalman_sigma_z_spin.value())
+            cfg.set_kalman_gate_nis(self.kalman_gate_nis_spin.value())
+            cfg.set_kalman_coast_s(self.kalman_coast_s_spin.value())
 
             # OCR
             cfg.set_ocr_engine(self.text_engine_combo.currentText())

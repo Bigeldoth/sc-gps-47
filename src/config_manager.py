@@ -274,6 +274,88 @@ class ConfigManager:
             self.config.add_section('Navigation')
         self.config.set('Navigation', 'arrival_radius_m', str(max(1.0, float(radius_m))))
 
+    # ── Kalman / velocity-tracker tuning ────────────────────────────────
+    # Advanced knobs for the constant-velocity Kalman filter that derives the
+    # movement heading from the OCR position stream (see VelocityTracker). All
+    # live under the [Kalman] section; defaults mirror the class constants in
+    # src/velocity_tracker.py and are clamped to sane bounds on read.
+
+    def get_kalman_max_speed_km_s(self):
+        """Physical speed ceiling in km/s (velocity clamp + bounded init).
+
+        Default 2.5 (SC tops out ~1.4 km/s/axis; this leaves 3D margin)."""
+        try:
+            value = self.config.getfloat('Kalman', 'max_speed_km_s', fallback=2.5)
+        except Exception:
+            return 2.5
+        return max(0.1, min(50.0, value))
+
+    def set_kalman_max_speed_km_s(self, value):
+        if not self.config.has_section('Kalman'):
+            self.config.add_section('Kalman')
+        self.config.set('Kalman', 'max_speed_km_s',
+                        str(max(0.1, min(50.0, float(value)))))
+
+    def get_kalman_sigma_a(self):
+        """Acceleration process-noise std in km/s^2. Higher = the filter
+        follows turns faster but is noisier. Default 1.0."""
+        try:
+            value = self.config.getfloat('Kalman', 'sigma_a', fallback=1.0)
+        except Exception:
+            return 1.0
+        return max(0.001, min(100.0, value))
+
+    def set_kalman_sigma_a(self, value):
+        if not self.config.has_section('Kalman'):
+            self.config.add_section('Kalman')
+        self.config.set('Kalman', 'sigma_a',
+                        str(max(0.001, min(100.0, float(value)))))
+
+    def get_kalman_sigma_z(self):
+        """Per-axis measurement (position) noise std in km. Higher = the filter
+        trusts OCR reads less and smooths more. Default 0.02 (20 m)."""
+        try:
+            value = self.config.getfloat('Kalman', 'sigma_z', fallback=0.02)
+        except Exception:
+            return 0.02
+        return max(0.0001, min(10.0, value))
+
+    def set_kalman_sigma_z(self, value):
+        if not self.config.has_section('Kalman'):
+            self.config.add_section('Kalman')
+        self.config.set('Kalman', 'sigma_z',
+                        str(max(0.0001, min(10.0, float(value)))))
+
+    def get_kalman_gate_nis(self):
+        """Innovation-gate threshold (normalised innovation squared) above which
+        a sample is rejected as an OCR misread. Default 30.0."""
+        try:
+            value = self.config.getfloat('Kalman', 'gate_nis', fallback=30.0)
+        except Exception:
+            return 30.0
+        return max(0.1, min(100000.0, value))
+
+    def set_kalman_gate_nis(self, value):
+        if not self.config.has_section('Kalman'):
+            self.config.add_section('Kalman')
+        self.config.set('Kalman', 'gate_nis',
+                        str(max(0.1, min(100000.0, float(value)))))
+
+    def get_kalman_coast_s(self):
+        """Dead-reckoning coast window in seconds before integrity degrades to
+        LOST and the filter re-seeds. Default 2.0."""
+        try:
+            value = self.config.getfloat('Kalman', 'coast_s', fallback=2.0)
+        except Exception:
+            return 2.0
+        return max(0.0, min(30.0, value))
+
+    def set_kalman_coast_s(self, value):
+        if not self.config.has_section('Kalman'):
+            self.config.add_section('Kalman')
+        self.config.set('Kalman', 'coast_s',
+                        str(max(0.0, min(30.0, float(value)))))
+
     def get_record_telemetry(self):
         """Whether to record per-tick navigation telemetry to a JSONL file.
 

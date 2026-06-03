@@ -536,8 +536,10 @@ class GPSOverlay(QMainWindow):
         self._arrival_radius_m = self.config_manager.get_arrival_radius_m()
 
         # Directional guidance based on velocity (car GPS style).
-        # We sample position and derive movement direction.
-        self._velocity_tracker = VelocityTracker()
+        # We sample position and derive movement direction. The Kalman tuning
+        # knobs come from config.ini ([Kalman]) so they can be adjusted from the
+        # Options dialog without editing source.
+        self._velocity_tracker = self._build_velocity_tracker()
         self._last_known_ooc = None  # to detect frame change
         self._smoothed_yaw_off = None
         self._smoothed_pitch_off = None
@@ -1534,6 +1536,13 @@ class GPSOverlay(QMainWindow):
         self._arrival_radius_m = self.config_manager.get_arrival_radius_m()
         logger.info(f"Arrival radius updated: {self._arrival_radius_m:.0f} m")
 
+        # Rebuild the velocity tracker so any [Kalman] tuning change takes
+        # effect immediately. Rebuilding (rather than mutating in place) starts
+        # from a clean state with the new noise std, which is the safe path —
+        # the tracker re-seeds on the next OCR sample anyway.
+        self._velocity_tracker = self._build_velocity_tracker()
+        logger.info("Velocity tracker rebuilt with updated Kalman settings")
+
         # Apply the telemetry toggle live (enable/disable without a restart).
         self._apply_telemetry_setting()
 
@@ -1579,6 +1588,21 @@ class GPSOverlay(QMainWindow):
         self._refresh_nav_label()
         if not self.is_visible:
             self.toggle_overlay()
+
+    def _build_velocity_tracker(self):
+        """Construct a VelocityTracker with the Kalman tuning knobs from config.
+
+        Centralised so both initial construction and a live rebuild (after the
+        Options dialog is saved) read the same [Kalman] settings.
+        """
+        cfg = self.config_manager
+        return VelocityTracker(
+            sigma_a=cfg.get_kalman_sigma_a(),
+            sigma_z=cfg.get_kalman_sigma_z(),
+            gate_nis=cfg.get_kalman_gate_nis(),
+            coast_s=cfg.get_kalman_coast_s(),
+            max_speed_km_s=cfg.get_kalman_max_speed_km_s(),
+        )
 
     def reset_velocity_tracker(self):
         """Resets GPS state AND cancels any active navigation toward a POI.
