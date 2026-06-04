@@ -140,7 +140,7 @@ def _generate_delta(
             zip_hash = hashlib.sha256(f.read()).hexdigest()
 
         size_bytes = delta_zip_path.stat().st_size
-        print(f"  ✓ Delta created: {delta_zip_path.name} ({size_bytes // (1024*1024)} MB)")
+        print(f"  [OK] Delta created: {delta_zip_path.name} ({size_bytes // (1024*1024)} MB)")
 
         return delta_zip_path, zip_hash, size_bytes
 
@@ -233,30 +233,30 @@ def main() -> None:
         print(f"Error: no files matched '{pattern}'", file=sys.stderr)
         sys.exit(1)
 
-    print(f"🔧 VPS Configuration:")
+    print(f"[CONFIG] VPS Configuration:")
     print(f"   Host: {host}")
     print(f"   User: {user}")
     print(f"   Releases path: {releases_path}")
     print(f"   Public URL: {public_url}")
-    print(f"\n📦 Files to upload: {[os.path.basename(f) for f in files]}\n")
+    print(f"\n[FILES] Files to upload: {[os.path.basename(f) for f in files]}\n")
 
     pkey = _load_private_key(ssh_key_content)
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
-    print(f"🔌 Connecting to {user}@{host}...")
+    print(f"[SSH] Connecting to {user}@{host}...")
     try:
         client.connect(host, username=user, pkey=pkey, timeout=30)
-        print(f"✓ Connected!\n")
+        print(f"[OK] Connected!\n")
     except TimeoutError as e:
-        print(f"❌ Connection timeout to {host}:{user}", file=sys.stderr)
-        print(f"   This is expected in isolated CI environments (e.g., GitHub Actions)", file=sys.stderr)
-        print(f"   Either:", file=sys.stderr)
-        print(f"   1. Configure firewall to allow CI runner IPs", file=sys.stderr)
-        print(f"   2. Use local release script: .\tools\release.ps1 -Version vX.Y.Z", file=sys.stderr)
+        print(f"[ERROR] Connection timeout to {host}:{user}", file=sys.stderr)
+        print(f"        This is expected in isolated CI environments (e.g., GitHub Actions)", file=sys.stderr)
+        print(f"        Either:", file=sys.stderr)
+        print(f"        1. Configure firewall to allow CI runner IPs", file=sys.stderr)
+        print(f"        2. Use local release script: .\\tools\\release.ps1 -Version vX.Y.Z", file=sys.stderr)
         sys.exit(1)
     except Exception as e:
-        print(f"❌ SSH Connection failed: {e}", file=sys.stderr)
+        print(f"[ERROR] SSH Connection failed: {e}", file=sys.stderr)
         sys.exit(1)
 
     try:
@@ -270,15 +270,15 @@ def main() -> None:
                 remote = f"{releases_path}/{file_name}"
                 new_version = file_name.removeprefix("SpaceDrive-Setup-").removesuffix(".exe")
 
-                print(f"\n📦 Uploading: {file_name}")
+                print(f"\n[UPLOAD] Uploading: {file_name}")
                 sftp.put(file_path, remote)
-                print(f"   ✓ Uploaded to {host}:{remote}")
+                print(f"   [OK] Uploaded to {host}:{remote}")
 
                 # Generate delta if previous version exists
                 delta_info = None
                 old_version = _get_latest_installer_version(client, releases_path)
                 if old_version and old_version != new_version:
-                    print(f"\n🔄 Generating delta: {old_version} → {new_version}")
+                    print(f"\n[DELTA] Generating delta: {old_version} -> {new_version}")
                     try:
                         with tempfile.TemporaryDirectory() as tmpdir:
                             tmpdir = Path(tmpdir)
@@ -301,7 +301,7 @@ def main() -> None:
                             delta_name = delta_zip.name
                             delta_remote = f"{deltas_path}/{delta_name}"
                             sftp.put(str(delta_zip), delta_remote)
-                            print(f"   ✓ Delta uploaded to {host}:{delta_remote}")
+                            print(f"   [OK] Delta uploaded to {host}:{delta_remote}")
 
                             # Prepare delta metadata
                             delta_info = {
@@ -313,7 +313,7 @@ def main() -> None:
                                 "notes": f"Delta update from {old_version} to {new_version}",
                             }
                     except Exception as exc:
-                        print(f"   ⚠️  Delta generation failed: {exc}")
+                        print(f"   [WARN] Delta generation failed: {exc}")
                         print(f"   Using full installer only")
 
                 # Upload latest.json
@@ -321,17 +321,17 @@ def main() -> None:
                     _upload_latest_json(sftp, releases_path, file_name, public_url, delta_info)
 
             # Cleanup old versions
-            print(f"\n🧹 Cleaning up old versions (keeping {keep_versions})...")
+            print(f"\n[CLEANUP] Cleaning up old versions (keeping {keep_versions})...")
             _cleanup_old_versions(client, releases_path, keep_versions)
 
             # Cleanup old deltas
-            print(f"🧹 Cleaning up old deltas (keeping 3)...")
+            print(f"[CLEANUP] Cleaning up old deltas (keeping 3)...")
             _cleanup_old_deltas(client, deltas_path, keep=3)
 
     finally:
         client.close()
 
-    print(f"\n✅ Release complete!")
+    print(f"\n[SUCCESS] Release complete!")
 
 
 if __name__ == "__main__":
