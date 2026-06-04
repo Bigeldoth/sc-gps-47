@@ -23,26 +23,24 @@ Implementation: call `GPSOverlay._center_on_screen(dialog)` (or a shared equival
 after `dialog.adjustSize()` and before `dialog.show()`. Then `raise_()` +
 `activateWindow()` via `QTimer.singleShot(0, ...)` for deferred focus.
 
-## Localization (i18n) — FR / EN
+## Localization — English-only (settled decision)
 
-The desktop UI must support two languages: **French (FR, default)** and **English (EN)**.
-All user-visible strings (labels, button text, window titles, placeholders, tooltips,
-messages) must go through a central translation layer — never hardcode a French or
-English string directly in a widget.
+**The desktop app is English-only. There is NO i18n / translation layer, and none
+is planned.** All user-visible strings (labels, button text, window titles,
+placeholders, tooltips, QMessageBox text) are plain English literals written
+directly in the widgets — see `src/ui/options.py` for the canonical style.
 
-Design contract (mirrors the SpaceDrive Community Hub `LangContext.jsx`):
-- Source of truth: `src/i18n.py` — a `TRANSLATIONS` dict with `"FR"` and `"EN"` keys,
-  plus a `t(key: str) -> str` helper.
-- `config.ini` → `[UI] language = FR` (or `EN`). Default: `FR`.
-- `ConfigManager` exposes `get_language()` / `set_language(lang)`.
-- `t()` is imported at the top of every UI module; all `QLabel`, `QPushButton`, window
-  title, and placeholder strings call `t("key")`.
-- Adding a new string: add to both `FR` and `EN` in `src/i18n.py`, then use the key.
-- Category labels are translated through `i18n.py` (keys: `cat_industry`, `cat_exploration`, etc.).
-- The Options window (General tab) exposes a Language combo (FR / EN); saving reloads all
-  open windows or prompts the user to restart.
+Decision (2026-06-04): an earlier draft of this file mandated a FR/EN
+translation layer (`src/i18n.py` + a `t()` helper + a `[UI] language` setting).
+That layer was never built, the UI has always been hardcoded English, and the
+Star Citizen player base is overwhelmingly English-speaking — so the FR/EN spec
+was dropped to remove the contradiction with the "Application UI: English only"
+rule above. Do **not** introduce `i18n.py`, a `t()` wrapper, or a language
+selector. Reconsider only if the user explicitly asks to internationalize the
+desktop app.
 
-**This spec applies to all future code changes.** Every PR touching UI must use `t()`.
+Note: the separate **SpaceDrive Community Hub** web project *is* bilingual
+(FR/EN via `LangContext.jsx`); that is its own codebase and does not apply here.
 
 ## Project overview
 Star Citizen GPS overlay that reads in-game HUD coordinates via OCR and provides
