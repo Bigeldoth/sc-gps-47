@@ -110,6 +110,12 @@ class ConfigManager:
             self.config.set('Hotkeys', 'open_poi_manager', 'shift+f4')
             self.config.set('Hotkeys', 'reset_gps_nav', 'shift+f5')
 
+        if not self.config.has_section('Updates'):
+            self.config.add_section('Updates')
+            self.config.set('Updates', 'check_on_startup', 'False')
+            self.config.set('Updates', 'keep_deltas_count', '3')
+            self.config.set('Updates', 'last_skipped_version', '')
+
         self.save()
 
     # Quick-access methods for frequently used settings
@@ -420,3 +426,42 @@ class ConfigManager:
     def get(self, section, option, fallback=None):
         """Generic method to retrieve a value."""
         return self.config.get(section, option, fallback=fallback)
+
+    # ── Update configuration ────────────────────────────────────────────
+
+    def get_check_on_startup(self):
+        """Whether to automatically check for updates on app startup."""
+        try:
+            return self.config.getboolean('Updates', 'check_on_startup', fallback=False)
+        except Exception:
+            return False
+
+    def set_check_on_startup(self, value):
+        """Set whether to automatically check for updates on app startup."""
+        if not self.config.has_section('Updates'):
+            self.config.add_section('Updates')
+        self.config.set('Updates', 'check_on_startup', str(bool(value)))
+
+    def get_keep_deltas_count(self):
+        """Number of old delta packages to keep locally (others are cleaned up)."""
+        try:
+            value = self.config.getint('Updates', 'keep_deltas_count', fallback=3)
+        except Exception:
+            return 3
+        return max(1, min(10, value))
+
+    def set_keep_deltas_count(self, count):
+        """Set the number of old delta packages to keep locally."""
+        if not self.config.has_section('Updates'):
+            self.config.add_section('Updates')
+        self.config.set('Updates', 'keep_deltas_count', str(max(1, min(10, int(count)))))
+
+    def get_last_skipped_version(self):
+        """Return the last version the user clicked Skip on (don't ask again)."""
+        return self.config.get('Updates', 'last_skipped_version', fallback='')
+
+    def set_last_skipped_version(self, version):
+        """Set the last skipped version."""
+        if not self.config.has_section('Updates'):
+            self.config.add_section('Updates')
+        self.config.set('Updates', 'last_skipped_version', version or '')
