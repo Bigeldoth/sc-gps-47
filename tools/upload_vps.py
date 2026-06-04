@@ -233,10 +233,31 @@ def main() -> None:
         print(f"Error: no files matched '{pattern}'", file=sys.stderr)
         sys.exit(1)
 
+    print(f"🔧 VPS Configuration:")
+    print(f"   Host: {host}")
+    print(f"   User: {user}")
+    print(f"   Releases path: {releases_path}")
+    print(f"   Public URL: {public_url}")
+    print(f"\n📦 Files to upload: {[os.path.basename(f) for f in files]}\n")
+
     pkey = _load_private_key(ssh_key_content)
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    client.connect(host, username=user, pkey=pkey)
+
+    print(f"🔌 Connecting to {user}@{host}...")
+    try:
+        client.connect(host, username=user, pkey=pkey, timeout=30)
+        print(f"✓ Connected!\n")
+    except TimeoutError as e:
+        print(f"❌ Connection timeout to {host}:{user}", file=sys.stderr)
+        print(f"   This is expected in isolated CI environments (e.g., GitHub Actions)", file=sys.stderr)
+        print(f"   Either:", file=sys.stderr)
+        print(f"   1. Configure firewall to allow CI runner IPs", file=sys.stderr)
+        print(f"   2. Use local release script: .\tools\release.ps1 -Version vX.Y.Z", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"❌ SSH Connection failed: {e}", file=sys.stderr)
+        sys.exit(1)
 
     try:
         with client.open_sftp() as sftp:
