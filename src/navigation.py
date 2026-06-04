@@ -95,6 +95,147 @@ def _effective_dz(target, current_pos):
     return target["z"] - current_pos["z"]
 
 
+# Minimum plausible body radius (km) for great-circle surface navigation. The
+# smallest navigable SC bodies (moons) are well above this; coordinates whose
+# magnitude is below it are not real body-centre vectors (e.g. relative test
+# fixtures or stale origin-relative data), so we keep the legacy flat 2D
+# distance/heading for them and only apply the orthodromic math on real bodies.
+_MIN_BODY_RADIUS_KM = 100.0
+
+
+def _is_surface(target):
+    """True if the target is a surface POI (altitude-ignoring navigation)."""
+    return bool(target) and target.get("kind") == "surface"
+
+
+def _surface_is_body_relative(current_pos, target):
+    """True if both points look like genuine body-centre vectors.
+
+    Great-circle math only makes sense when the coordinates are measured from
+    the planet/moon centre (magnitude ~ body radius). Below
+    ``_MIN_BODY_RADIUS_KM`` the inputs are relative / test fixtures and we fall
+    back to the legacy flat 2D behaviour.
+    """
+    a_mag = math.sqrt(
+        current_pos["x"] ** 2 + current_pos["y"] ** 2 + current_pos["z"] ** 2
+    )
+    b_mag = math.sqrt(target["x"] ** 2 + target["y"] ** 2 + target["z"] ** 2)
+    return a_mag >= _MIN_BODY_RADIUS_KM and b_mag >= _MIN_BODY_RADIUS_KM
+
+
+def _flat_horizontal_distance(current_pos, target):
+    """Flat 2D distance in the planet-relative frame (Z ignored)."""
+    dx = target["x"] - current_pos["x"]
+    dy = target["y"] - current_pos["y"]
+    return math.hypot(dx, dy)
+
+
+def _flat_heading(current_pos, target):
+    """Legacy flat world yaw (deg) with the SC X-inversion."""
+    dx = target["x"] - current_pos["x"]
+    dy = target["y"] - current_pos["y"]
+    if dx == 0 and dy == 0:
+        return 0.0
+    return math.degrees(math.atan2(-dx, dy))
+
+
+def great_circle_distance(current_pos, target):
+    """Great-circle (orthodromic) over-the-surface distance for a surface POI.
+
+    Both the current position ``a`` and the target ``b`` are treated as 3D
+    vectors from the body centre (the SC OOC frame has the planet/moon centre
+    at the origin, in km), so each vector magnitude is roughly
+    ``body_radius + altitude``.
+
+    The central angle is computed in the numerically robust cross/dot form::
+
+        theta = atan2(|a x b|, a . b)
+
+    which stays accurate for both very small and near-antipodal angles, unlike
+    ``acos(a . b / (|a||b|))``. The arc length uses the mean surface radius::
+
+        R = (|a| + |b|) / 2
+        distance = R * theta
+
+    Degenerate / non-body-relative cases (either vector at/near the centre, or
+    magnitudes below ``_MIN_BODY_RADIUS_KM``) fall back to the flat horizontal
+    distance ``sqrt(dx^2 + dy^2)`` so legacy origin-relative inputs keep their
+    previous behaviour.
+    """
+    ax = current_pos["x"]
+    ay = current_pos["y"]
+    az = current_pos["z"]
+    bx = target["x"]
+    by = target["y"]
+    bz = target["z"]
+
+    a_mag = math.sqrt(ax * ax + ay * ay + az * az)
+    b_mag = math.sqrt(bx * bx + by * by + bz * bz)
+
+    # Either point at/near the centre, or coordinates too small to be genuine
+    # body-centre vectors: fall back to the flat horizontal distance.
+    if not _surface_is_body_relative(current_pos, target):
+        return _flat_horizontal_distance(current_pos, target)
+
+    dot = ax * bx + ay * by + az * bz
+    cx = ay * bz - az * by
+    cy = az * bx - ax * bz
+    cz = ax * by - ay * bx
+    cross_mag = math.sqrt(cx * cx + cy * cy + cz * cz)
+
+    theta = math.atan2(cross_mag, dot)  # central angle in [0, pi]
+    radius = (a_mag + b_mag) / 2.0
+    return radius * theta
+
+
+def great_circle_bearing(current_pos, target):
+    """Initial great-circle heading (world yaw, deg) toward a surface POI.
+
+    Returns the same yaw convention as :func:`calculate_absolute_bearing`
+    (SC X-inversion applied): ``Y+`` = forward (up arrow), ``X-`` = right,
+    ``X+`` = left. The heading is the direction of the great-circle tangent at
+    the current position, projected onto the local horizontal frame.
+
+    The tangent direction along the great circle from ``a`` toward ``b`` is the
+    component of ``b`` orthogonal to ``a``::
+
+        t = b - (a.b / a.a) * a
+
+    Pitch is kept at 0 for surface POIs (altitude ignored), consistent with the
+    existing surface behaviour. Falls back to the legacy flat heading for
+    non-body-relative inputs (magnitude below ``_MIN_BODY_RADIUS_KM``, a near
+    the centre, or a and b colinear / antipodal).
+    """
+    ax = current_pos["x"]
+    ay = current_pos["y"]
+    az = current_pos["z"]
+    bx = target["x"]
+    by = target["y"]
+    bz = target["z"]
+
+    a_mag2 = ax * ax + ay * ay + az * az
+
+    # Non-body-relative input (relative / test fixtures): use the flat heading.
+    if not _surface_is_body_relative(current_pos, target):
+        return _flat_heading(current_pos, target)
+
+    # Tangent to the great circle at a, pointing toward b: b projected onto the
+    # plane orthogonal to a.
+    scale = (ax * bx + ay * by + az * bz) / a_mag2
+    tx = bx - scale * ax
+    ty = by - scale * ay
+    # tz is not needed: surface navigation keeps pitch at 0 and only the
+    # horizontal (X/Y) components drive the world yaw arrow.
+
+    if tx == 0 and ty == 0:
+        # Identical, colinear, or antipodal: tangent is undefined. Fall back to
+        # the straight delta heading so the arrow still has a sensible value.
+        return _flat_heading(current_pos, target)
+
+    # Same SC X-inversion as calculate_absolute_bearing: negate the X tangent.
+    return math.degrees(math.atan2(-tx, ty))
+
+
 def calculate_absolute_bearing(current_pos, target):
     """Absolute heading (world frame) from the current position to the target.
 
@@ -117,6 +258,19 @@ def calculate_absolute_bearing(current_pos, target):
     dx = target["x"] - current_pos["x"]
     dy = target["y"] - current_pos["y"]
     dz = _effective_dz(target, current_pos)
+
+    if _is_surface(target):
+        # Surface POI: over-the-surface great-circle distance and the
+        # great-circle initial heading. Pitch stays 0 (altitude ignored).
+        distance = great_circle_distance(current_pos, target)
+        yaw = great_circle_bearing(current_pos, target)
+        pitch = 0.0
+        return {
+            "dx": dx, "dy": dy, "dz": dz,
+            "yaw_deg": yaw, "pitch_deg": pitch,
+            "distance_km": distance,
+        }
+
     distance = math.sqrt(dx * dx + dy * dy + dz * dz)
 
     horiz = math.hypot(dx, dy)
@@ -187,7 +341,14 @@ def calculate_velocity_bearing(velocity, current_pos, target):
     # Horizontal heading of velocity and target.
     # SC: X+ = left, X- = right → negate X to map to standard navigation frame.
     vel_yaw = math.degrees(math.atan2(-vx, vy)) if (vx or vy) else 0.0
-    tgt_yaw = math.degrees(math.atan2(-dx, dy)) if (dx or dy) else 0.0
+    if _is_surface(target):
+        # Surface POI: aim along the great-circle initial heading so the moving
+        # turn arrow stays consistent with the stationary world arrow and the
+        # great-circle distance. The straight chord heading would diverge from
+        # the real over-the-surface path for far targets.
+        tgt_yaw = great_circle_bearing(current_pos, target)
+    else:
+        tgt_yaw = math.degrees(math.atan2(-dx, dy)) if (dx or dy) else 0.0
     yaw_off = normalize_angle_signed(tgt_yaw - vel_yaw)
 
     # Pitch (vertical component)
@@ -358,13 +519,20 @@ class NavigationEngine:
         OR the player and target are in different OOCs (distance has no
         meaning without a cross-zone transform).
 
-        For surface POIs (``kind == "surface"``) Z is ignored: distance is
-        horizontal only, so altitude mismatch does not inflate the result.
+        For surface POIs (``kind == "surface"``) Z is ignored for altitude,
+        and the distance is the over-the-surface great-circle (orthodromic)
+        arc length: the player and target are treated as vectors from the
+        body centre and the result is ``R * theta`` (see
+        :func:`great_circle_distance`). Space POIs keep the 3D Euclidean
+        distance.
         """
         if not self.target or current_pos.get("x") is None:
             return None
         if not self.is_target_in_same_ooc(current_pos):
             return None
+
+        if _is_surface(self.target):
+            return great_circle_distance(current_pos, self.target)
 
         dx = self.target["x"] - current_pos["x"]
         dy = self.target["y"] - current_pos["y"]
