@@ -740,16 +740,18 @@ class OptionsWindow(QDialog):
 
         # Show update size and store delta info for download
         delta_info = latest_json.get("delta", {})
-        if delta_info.get("available"):
+        if delta_info.get("available") and delta_info.get("url"):
             size_mb = delta_info.get("size_bytes", 0) / (1024 * 1024)
             self.update_size_label.setText(f"~{size_mb:.1f} MB (delta)")
             # Store delta info for _on_update_now()
             self._latest_delta_url = delta_info.get("url", "")
             self._latest_delta_checksum = delta_info.get("checksum", "")
         else:
-            self.update_size_label.setText("Full installer")
+            # No delta available — redirect to full installer download page
+            self.update_size_label.setText("Full installer (open browser to download)")
             self._latest_delta_url = ""
             self._latest_delta_checksum = ""
+            self._latest_full_url = latest_json.get("url", "")
 
         # Show changelog
         changelog = latest_json.get("changelog", {})
@@ -764,9 +766,24 @@ class OptionsWindow(QDialog):
             self.changelog_text.setText(f"A new version ({new_version}) is available.")
 
     def _on_update_now(self):
-        """Initiate delta download and apply."""
+        """Initiate delta download and apply, or open browser for full installer."""
         new_version = self.latest_version_label.text()
         if not new_version or new_version in ("—", "Up to date"):
+            return
+
+        # No delta available — open browser to download full installer
+        if not getattr(self, "_latest_delta_url", ""):
+            full_url = getattr(self, "_latest_full_url", "")
+            if full_url:
+                import webbrowser
+                webbrowser.open(full_url)
+            else:
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.information(
+                    self, "No Delta Available",
+                    f"No delta update is available for {new_version}.\n"
+                    "Please download the full installer from the releases page."
+                )
             return
 
         current_version = self._get_current_app_version()
