@@ -66,6 +66,57 @@ class _UpdateCheckThread(QThread):
             self.check_complete.emit("", {})
 
 
+class _UpdateApplyThread(QThread):
+    """Downloads and applies delta update off the UI thread."""
+
+    progress = pyqtSignal(int, str)  # percentage, message
+    complete = pyqtSignal(bool, str)  # success, message
+
+    def __init__(self, config_manager, current_version: str, target_version: str, delta_url: str, delta_checksum: str):
+        super().__init__()
+        self.config_manager = config_manager
+        self.current_version = current_version
+        self.target_version = target_version
+        self.delta_url = delta_url
+        self.delta_checksum = delta_checksum
+
+    def run(self):
+        try:
+            from update_manager import UpdateManager
+            from pathlib import Path
+
+            um = UpdateManager(self.config_manager, self.current_version)
+
+            # Download
+            self.progress.emit(10, "Downloading update...")
+            def on_progress(pct, written, total):
+                self.progress.emit(10 + int(pct * 0.8), f"Downloading... {pct}%")
+
+            delta_zip = um.download_delta(self.delta_url, self.target_version, on_progress)
+            if not delta_zip:
+                self.complete.emit(False, "Download failed")
+                return
+
+            # Verify
+            self.progress.emit(95, "Verifying integrity...")
+            if not um.verify_delta(delta_zip, self.delta_checksum):
+                self.complete.emit(False, "Checksum verification failed")
+                return
+
+            # Apply
+            self.progress.emit(96, "Applying update...")
+            success, msg = um.apply_delta(self.target_version, delta_zip)
+
+            if success:
+                self.complete.emit(True, f"Update to {self.target_version} applied successfully")
+            else:
+                self.complete.emit(False, f"Apply failed: {msg}")
+
+        except Exception as exc:
+            logger.error(f"Update apply thread failed: {exc}", exc_info=True)
+            self.complete.emit(False, f"Error: {exc}")
+
+
 class OptionsWindow(QDialog):
     """Tabbed options dialog (dark MFD-style theme)."""
 
@@ -687,13 +738,18 @@ class OptionsWindow(QDialog):
         self.update_now_button.setEnabled(True)
         self.skip_button.setEnabled(True)
 
-        # Show update size
+        # Show update size and store delta info for download
         delta_info = latest_json.get("delta", {})
         if delta_info.get("available"):
             size_mb = delta_info.get("size_bytes", 0) / (1024 * 1024)
             self.update_size_label.setText(f"~{size_mb:.1f} MB (delta)")
+            # Store delta info for _on_update_now()
+            self._latest_delta_url = delta_info.get("url", "")
+            self._latest_delta_checksum = delta_info.get("checksum", "")
         else:
             self.update_size_label.setText("Full installer")
+            self._latest_delta_url = ""
+            self._latest_delta_checksum = ""
 
         # Show changelog
         changelog = latest_json.get("changelog", {})
@@ -708,13 +764,90 @@ class OptionsWindow(QDialog):
             self.changelog_text.setText(f"A new version ({new_version}) is available.")
 
     def _on_update_now(self):
-        """Initiate the update (placeholder for now)."""
-        QMessageBox.information(
-            self,
-            "Update Manager",
-            "Update functionality will be implemented in Phase 4.\n"
-            "For now, please download the latest installer manually."
+        """Initiate delta download and apply."""
+        new_version = self.latest_version_label.text()
+        if not new_version or new_version in ("—", "Up to date"):
+            return
+
+        current_version = self._get_current_app_version()
+
+        # Show progress dialog
+        from PyQt6.QtWidgets import QProgressDialog
+        progress_dialog = QProgressDialog(
+            "Preparing update...", "Cancel", 0, 100, self
         )
+        progress_dialog.setWindowTitle("Updating SpaceDrive GPS")
+        progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        progress_dialog.setCancelButton(None)  # Disable cancel during download
+        progress_dialog.show()
+
+        # Start update thread
+        self._update_thread = _UpdateApplyThread(
+            self.config_manager,
+            current_version,
+            new_version,
+            self._latest_delta_url,
+            self._latest_delta_checksum
+        )
+        self._update_thread.progress.connect(self._on_update_progress)
+        self._update_thread.complete.connect(lambda ok, msg: self._on_update_complete(ok, msg, progress_dialog))
+        self._update_thread.start()
+        self._update_progress_dialog = progress_dialog
+
+    def _on_update_progress(self, percent: int, message: str):
+        """Update progress dialog."""
+        if hasattr(self, '_update_progress_dialog'):
+            self._update_progress_dialog.setValue(percent)
+            self._update_progress_dialog.setLabelText(message)
+
+    def _on_update_complete(self, success: bool, message: str, dialog):
+        """Handle update completion and restart."""
+        dialog.close()
+
+        if not success:
+            QMessageBox.critical(self, "Update Failed", message)
+            return
+
+        # Show restart countdown dialog
+        self._show_restart_countdown(message)
+
+    def _show_restart_countdown(self, message: str):
+        """Show countdown dialog and restart app."""
+        from PyQt6.QtCore import QTimer
+
+        countdown_dialog = QMessageBox(self)
+        countdown_dialog.setWindowTitle("Update Complete")
+        countdown_dialog.setIcon(QMessageBox.Icon.Information)
+        countdown_dialog.setStandardButtons(QMessageBox.StandardButton.NoButton)
+
+        # Countdown timer
+        self._countdown = 5
+        timer = QTimer()
+
+        def update_countdown():
+            self._countdown -= 1
+            countdown_dialog.setText(
+                f"{message}\n\n"
+                f"Restarting application in {self._countdown} seconds..."
+            )
+            if self._countdown <= 0:
+                timer.stop()
+                countdown_dialog.close()
+                self._restart_application()
+
+        timer.timeout.connect(update_countdown)
+        countdown_dialog.setText(
+            f"{message}\n\n"
+            f"Restarting application in {self._countdown} seconds..."
+        )
+        timer.start(1000)  # Update every second
+        countdown_dialog.exec()
+
+    def _restart_application(self):
+        """Force quit and let parent/system relaunch."""
+        logger.info(f"Restarting application after successful update")
+        from PyQt6.QtWidgets import QApplication
+        QApplication.quit()
 
     def _on_skip_update(self):
         """Mark this version as skipped."""
