@@ -25,6 +25,7 @@ a = Analysis(
         # Assets
         ('assets\\icon.png', 'assets'),
         ('assets\\spacedrive.ico', 'assets'),
+        ('assets\\padek-theme.qss', 'assets'),  # Dark theme stylesheet
         # Default config (user override goes in %LOCALAPPDATA%\SpaceDrive\)
         ('config.ini', '.'),
         # Project license shown in About + by the installer
