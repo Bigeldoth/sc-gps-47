@@ -117,7 +117,16 @@ class VelocityTracker:
     MAX_SPEED_KM_S = 2.5
 
     def __init__(self, min_speed_km_s=None, smoothing_alpha=None,
-                 sigma_a=None, sigma_z=None):
+                 sigma_a=None, sigma_z=None, gate_nis=None,
+                 coast_s=None, max_speed_km_s=None):
+        """Construct a velocity tracker.
+
+        The Kalman/OCR tuning knobs (``sigma_a``, ``sigma_z``, ``gate_nis``,
+        ``coast_s``, ``max_speed_km_s``) default to the class constants, which
+        were seeded from live telemetry. Callers (and the Options dialog via
+        config.ini) may override them to tune filter behaviour without editing
+        source. Out-of-range values are clamped to sane bounds.
+        """
         if min_speed_km_s is not None:
             self.MIN_SPEED_KM_S = min_speed_km_s
             self.EXIT_SPEED_KM_S = 0.6 * min_speed_km_s
@@ -125,6 +134,19 @@ class VelocityTracker:
         # tuned is gone); it no longer has any effect.
         sa = sigma_a if sigma_a is not None else self.SIGMA_A_KM_S2
         sz = sigma_z if sigma_z is not None else self.SIGMA_Z_KM
+        # Clamp to strictly-positive, finite noise std (a zero/negative std
+        # would make the filter ill-conditioned). Bound the other knobs too.
+        sa = max(1e-6, float(sa))
+        sz = max(1e-6, float(sz))
+        if gate_nis is not None:
+            self.GATE_NIS = max(1e-3, float(gate_nis))
+        if coast_s is not None:
+            self.COAST_S = max(0.0, float(coast_s))
+        if max_speed_km_s is not None:
+            self.MAX_SPEED_KM_S = max(1e-3, float(max_speed_km_s))
+        # Remember the noise std so reset() can rebuild identical filters.
+        self._sigma_a = sa
+        self._sigma_z = sz
         v_var0 = self.MAX_SPEED_KM_S ** 2
         self._fx = _KalmanCV1D(sa, sz, v_var0)
         self._fy = _KalmanCV1D(sa, sz, v_var0)
@@ -297,8 +319,8 @@ class VelocityTracker:
 
     def reset(self):
         """Discard all state and restart estimation."""
-        sa = math.sqrt(self._fx._q)
-        sz = math.sqrt(self._fx._r)
+        sa = self._sigma_a
+        sz = self._sigma_z
         v_var0 = self.MAX_SPEED_KM_S ** 2
         self._fx = _KalmanCV1D(sa, sz, v_var0)
         self._fy = _KalmanCV1D(sa, sz, v_var0)
