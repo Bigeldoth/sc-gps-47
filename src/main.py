@@ -700,6 +700,81 @@ class GPSOverlay(QMainWindow):
             self.reset_velocity_tracker, Qt.ConnectionType.QueuedConnection
         )
 
+        # Check for incomplete updates from a previous app crash/failure
+        self._check_incomplete_update()
+
+    def _check_incomplete_update(self):
+        """Check if there's an incomplete update from a previous crash.
+
+        If found, display a dialog offering to resume, rollback, or retry.
+        """
+        try:
+            from update_manager import UpdateManager
+            um = UpdateManager(self.config_manager, self._get_current_app_version())
+            metadata = um.detect_incomplete_update()
+            if metadata:
+                logger.warning(
+                    f"Incomplete update detected: {metadata.current_version} → "
+                    f"{metadata.target_version}, state={metadata.state}"
+                )
+                self._show_incomplete_update_dialog(um, metadata)
+        except Exception as exc:
+            logger.warning(f"Could not check for incomplete update: {exc}")
+
+    def _get_current_app_version(self) -> str:
+        """Get the current app version from the bundled config."""
+        try:
+            iss_file = bundle_dir() / "installer" / "spaceDrive.iss"
+            if iss_file.exists():
+                with open(iss_file, "r") as f:
+                    for line in f:
+                        if line.startswith("#define MyAppVersion"):
+                            parts = line.split('"')
+                            if len(parts) >= 2:
+                                return f"v{parts[1]}"
+        except Exception as exc:
+            logger.warning(f"Could not read app version: {exc}")
+        return "unknown"
+
+    def _show_incomplete_update_dialog(self, um, metadata):
+        """Display a dialog for handling incomplete update."""
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Incomplete Update Detected")
+        msg.setIcon(QMessageBox.Icon.Warning)
+        msg.setText(
+            f"An update from {metadata.current_version} to {metadata.target_version} "
+            f"was interrupted. What would you like to do?"
+        )
+        if metadata.errors:
+            msg.setDetailedText("Errors:\n" + "\n".join(metadata.errors))
+
+        resume_btn = msg.addButton("Resume Update", QMessageBox.ButtonRole.AcceptRole)
+        rollback_btn = msg.addButton("Rollback", QMessageBox.ButtonRole.DestructiveRole)
+        msg.addButton("Ignore", QMessageBox.ButtonRole.RejectRole)
+
+        msg.exec()
+
+        if msg.clickedButton() is resume_btn:
+            logger.info("User chose to resume incomplete update")
+            # TODO: implement resume logic in Phase 4.5 if needed
+            QMessageBox.information(
+                self,
+                "Resume Update",
+                "Resume functionality will be implemented in a future update. "
+                "Please manually download the latest installer for now."
+            )
+        elif msg.clickedButton() is rollback_btn:
+            logger.info("User chose to rollback incomplete update")
+            ok, msg_text = um.rollback(metadata.current_version)
+            if ok:
+                QMessageBox.information(
+                    self, "Rollback Complete", f"Successfully rolled back to {metadata.current_version}."
+                )
+            else:
+                QMessageBox.critical(
+                    self, "Rollback Failed", f"Rollback failed: {msg_text}\nPlease reinstall the app."
+                )
+
     def _on_hotkey_save_position(self):
         """Captures current coordinates at exact press moment.
 
