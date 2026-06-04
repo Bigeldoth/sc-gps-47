@@ -75,7 +75,8 @@ if (Test-Path $KeyValue) {
     [System.Environment]::SetEnvironmentVariable("VPS_SSH_KEY", $KeyContent, "Process")
 }
 
-& python (Join-Path $PSScriptRoot "upload_vps.py") $Installer.FullName
+$DistDir = Join-Path $RepoRoot "dist\spaceDrive"
+& python (Join-Path $PSScriptRoot "upload_vps.py") $Installer.FullName --dist-dir $DistDir
 if ($LASTEXITCODE -ne 0) { throw "VPS upload failed" }
 
 # Step 3: Git tag + GitHub Release
