@@ -270,13 +270,13 @@ def main() -> None:
                 remote = f"{releases_path}/{file_name}"
                 new_version = file_name.removeprefix("SpaceDrive-Setup-").removesuffix(".exe")
 
+                # Get previous version BEFORE uploading the new one
+                delta_info = None
+                old_version = _get_latest_installer_version(client, releases_path)
+
                 print(f"\n[UPLOAD] Uploading: {file_name}")
                 sftp.put(file_path, remote)
                 print(f"   [OK] Uploaded to {host}:{remote}")
-
-                # Generate delta if previous version exists
-                delta_info = None
-                old_version = _get_latest_installer_version(client, releases_path)
                 if old_version and old_version != new_version:
                     print(f"\n[DELTA] Generating delta: {old_version} -> {new_version}")
                     try:
