@@ -19,6 +19,8 @@ from navigation import (
     great_circle_distance,
     great_circle_bearing,
     calculate_absolute_bearing,
+    calculate_velocity_bearing,
+    normalize_angle_signed,
 )
 
 
@@ -217,3 +219,43 @@ def test_surface_distance_legacy_origin_inputs_preserved():
     nav.set_target(3.0, 4.0, 100.0, "Outpost", ooc="Hurston", kind="surface")
     dist = nav.calculate_distance({"x": 0.0, "y": 0.0, "z": 0.0, "ooc": "Hurston"})
     assert dist == 5.0
+
+
+# ---- moving guidance: velocity bearing follows the great circle on surfaces ----
+
+def test_velocity_bearing_surface_uses_great_circle_heading():
+    """For a far surface target the moving turn arrow must aim along the
+    great-circle initial heading (consistent with the stationary world arrow),
+    not the straight chord heading."""
+    a = _surface_point(0.0, 0.0)
+    b = _surface_point(40.0, 70.0)  # far enough that chord != arc heading
+    target = {"x": b["x"], "y": b["y"], "z": b["z"], "kind": "surface"}
+    velocity = (0.05, 0.10, -0.02)  # arbitrary movement (km/s)
+
+    yaw_off, _pitch_off = calculate_velocity_bearing(velocity, a, target)
+
+    vx, vy, _vz = velocity
+    vel_yaw = math.degrees(math.atan2(-vx, vy))
+    expected = normalize_angle_signed(great_circle_bearing(a, target) - vel_yaw)
+    assert abs(yaw_off - expected) < 1e-6
+
+    # And it genuinely differs from the old chord-based heading for a far target.
+    dx, dy = target["x"] - a["x"], target["y"] - a["y"]
+    chord_off = normalize_angle_signed(math.degrees(math.atan2(-dx, dy)) - vel_yaw)
+    assert abs(normalize_angle_signed(yaw_off - chord_off)) > 1.0
+
+
+def test_velocity_bearing_space_unchanged_chord_heading():
+    """Space POIs keep the straight chord heading in the moving arrow."""
+    a = _surface_point(0.0, 0.0)
+    b = _surface_point(40.0, 70.0)
+    target = {"x": b["x"], "y": b["y"], "z": b["z"], "kind": "space"}
+    velocity = (0.05, 0.10, -0.02)
+
+    yaw_off, _ = calculate_velocity_bearing(velocity, a, target)
+
+    vx, vy, _vz = velocity
+    vel_yaw = math.degrees(math.atan2(-vx, vy))
+    dx, dy = target["x"] - a["x"], target["y"] - a["y"]
+    expected = normalize_angle_signed(math.degrees(math.atan2(-dx, dy)) - vel_yaw)
+    assert abs(yaw_off - expected) < 1e-6

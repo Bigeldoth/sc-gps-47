@@ -341,7 +341,14 @@ def calculate_velocity_bearing(velocity, current_pos, target):
     # Horizontal heading of velocity and target.
     # SC: X+ = left, X- = right → negate X to map to standard navigation frame.
     vel_yaw = math.degrees(math.atan2(-vx, vy)) if (vx or vy) else 0.0
-    tgt_yaw = math.degrees(math.atan2(-dx, dy)) if (dx or dy) else 0.0
+    if _is_surface(target):
+        # Surface POI: aim along the great-circle initial heading so the moving
+        # turn arrow stays consistent with the stationary world arrow and the
+        # great-circle distance. The straight chord heading would diverge from
+        # the real over-the-surface path for far targets.
+        tgt_yaw = great_circle_bearing(current_pos, target)
+    else:
+        tgt_yaw = math.degrees(math.atan2(-dx, dy)) if (dx or dy) else 0.0
     yaw_off = normalize_angle_signed(tgt_yaw - vel_yaw)
 
     # Pitch (vertical component)
