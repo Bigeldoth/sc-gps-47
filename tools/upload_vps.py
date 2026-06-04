@@ -1,17 +1,35 @@
-"""Upload build artifacts to VPS via SFTP and generate delta updates."""
+"""Upload build artifacts to VPS via SFTP and generate delta updates.
+
+Delta generation uses a manifest-based approach:
+- After each build, a manifest (file->SHA256) of dist/spaceDrive/ is uploaded
+  alongside the installer so the next release can compute a true delta.
+- Inno Setup .exe files are NOT extracted (proprietary format); instead we
+  compare the PyInstaller one-folder output (dist/spaceDrive/) directly.
+
+Usage:
+    python tools/upload_vps.py dist/SpaceDrive-Setup-v0.7.8.exe [--dist-dir dist/spaceDrive]
+
+    --dist-dir   Path to the PyInstaller one-folder output. When supplied,
+                 a file manifest is generated and a delta .zip is produced
+                 by comparing against the previous version's manifest on VPS.
+                 When omitted, delta generation is skipped gracefully.
+"""
 import glob
 import hashlib
 import io
 import json
 import os
 import sys
-import tempfile
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 import paramiko
 
+
+# ---------------------------------------------------------------------------
+# SSH / SFTP helpers
+# ---------------------------------------------------------------------------
 
 def _load_private_key(key_content: str) -> paramiko.PKey:
     key_io = io.StringIO(key_content)
@@ -20,7 +38,7 @@ def _load_private_key(key_content: str) -> paramiko.PKey:
             return key_class.from_private_key(key_io)
         except paramiko.SSHException:
             key_io.seek(0)
-    raise ValueError("Unsupported SSH key type — use RSA, Ed25519, ECDSA, or DSS")
+    raise ValueError("Unsupported SSH key type -- use RSA, Ed25519, or ECDSA")
 
 
 def _sftp_mkdir_p(sftp: paramiko.SFTPClient, remote_path: str) -> None:
@@ -34,164 +52,136 @@ def _sftp_mkdir_p(sftp: paramiko.SFTPClient, remote_path: str) -> None:
             sftp.mkdir(current)
 
 
-def _extract_installer_files(exe_path: Path, extract_dir: Path) -> None:
-    """Extract files from Inno Setup .exe (it's a ZIP archive at the end).
+# ---------------------------------------------------------------------------
+# Manifest helpers  (replaces broken _extract_installer_files)
+# ---------------------------------------------------------------------------
 
-    Inno Setup creates a self-extracting executable where the actual files
-    are stored in a ZIP archive embedded in the .exe. We extract those files
-    to compare with newer versions.
-    """
-    # Inno Setup embeds a 7z/ZIP archive — find and extract it
-    with open(exe_path, 'rb') as f:
-        content = f.read()
+def _hash_folder(folder: Path) -> dict:
+    """Return {posix_rel_path: sha256} for every file under folder."""
+    manifest = {}
+    for fp in sorted(folder.rglob("*")):
+        if not fp.is_file():
+            continue
+        rel = fp.relative_to(folder).as_posix()
+        with open(fp, "rb") as f:
+            manifest[rel] = hashlib.sha256(f.read()).hexdigest()
+    return manifest
 
-    # Look for ZIP signature (PK\x03\x04) in the file
-    zip_start = content.rfind(b'PK\x03\x04')
-    if zip_start == -1:
-        raise ValueError(f"No ZIP archive found in {exe_path}")
 
-    # Extract the ZIP data
-    zip_data = content[zip_start:]
-    with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as tmp:
-        tmp.write(zip_data)
-        tmp_path = tmp.name
-
+def _download_manifest(sftp: paramiko.SFTPClient, manifests_path: str, version: str) -> dict | None:
+    """Download the file manifest for *version* from VPS. Returns None if absent."""
+    remote = f"{manifests_path}/SpaceDrive-manifest-{version}.json"
     try:
-        with zipfile.ZipFile(tmp_path, 'r') as zf:
-            zf.extractall(extract_dir)
-    finally:
-        os.unlink(tmp_path)
+        buf = io.BytesIO()
+        sftp.getfo(remote, buf)
+        return json.loads(buf.getvalue())
+    except FileNotFoundError:
+        return None
+    except Exception as exc:
+        print(f"  [WARN] Could not download manifest for {version}: {exc}")
+        return None
 
+
+def _upload_manifest(sftp: paramiko.SFTPClient, manifests_path: str, version: str, manifest: dict) -> None:
+    """Upload file manifest for *version* to VPS."""
+    remote = f"{manifests_path}/SpaceDrive-manifest-{version}.json"
+    data = json.dumps(manifest, indent=2, sort_keys=True).encode()
+    sftp.putfo(io.BytesIO(data), remote)
+    print(f"  [OK] Manifest uploaded: {len(manifest)} files -> {remote}")
+
+
+# ---------------------------------------------------------------------------
+# Delta generation
+# ---------------------------------------------------------------------------
 
 def _generate_delta(
-    old_exe: Path,
-    new_exe: Path,
+    old_manifest: dict,
+    new_dist_dir: Path,
     old_version: str,
     new_version: str,
     output_dir: Path,
-) -> tuple[Path, str, int]:
-    """Generate a delta .zip between two installers.
+) -> tuple:
+    """Generate a delta .zip by comparing *old_manifest* to *new_dist_dir*.
 
     Returns: (delta_zip_path, sha256_checksum, size_bytes)
     """
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmpdir = Path(tmpdir)
-        old_extracted = tmpdir / "old"
-        new_extracted = tmpdir / "new"
-        old_extracted.mkdir()
-        new_extracted.mkdir()
+    new_manifest = _hash_folder(new_dist_dir)
 
-        print(f"  Extracting old version ({old_version})...")
-        _extract_installer_files(old_exe, old_extracted)
+    # Find files that are new or changed
+    delta_files = []
+    for rel_posix, new_hash in new_manifest.items():
+        if old_manifest.get(rel_posix) != new_hash:
+            abs_path = new_dist_dir / Path(rel_posix)
+            delta_files.append((rel_posix, abs_path))
 
-        print(f"  Extracting new version ({new_version})...")
-        _extract_installer_files(new_exe, new_extracted)
+    total = len(new_manifest)
+    changed = len(delta_files)
+    print(f"  {changed} changed/new files out of {total} total")
 
-        # Find changed/new files
-        delta_files = {}  # {relative_path: new_file_path}
-        for file_path in new_extracted.rglob("*"):
-            if not file_path.is_file():
-                continue
+    if not delta_files:
+        raise ValueError("No changed files between versions -- delta would be empty")
 
-            rel_path = file_path.relative_to(new_extracted)
-            old_file = old_extracted / rel_path
+    delta_zip_name = f"SpaceDrive-delta-{old_version}-to-{new_version}.zip"
+    delta_zip_path = output_dir / delta_zip_name
 
-            # Check if file is new or changed
-            if not old_file.exists():
-                delta_files[str(rel_path)] = file_path
-            else:
-                # Compare file hashes
-                with open(file_path, 'rb') as f:
-                    new_hash = hashlib.sha256(f.read()).hexdigest()
-                with open(old_file, 'rb') as f:
-                    old_hash = hashlib.sha256(f.read()).hexdigest()
+    checksums = {}
+    with zipfile.ZipFile(delta_zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("version.txt", new_version.lstrip("v"))
 
-                if new_hash != old_hash:
-                    delta_files[str(rel_path)] = file_path
+        for rel_posix, abs_path in sorted(delta_files):
+            zf.write(abs_path, f"FILES/{rel_posix}")
+            with open(abs_path, "rb") as f:
+                checksums[rel_posix] = hashlib.sha256(f.read()).hexdigest()
 
-        # Create delta zip
-        delta_zip_name = f"SpaceDrive-delta-{old_version}-to-{new_version}.zip"
-        delta_zip_path = output_dir / delta_zip_name
+        checksum_data = "\n".join(f"{h} {p}" for p, h in sorted(checksums.items()))
+        zf.writestr("checksum.sha256", checksum_data)
 
-        checksums = {}
-        with zipfile.ZipFile(delta_zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-            # Add version file
-            zf.writestr("version.txt", new_version.lstrip('v'))
+    with open(delta_zip_path, "rb") as f:
+        zip_hash = hashlib.sha256(f.read()).hexdigest()
 
-            # Add changed files
-            zf.mkdir("FILES")
-            for rel_path, file_path in sorted(delta_files.items()):
-                zf.write(file_path, f"FILES/{rel_path}")
+    size_bytes = delta_zip_path.stat().st_size
+    print(f"  [OK] Delta: {delta_zip_name} ({size_bytes / (1024*1024):.1f} MB)")
+    return delta_zip_path, zip_hash, size_bytes
 
-                # Calculate checksum
-                with open(file_path, 'rb') as f:
-                    file_hash = hashlib.sha256(f.read()).hexdigest()
-                checksums[rel_path] = file_hash
 
-            # Add checksum manifest
-            checksum_data = "\n".join(
-                f"{hash_val} {path}"
-                for path, hash_val in sorted(checksums.items())
-            )
-            zf.writestr("checksum.sha256", checksum_data)
-
-        # Calculate delta zip checksum
-        with open(delta_zip_path, 'rb') as f:
-            zip_hash = hashlib.sha256(f.read()).hexdigest()
-
-        size_bytes = delta_zip_path.stat().st_size
-        print(f"  [OK] Delta created: {delta_zip_path.name} ({size_bytes // (1024*1024)} MB)")
-
-        return delta_zip_path, zip_hash, size_bytes
-
+# ---------------------------------------------------------------------------
+# Cleanup helpers
+# ---------------------------------------------------------------------------
 
 def _cleanup_old_versions(client: paramiko.SSHClient, releases_path: str, keep: int) -> None:
+    """Prune old installer .exe files, keeping the *keep* most recent."""
     cmd = f"ls -t {releases_path}/SpaceDrive-Setup-*.exe 2>/dev/null"
     _, stdout, _ = client.exec_command(cmd)
-    all_files = [line.strip() for line in stdout.readlines() if line.strip()]
-
+    all_files = [ln.strip() for ln in stdout.readlines() if ln.strip()]
     for old in all_files[keep:]:
         client.exec_command(f"rm -f {old}")
-        print(f"Pruned: {os.path.basename(old)}")
+        print(f"  Pruned installer: {os.path.basename(old)}")
 
 
 def _cleanup_old_deltas(client: paramiko.SSHClient, deltas_path: str, keep: int) -> None:
-    """Prune old delta files, keeping only the most recent."""
+    """Prune old delta .zip files, keeping the *keep* most recent."""
     cmd = f"ls -t {deltas_path}/SpaceDrive-delta-*.zip 2>/dev/null | tail -n +{keep+1}"
     _, stdout, _ = client.exec_command(cmd)
-    old_deltas = [line.strip() for line in stdout.readlines() if line.strip()]
+    old_deltas = [ln.strip() for ln in stdout.readlines() if ln.strip()]
+    for old in old_deltas:
+        client.exec_command(f"rm -f {old}")
+        print(f"  Pruned delta: {os.path.basename(old)}")
 
-    for old_delta in old_deltas:
-        client.exec_command(f"rm -f {old_delta}")
-        print(f"Pruned delta: {os.path.basename(old_delta)}")
 
-
-def _get_latest_installer_version(
-    client: paramiko.SSHClient,
-    releases_path: str,
-) -> str | None:
-    """Get the latest installer version from VPS."""
+def _get_latest_installer_version(client: paramiko.SSHClient, releases_path: str) -> str | None:
+    """Return the version string of the most recent installer already on VPS."""
     cmd = f"ls -t {releases_path}/SpaceDrive-Setup-*.exe 2>/dev/null | head -1"
     _, stdout, _ = client.exec_command(cmd)
     lines = stdout.readlines()
     if not lines:
         return None
-
-    file_path = lines[0].strip()
-    file_name = os.path.basename(file_path)
-    # Extract version from: SpaceDrive-Setup-v0.7.4.exe
-    version = file_name.removeprefix("SpaceDrive-Setup-").removesuffix(".exe")
-    return version
+    file_name = os.path.basename(lines[0].strip())
+    return file_name.removeprefix("SpaceDrive-Setup-").removesuffix(".exe")
 
 
-def _download_installer(
-    sftp: paramiko.SFTPClient,
-    remote_path: str,
-    local_path: Path,
-) -> None:
-    """Download an installer from VPS."""
-    sftp.get(remote_path, str(local_path))
-
+# ---------------------------------------------------------------------------
+# latest.json
+# ---------------------------------------------------------------------------
 
 def _upload_latest_json(
     sftp: paramiko.SFTPClient,
@@ -200,24 +190,28 @@ def _upload_latest_json(
     public_url: str,
     delta_info: dict | None = None,
 ) -> None:
-    """Upload latest.json with optional delta metadata."""
     version = file_name.removeprefix("SpaceDrive-Setup-").removesuffix(".exe")
     payload = {
         "version": version,
         "url": f"{public_url.rstrip('/')}/{file_name}",
         "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
     }
-
     if delta_info:
         payload["delta"] = delta_info
 
     data = json.dumps(payload, indent=2).encode()
     sftp.putfo(io.BytesIO(data), f"{releases_path}/latest.json")
-    print(f"Updated latest.json -> version {version}")
+    print(f"  [OK] latest.json -> version {version}")
     if delta_info:
-        print(f"  Delta: {delta_info.get('url', '').split('/')[-1]} "
-              f"({delta_info.get('size_bytes', 0) // (1024*1024)} MB)")
+        size_mb = delta_info.get("size_bytes", 0) / (1024 * 1024)
+        print(f"       delta: {delta_info['url'].split('/')[-1]} ({size_mb:.1f} MB)")
+    else:
+        print(f"       (no delta -- full installer only)")
 
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 
 def main() -> None:
     host = os.environ["VPS_HOST"]
@@ -227,10 +221,23 @@ def main() -> None:
     keep_versions = int(os.environ.get("VPS_KEEP_VERSIONS", "5"))
     public_url = os.environ.get("VPS_PUBLIC_URL", "")
 
-    pattern = sys.argv[1] if len(sys.argv) > 1 else "dist/SpaceDrive-Setup-*.exe"
-    files = glob.glob(pattern)
+    # Parse args: positional = installer glob, optional --dist-dir <path>
+    args = sys.argv[1:]
+    dist_dir: Path | None = None
+    installer_pattern = "dist/SpaceDrive-Setup-*.exe"
+
+    i = 0
+    while i < len(args):
+        if args[i] == "--dist-dir" and i + 1 < len(args):
+            dist_dir = Path(args[i + 1])
+            i += 2
+        else:
+            installer_pattern = args[i]
+            i += 1
+
+    files = glob.glob(installer_pattern)
     if not files:
-        print(f"Error: no files matched '{pattern}'", file=sys.stderr)
+        print(f"[ERROR] No files matched '{installer_pattern}'", file=sys.stderr)
         sys.exit(1)
 
     print(f"[CONFIG] VPS Configuration:")
@@ -238,6 +245,10 @@ def main() -> None:
     print(f"   User: {user}")
     print(f"   Releases path: {releases_path}")
     print(f"   Public URL: {public_url}")
+    if dist_dir:
+        print(f"   Dist dir: {dist_dir} (delta generation enabled)")
+    else:
+        print(f"   Dist dir: not provided (delta generation DISABLED)")
     print(f"\n[FILES] Files to upload: {[os.path.basename(f) for f in files]}\n")
 
     pkey = _load_private_key(ssh_key_content)
@@ -248,62 +259,68 @@ def main() -> None:
     try:
         client.connect(host, username=user, pkey=pkey, timeout=30)
         print(f"[OK] Connected!\n")
-    except TimeoutError as e:
-        print(f"[ERROR] Connection timeout to {host}:{user}", file=sys.stderr)
-        print(f"        This is expected in isolated CI environments (e.g., GitHub Actions)", file=sys.stderr)
-        print(f"        Either:", file=sys.stderr)
-        print(f"        1. Configure firewall to allow CI runner IPs", file=sys.stderr)
-        print(f"        2. Use local release script: .\\tools\\release.ps1 -Version vX.Y.Z", file=sys.stderr)
+    except TimeoutError:
+        print(f"[ERROR] Connection timeout to {host}", file=sys.stderr)
+        print(f"        This is expected in isolated CI environments.", file=sys.stderr)
+        print(f"        Use local release script: .\\tools\\release.ps1 -Version vX.Y.Z", file=sys.stderr)
         sys.exit(1)
-    except Exception as e:
-        print(f"[ERROR] SSH Connection failed: {e}", file=sys.stderr)
+    except Exception as exc:
+        print(f"[ERROR] SSH Connection failed: {exc}", file=sys.stderr)
         sys.exit(1)
 
     try:
         with client.open_sftp() as sftp:
             _sftp_mkdir_p(sftp, releases_path)
             deltas_path = f"{releases_path}/deltas"
+            manifests_path = f"{releases_path}/manifests"
             _sftp_mkdir_p(sftp, deltas_path)
+            _sftp_mkdir_p(sftp, manifests_path)
 
             for file_path in files:
                 file_name = os.path.basename(file_path)
                 remote = f"{releases_path}/{file_name}"
                 new_version = file_name.removeprefix("SpaceDrive-Setup-").removesuffix(".exe")
 
-                # Get previous version BEFORE uploading the new one
-                delta_info = None
+                # --- Fetch old version info BEFORE uploading ---
                 old_version = _get_latest_installer_version(client, releases_path)
+                old_manifest: dict | None = None
+                if old_version and old_version != new_version and dist_dir:
+                    old_manifest = _download_manifest(sftp, manifests_path, old_version)
+                    if old_manifest:
+                        print(f"  [OK] Old manifest found for {old_version} ({len(old_manifest)} files)")
+                    else:
+                        print(f"  [WARN] No manifest found for {old_version} -- delta skipped this release")
 
+                # --- Upload new installer ---
                 print(f"\n[UPLOAD] Uploading: {file_name}")
                 sftp.put(file_path, remote)
-                print(f"   [OK] Uploaded to {host}:{remote}")
-                if old_version and old_version != new_version:
-                    print(f"\n[DELTA] Generating delta: {old_version} -> {new_version}")
-                    try:
-                        with tempfile.TemporaryDirectory() as tmpdir:
-                            tmpdir = Path(tmpdir)
+                print(f"  [OK] Uploaded to {host}:{remote}")
 
-                            # Download old installer
-                            old_file = tmpdir / f"SpaceDrive-Setup-{old_version}.exe"
-                            old_remote = f"{releases_path}/SpaceDrive-Setup-{old_version}.exe"
-                            _download_installer(sftp, old_remote, old_file)
+                # --- Upload manifest for new version ---
+                delta_info = None
+                if dist_dir and dist_dir.is_dir():
+                    print(f"\n[MANIFEST] Generating manifest for {new_version}...")
+                    new_manifest = _hash_folder(dist_dir)
+                    _upload_manifest(sftp, manifests_path, new_version, new_manifest)
 
-                            # Generate delta
-                            delta_zip, delta_checksum, delta_size = _generate_delta(
-                                old_file,
-                                Path(file_path),
-                                old_version,
-                                new_version,
-                                tmpdir,
-                            )
+                    # --- Generate delta if we have old manifest ---
+                    if old_manifest:
+                        print(f"\n[DELTA] Generating delta: {old_version} -> {new_version}")
+                        try:
+                            import tempfile
+                            with tempfile.TemporaryDirectory() as tmpdir:
+                                delta_zip, delta_checksum, delta_size = _generate_delta(
+                                    old_manifest,
+                                    dist_dir,
+                                    old_version,
+                                    new_version,
+                                    Path(tmpdir),
+                                )
+                                delta_name = delta_zip.name
+                                delta_remote = f"{deltas_path}/{delta_name}"
+                                sftp.put(str(delta_zip), delta_remote)
+                                print(f"  [OK] Delta uploaded: {delta_remote}")
 
-                            # Upload delta
-                            delta_name = delta_zip.name
-                            delta_remote = f"{deltas_path}/{delta_name}"
-                            sftp.put(str(delta_zip), delta_remote)
-                            print(f"   [OK] Delta uploaded to {host}:{delta_remote}")
-
-                            # Prepare delta metadata
                             delta_info = {
                                 "available": True,
                                 "min_version": old_version,
@@ -312,20 +329,22 @@ def main() -> None:
                                 "size_bytes": delta_size,
                                 "notes": f"Delta update from {old_version} to {new_version}",
                             }
-                    except Exception as exc:
-                        print(f"   [WARN] Delta generation failed: {exc}")
-                        print(f"   Using full installer only")
+                        except Exception as exc:
+                            print(f"  [WARN] Delta generation failed: {exc}")
+                            print(f"  Full installer only for this release.")
+                else:
+                    if dist_dir:
+                        print(f"  [WARN] --dist-dir {dist_dir} not found, skipping manifest/delta")
 
-                # Upload latest.json
+                # --- Update latest.json ---
                 if public_url:
+                    print(f"\n[LATEST] Updating latest.json...")
                     _upload_latest_json(sftp, releases_path, file_name, public_url, delta_info)
 
-            # Cleanup old versions
-            print(f"\n[CLEANUP] Cleaning up old versions (keeping {keep_versions})...")
+            # --- Cleanup ---
+            print(f"\n[CLEANUP] Keeping {keep_versions} most recent installers...")
             _cleanup_old_versions(client, releases_path, keep_versions)
-
-            # Cleanup old deltas
-            print(f"[CLEANUP] Cleaning up old deltas (keeping 3)...")
+            print(f"[CLEANUP] Keeping 3 most recent deltas...")
             _cleanup_old_deltas(client, deltas_path, keep=3)
 
     finally:
