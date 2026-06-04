@@ -829,42 +829,65 @@ class OptionsWindow(QDialog):
         self._show_restart_countdown(message)
 
     def _show_restart_countdown(self, message: str):
-        """Show countdown dialog and restart app."""
+        """Show 5-second countdown dialog, then restart the app."""
         from PyQt6.QtCore import QTimer
 
         countdown_dialog = QMessageBox(self)
         countdown_dialog.setWindowTitle("Update Complete")
         countdown_dialog.setIcon(QMessageBox.Icon.Information)
+        # No standard buttons — we control dismissal via the timer
         countdown_dialog.setStandardButtons(QMessageBox.StandardButton.NoButton)
 
-        # Countdown timer
         self._countdown = 5
-        timer = QTimer()
+        self._restart_after_countdown = True
 
-        def update_countdown():
-            self._countdown -= 1
+        def _update_text():
             countdown_dialog.setText(
                 f"{message}\n\n"
                 f"Restarting application in {self._countdown} seconds..."
             )
+
+        # Attach timer to dialog so it lives as long as the dialog does
+        timer = QTimer(countdown_dialog)
+
+        def _tick():
+            self._countdown -= 1
             if self._countdown <= 0:
                 timer.stop()
-                countdown_dialog.close()
-                self._restart_application()
+                # accept() causes exec() to return — restart is called after
+                countdown_dialog.accept()
+            else:
+                _update_text()
 
-        timer.timeout.connect(update_countdown)
-        countdown_dialog.setText(
-            f"{message}\n\n"
-            f"Restarting application in {self._countdown} seconds..."
-        )
-        timer.start(1000)  # Update every second
+        timer.timeout.connect(_tick)
+        _update_text()
+        timer.start(1000)
+
+        # exec() blocks here; returns when countdown_dialog.accept() is called
         countdown_dialog.exec()
+        timer.stop()
+
+        if self._restart_after_countdown:
+            self._restart_application()
 
     def _restart_application(self):
-        """Force quit and let parent/system relaunch."""
-        logger.info(f"Restarting application after successful update")
+        """Relaunch the app process, then quit the current one."""
+        import subprocess
+        import sys
         from PyQt6.QtWidgets import QApplication
+
+        logger.info("Restarting application after successful update")
+
+        # Re-launch current executable (works for both frozen bundle and dev)
+        try:
+            subprocess.Popen([sys.executable] + sys.argv[1:])
+        except Exception as exc:
+            logger.error(f"Failed to relaunch executable: {exc}")
+
+        # Quit current instance — sys.exit ensures we actually exit even if
+        # QApplication.quit() is swallowed by a nested event loop
         QApplication.quit()
+        sys.exit(0)
 
     def _on_skip_update(self):
         """Mark this version as skipped."""
