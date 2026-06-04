@@ -722,18 +722,32 @@ class GPSOverlay(QMainWindow):
             logger.warning(f"Could not check for incomplete update: {exc}")
 
     def _get_current_app_version(self) -> str:
-        """Get the current app version from the bundled config."""
+        """Get the current app version from config.ini [Updates] app_version or installer config."""
+        # First, try reading from config.ini (most reliable in both dev and bundled modes)
+        try:
+            app_version = self.config_manager.get('Updates', 'app_version', fallback=None)
+            if app_version and app_version.strip():
+                return app_version.strip()
+        except Exception:
+            pass
+
+        # Fallback: try reading from installer/spaceDrive.iss (only works in dev mode)
         try:
             iss_file = bundle_dir() / "installer" / "spaceDrive.iss"
             if iss_file.exists():
-                with open(iss_file, "r") as f:
+                with open(iss_file, "r", encoding='utf-8') as f:
                     for line in f:
-                        if line.startswith("#define MyAppVersion"):
+                        if line.strip().startswith("#define MyAppVersion"):
+                            # Extract version from: #define MyAppVersion "0.7.4"
                             parts = line.split('"')
                             if len(parts) >= 2:
-                                return f"v{parts[1]}"
+                                version = parts[1].strip()
+                                if version:
+                                    return f"v{version}"
         except Exception as exc:
-            logger.warning(f"Could not read app version: {exc}")
+            logger.debug(f"Could not read version from installer config: {exc}")
+
+        logger.warning("App version could not be determined")
         return "unknown"
 
     def _show_incomplete_update_dialog(self, um, metadata):
