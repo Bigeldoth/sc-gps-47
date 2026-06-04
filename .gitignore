@@ -61,3 +61,4 @@ tests/*.mp4
 
 # Local release credentials
 .env.local
+updates/

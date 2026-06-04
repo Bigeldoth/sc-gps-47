@@ -44,6 +44,28 @@ class _GpuProbeThread(QThread):
         self.done.emit(cuda_available, gpu_status, gpu_msg)
 
 
+class _UpdateCheckThread(QThread):
+    """Checks for available updates off the UI thread."""
+
+    check_complete = pyqtSignal(str, dict)  # new_version, latest_json (or None on error)
+
+    def __init__(self, current_version: str):
+        super().__init__()
+        self.current_version = current_version
+
+    def run(self):
+        try:
+            from update_manager import UpdateManager
+            um = UpdateManager(None, self.current_version)
+            new_version, latest_json = um.check_for_update()
+            if latest_json is None:
+                latest_json = {}
+            self.check_complete.emit(new_version or "", latest_json)
+        except Exception as exc:
+            logger.warning(f"Update check failed: {exc}")
+            self.check_complete.emit("", {})
+
+
 class OptionsWindow(QDialog):
     """Tabbed options dialog (dark MFD-style theme)."""
 
@@ -80,6 +102,7 @@ class OptionsWindow(QDialog):
         self.tabs.addTab(self._create_ocr_tab(), "OCR")
         self.tabs.addTab(self._create_debug_tab(), "Debug")
         self.tabs.addTab(self._create_hotkey_tab(), "Hotkeys")
+        self.tabs.addTab(self._create_updates_tab(), "Updates")
         layout.addWidget(self.tabs)
 
         button_layout = QHBoxLayout()
@@ -539,17 +562,178 @@ class OptionsWindow(QDialog):
         widget.setLayout(layout)
         return widget
 
+    # ----- Updates tab -----
+    def _create_updates_tab(self):
+        widget = QWidget()
+        layout = QVBoxLayout()
+        layout.addWidget(self._section_title("Application Updates"))
+
+        # Current version display
+        form = QFormLayout()
+        self.current_version_label = QLabel("Loading...")
+        self.current_version_label.setStyleSheet("color: #6FE8FF;")
+        form.addRow("Current version:", self.current_version_label)
+
+        self.latest_version_label = QLabel("—")
+        self.latest_version_label.setStyleSheet("color: #6FE8FF;")
+        form.addRow("Latest version:", self.latest_version_label)
+
+        self.update_size_label = QLabel("—")
+        form.addRow("Update size:", self.update_size_label)
+
+        layout.addLayout(form)
+
+        # Changelog
+        layout.addWidget(self._section_title("Release Notes"))
+        self.changelog_text = QLabel("")
+        self.changelog_text.setStyleSheet("color: #A8B5C1; font-size: 10px; background: transparent;")
+        self.changelog_text.setWordWrap(True)
+        layout.addWidget(self.changelog_text)
+
+        # Buttons
+        button_row = QHBoxLayout()
+        self.check_update_button = QPushButton("Check for Updates")
+        self.check_update_button.clicked.connect(self._on_check_updates)
+        button_row.addWidget(self.check_update_button)
+
+        self.update_now_button = QPushButton("Update Now")
+        self.update_now_button.clicked.connect(self._on_update_now)
+        self.update_now_button.setEnabled(False)
+        button_row.addWidget(self.update_now_button)
+
+        self.skip_button = QPushButton("Skip")
+        self.skip_button.clicked.connect(self._on_skip_update)
+        self.skip_button.setEnabled(False)
+        button_row.addWidget(self.skip_button)
+
+        button_row.addStretch()
+        layout.addLayout(button_row)
+
+        # Progress bar (initially hidden)
+        from PyQt6.QtWidgets import QProgressBar
+        self.update_progress_bar = QProgressBar()
+        self.update_progress_bar.setVisible(False)
+        layout.addWidget(self.update_progress_bar)
+
+        layout.addWidget(self._hint(
+            "Delta updates download only the changed files (~15-30 MB) instead of "
+            "the full installer (~50 MB). Click 'Check for Updates' to see if a new "
+            "version is available."
+        ))
+
+        layout.addStretch()
+        widget.setLayout(layout)
+        return widget
+
     def _hint(self, text):
         label = QLabel(text)
         label.setStyleSheet("color: #7E8B97; font-size: 11px; background: transparent;")
         label.setWordWrap(True)
         return label
 
+    def _get_current_app_version(self) -> str:
+        """Get the current app version from config.ini or installer config."""
+        # First, try reading from config.ini (most reliable in both dev and bundled modes)
+        try:
+            app_version = self.config_manager.get('Updates', 'app_version', fallback=None)
+            if app_version and app_version.strip():
+                return app_version.strip()
+        except Exception:
+            pass
+
+        # Fallback: try reading from installer/spaceDrive.iss (only works in dev mode)
+        try:
+            from pathlib import Path
+            from app_paths import bundle_dir
+            iss_file = bundle_dir() / "installer" / "spaceDrive.iss"
+            if iss_file.exists():
+                with open(iss_file, "r", encoding='utf-8') as f:
+                    for line in f:
+                        if line.strip().startswith("#define MyAppVersion"):
+                            # Extract version from: #define MyAppVersion "0.7.4"
+                            parts = line.split('"')
+                            if len(parts) >= 2:
+                                version = parts[1].strip()
+                                if version:
+                                    return f"v{version}"
+        except Exception as exc:
+            logger.debug(f"Could not read version from installer config: {exc}")
+
+        logger.warning("App version could not be determined")
+        return "unknown"
+
+    def _on_check_updates(self):
+        """Check for updates in a background thread."""
+        self.check_update_button.setEnabled(False)
+        self.check_update_button.setText("Checking...")
+        self._update_check_thread = _UpdateCheckThread(self._get_current_app_version())
+        self._update_check_thread.check_complete.connect(self._on_update_check_complete)
+        self._update_check_thread.start()
+
+    def _on_update_check_complete(self, new_version: str, latest_json: dict):
+        """Handle update check result."""
+        self.check_update_button.setEnabled(True)
+        self.check_update_button.setText("Check for Updates")
+
+        if not new_version:
+            self.latest_version_label.setText("Up to date")
+            self.update_now_button.setEnabled(False)
+            self.skip_button.setEnabled(False)
+            self.changelog_text.setText("You are using the latest version.")
+            return
+
+        # Update available
+        self.latest_version_label.setText(new_version)
+        self.update_now_button.setEnabled(True)
+        self.skip_button.setEnabled(True)
+
+        # Show update size
+        delta_info = latest_json.get("delta", {})
+        if delta_info.get("available"):
+            size_mb = delta_info.get("size_bytes", 0) / (1024 * 1024)
+            self.update_size_label.setText(f"~{size_mb:.1f} MB (delta)")
+        else:
+            self.update_size_label.setText("Full installer")
+
+        # Show changelog
+        changelog = latest_json.get("changelog", {})
+        if changelog:
+            summary = changelog.get("summary", "New version available")
+            highlights = changelog.get("highlights", [])
+            text = f"{summary}\n"
+            for highlight in highlights:
+                text += f"• {highlight}\n"
+            self.changelog_text.setText(text.strip())
+        else:
+            self.changelog_text.setText(f"A new version ({new_version}) is available.")
+
+    def _on_update_now(self):
+        """Initiate the update (placeholder for now)."""
+        QMessageBox.information(
+            self,
+            "Update Manager",
+            "Update functionality will be implemented in Phase 4.\n"
+            "For now, please download the latest installer manually."
+        )
+
+    def _on_skip_update(self):
+        """Mark this version as skipped."""
+        new_version = self.latest_version_label.text()
+        if new_version and new_version != "—" and new_version != "Up to date":
+            self.config_manager.set_last_skipped_version(new_version)
+            self.update_now_button.setEnabled(False)
+            self.skip_button.setEnabled(False)
+            QMessageBox.information(self, "Update Skipped", f"You won't be asked about {new_version} again.")
+
     def _update_ocr_label(self, value):
         self.ocr_value_label.setText(f"{value} ms")
 
     def _load_current_values(self):
         cfg = self.config_manager
+
+        # Updates
+        current_version = self._get_current_app_version()
+        self.current_version_label.setText(current_version)
 
         # General
         self.ocr_slider.setValue(cfg.get_scan_interval())
