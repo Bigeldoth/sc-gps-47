@@ -44,6 +44,7 @@ class ConfigManager:
 
         self.config = configparser.ConfigParser()
         self.load()
+        self._migrate()
 
     def load(self):
         """Load the configuration from file."""
@@ -117,6 +118,88 @@ class ConfigManager:
             self.config.set('Updates', 'last_skipped_version', '')
 
         self.save()
+
+    def _migrate(self):
+        """Add any keys missing from the user config (new options added in later versions).
+
+        Called on every startup after load(). Only adds missing sections/keys;
+        never overwrites existing user values. Saves once if anything was added.
+        """
+        # Canonical defaults: {section: {key: default_value}}
+        DEFAULTS = {
+            'Logging': {
+                'level': 'INFO',
+                'file': 'spacedrive.log',
+            },
+            'Debug': {
+                'save_ocr_images': 'False',
+                'save_glyph_crops': 'False',
+                'verbose_mode': 'False',
+                'record_telemetry': 'False',
+                'test_screenshot': '',
+            },
+            'Features': {
+                'interactive_mode': 'True',
+                'poi_management': 'True',
+            },
+            'OCR': {
+                'tesseract_path': r'C:\Program Files\Tesseract-OCR\tesseract.exe',
+                'scan_interval_ms': '200',
+                'glyph_engine': 'onnx',
+                'onnx_model_path': 'models/spacedrive_ocr.onnx',
+                'onnx_classes_path': 'models/spacedrive_ocr.classes.json',
+                'onnx_confidence_threshold': '0.85',
+                'text_engine': 'tesseract',
+                'pipeline_mode': 'hybrid',
+                'paddle_device': 'cpu',
+            },
+            'Settings': {
+                'refresh_interval_ms': '200',
+            },
+            'Overlay': {
+                'default_opacity': '0.70',
+                'default_position_x': '50',
+                'default_position_y': '50',
+                'show_status_bar': 'True',
+            },
+            'Hotkeys': {
+                'toggle_overlay': 'shift+f1',
+                'open_options': 'shift+f2',
+                'save_position': 'shift+f3',
+                'open_poi_manager': 'shift+f4',
+                'reset_gps_nav': 'shift+f5',
+            },
+            'Navigation': {
+                'arrival_radius_m': '100.0',
+            },
+            'Kalman': {
+                'max_speed_km_s': '2.5',
+                'sigma_a': '1.0',
+                'sigma_z': '0.02',
+                'gate_nis': '30.0',
+                'coast_s': '2.0',
+            },
+            'Updates': {
+                'check_on_startup': 'False',
+                'keep_deltas_count': '3',
+                'last_skipped_version': '',
+            },
+        }
+
+        added = False
+        for section, keys in DEFAULTS.items():
+            if not self.config.has_section(section):
+                self.config.add_section(section)
+                logger.info(f"[migrate] Added missing section [{section}]")
+                added = True
+            for key, default in keys.items():
+                if not self.config.has_option(section, key):
+                    self.config.set(section, key, default)
+                    logger.info(f"[migrate] Added missing key [{section}] {key} = {default!r}")
+                    added = True
+
+        if added:
+            self.save()
 
     # Quick-access methods for frequently used settings
 
