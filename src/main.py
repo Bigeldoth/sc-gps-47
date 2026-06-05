@@ -1451,6 +1451,14 @@ class GPSOverlay(QMainWindow):
         self.setGeometry(50, 50, 340, 155)
         self.central_widget.setStyleSheet("background-color: transparent; border: none;")
 
+        # Apply overlay opacity from config
+        try:
+            opacity = float(self.config_manager.get('Overlay', 'default_opacity', fallback='1.0'))
+            opacity = max(0.1, min(1.0, opacity))  # Clamp to valid range
+            self.setWindowOpacity(opacity)
+        except (ValueError, TypeError):
+            self.setWindowOpacity(1.0)  # Fallback to default
+
         if self.isVisible():
             self.show()
 
@@ -1657,6 +1665,15 @@ class GPSOverlay(QMainWindow):
 
         # Refresh hotkeys in case they were modified
         self.hotkey_listener.reload_hotkeys()
+
+        # Apply overlay opacity change live
+        try:
+            opacity = float(self.config_manager.get('Overlay', 'default_opacity', fallback='1.0'))
+            opacity = max(0.1, min(1.0, opacity))  # Clamp to valid range
+            self.setWindowOpacity(opacity)
+            logger.info(f"Overlay opacity updated: {opacity:.2f}")
+        except (ValueError, TypeError):
+            logger.warning("Invalid opacity value in config, keeping current value")
 
         # Hot-reload the OCR processor so an engine/mode/device change in
         # Options takes effect on the next tick — no app restart needed.
