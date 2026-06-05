@@ -100,7 +100,7 @@ class ConfigManager:
 
         if not self.config.has_section('Overlay'):
             self.config.add_section('Overlay')
-            self.config.set('Overlay', 'default_opacity', '0.7')
+            self.config.set('Overlay', 'default_opacity', '1.0')
             self.config.set('Overlay', 'default_position_x', '50')
             self.config.set('Overlay', 'default_position_y', '50')
 
@@ -162,7 +162,7 @@ class ConfigManager:
                 'refresh_interval_ms': '200',
             },
             'Overlay': {
-                'default_opacity': '0.70',
+                'default_opacity': '1.00',
                 'default_position_x': '50',
                 'default_position_y': '50',
                 'show_status_bar': 'True',
