@@ -683,30 +683,50 @@ class OptionsWindow(QDialog):
         return label
 
     def _get_current_app_version(self) -> str:
-        """Get the current app version from config.ini or installer config."""
-        # First, try reading from config.ini (most reliable in both dev and bundled modes)
+        """Get the current app version.
+
+        Priority:
+        1. Bundled config.ini (lives in Program Files / bundle dir) — authoritative,
+           always replaced by installer and included in every delta.
+        2. User config.ini [Updates] app_version — legacy fallback.
+        3. installer/spaceDrive.iss — dev-mode fallback.
+        """
+        import configparser
+        from pathlib import Path
+        from app_paths import bundle_dir
+
+        # 1. Read from the bundled (install-dir) config.ini — never user-edited
         try:
-            app_version = self.config_manager.get('Updates', 'app_version', fallback=None)
+            bundled_cfg = bundle_dir() / "config.ini"
+            if bundled_cfg.exists():
+                parser = configparser.ConfigParser()
+                parser.read(str(bundled_cfg), encoding="utf-8")
+                ver = parser.get("Updates", "app_version", fallback="").strip()
+                if ver:
+                    return ver if ver.startswith("v") else f"v{ver}"
+        except Exception as exc:
+            logger.debug(f"Could not read bundled config.ini for version: {exc}")
+
+        # 2. User config (legacy / dev fallback)
+        try:
+            app_version = self.config_manager.get("Updates", "app_version", fallback=None)
             if app_version and app_version.strip():
                 return app_version.strip()
         except Exception:
             pass
 
-        # Fallback: try reading from installer/spaceDrive.iss (only works in dev mode)
+        # 3. installer/spaceDrive.iss — works only in dev mode
         try:
-            from pathlib import Path
-            from app_paths import bundle_dir
             iss_file = bundle_dir() / "installer" / "spaceDrive.iss"
             if iss_file.exists():
-                with open(iss_file, "r", encoding='utf-8') as f:
+                with open(iss_file, "r", encoding="utf-8") as f:
                     for line in f:
                         if line.strip().startswith("#define MyAppVersion"):
-                            # Extract version from: #define MyAppVersion "0.7.4"
                             parts = line.split('"')
                             if len(parts) >= 2:
-                                version = parts[1].strip()
-                                if version:
-                                    return f"v{version}"
+                                ver = parts[1].strip()
+                                if ver:
+                                    return f"v{ver}"
         except Exception as exc:
             logger.debug(f"Could not read version from installer config: {exc}")
 
