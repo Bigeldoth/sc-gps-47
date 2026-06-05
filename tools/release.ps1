@@ -48,6 +48,21 @@ Write-Host ""
 Write-Host "==> SpaceDrive Release $Version" -ForegroundColor Cyan
 Write-Host ""
 
+# Bump version in config.ini and spaceDrive.iss before building
+$BareVersion = $Version.TrimStart("v")
+
+$ConfigFile = Join-Path $RepoRoot "config.ini"
+$ConfigContent = Get-Content $ConfigFile -Raw
+$ConfigContent = $ConfigContent -replace "(?m)^app_version\s*=.*$", "app_version = $Version"
+$ConfigContent | Set-Content $ConfigFile -Encoding utf8 -NoNewline
+Write-Host "==> Bumped config.ini -> app_version = $Version"
+
+$IssFile = Join-Path $RepoRoot "installer\spaceDrive.iss"
+$IssContent = Get-Content $IssFile -Raw
+$IssContent = $IssContent -replace '#define MyAppVersion "[^"]*"', "#define MyAppVersion `"$BareVersion`""
+$IssContent | Set-Content $IssFile -Encoding utf8 -NoNewline
+Write-Host "==> Bumped spaceDrive.iss -> MyAppVersion = $BareVersion"
+
 # Step 1: Build
 if (-not $SkipBuild) {
     Write-Host "--- Step 1/3: Build installer ---" -ForegroundColor Yellow
