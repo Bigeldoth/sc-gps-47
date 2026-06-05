@@ -47,9 +47,14 @@ class ConfigManager:
         self._migrate()
 
     def load(self):
-        """Load the configuration from file."""
+        """Load the configuration from file.
+
+        Uses utf-8-sig encoding to transparently strip any UTF-8 BOM that
+        PowerShell 5.1 may have written (Set-Content -Encoding utf8 adds a BOM
+        that configparser cannot parse, causing MissingSectionHeaderError).
+        """
         try:
-            self.config.read(self.config_path, encoding='utf-8')
+            self.config.read(self.config_path, encoding='utf-8-sig')
             logger.info(f"Configuration loaded from {self.config_path}")
         except Exception as e:
             logger.error(f"Error loading configuration: {e}")

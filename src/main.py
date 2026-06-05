@@ -45,7 +45,7 @@ import poi_io
 _bundle_config_path = os.path.join(str(bundle_dir()), 'config.ini')
 _user_config_path = os.path.join(str(user_data_dir()), 'config.ini')
 config = configparser.ConfigParser()
-config.read([_bundle_config_path, _user_config_path], encoding='utf-8')
+config.read([_bundle_config_path, _user_config_path], encoding="utf-8-sig")
 
 # Log file path: respect an absolute path explicitly set in config, otherwise
 # write into the user data dir (writable from any user, survives reinstall).
@@ -229,7 +229,7 @@ class GPSWorker(QObject):
         try:
             # Re-read both paths (bundle defaults + user override), same
             # precedence as the initial boot read above.
-            config.read([_bundle_config_path, _user_config_path], encoding='utf-8')
+            config.read([_bundle_config_path, _user_config_path], encoding="utf-8-sig")
             old = self.ocr
             new_ocr = _build_ocr_processor(config)
             self.ocr = new_ocr
@@ -737,7 +737,7 @@ class GPSOverlay(QMainWindow):
             bundled_cfg = bundle_dir() / "config.ini"
             if bundled_cfg.exists():
                 parser = configparser.ConfigParser()
-                parser.read(str(bundled_cfg), encoding="utf-8")
+                parser.read(str(bundled_cfg), encoding="utf-8-sig")
                 ver = parser.get("Updates", "app_version", fallback="").strip()
                 if ver:
                     return ver if ver.startswith("v") else f"v{ver}"

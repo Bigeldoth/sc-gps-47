@@ -54,13 +54,15 @@ $BareVersion = $Version.TrimStart("v")
 $ConfigFile = Join-Path $RepoRoot "config.ini"
 $ConfigContent = Get-Content $ConfigFile -Raw
 $ConfigContent = $ConfigContent -replace "(?m)^app_version\s*=.*$", "app_version = $Version"
-$ConfigContent | Set-Content $ConfigFile -Encoding utf8 -NoNewline
+# Use UTF-8 WITHOUT BOM -- PowerShell 5.1 Set-Content -Encoding utf8 writes BOM,
+# which breaks Python's configparser. Use .NET directly instead.
+[System.IO.File]::WriteAllText($ConfigFile, $ConfigContent, [System.Text.UTF8Encoding]::new($false))
 Write-Host "==> Bumped config.ini -> app_version = $Version"
 
 $IssFile = Join-Path $RepoRoot "installer\spaceDrive.iss"
 $IssContent = Get-Content $IssFile -Raw
 $IssContent = $IssContent -replace '#define MyAppVersion "[^"]*"', "#define MyAppVersion `"$BareVersion`""
-$IssContent | Set-Content $IssFile -Encoding utf8 -NoNewline
+[System.IO.File]::WriteAllText($IssFile, $IssContent, [System.Text.UTF8Encoding]::new($false))
 Write-Host "==> Bumped spaceDrive.iss -> MyAppVersion = $BareVersion"
 
 # Step 1: Build

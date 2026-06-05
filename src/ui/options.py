@@ -700,7 +700,7 @@ class OptionsWindow(QDialog):
             bundled_cfg = bundle_dir() / "config.ini"
             if bundled_cfg.exists():
                 parser = configparser.ConfigParser()
-                parser.read(str(bundled_cfg), encoding="utf-8")
+                parser.read(str(bundled_cfg), encoding="utf-8-sig")
                 ver = parser.get("Updates", "app_version", fallback="").strip()
                 if ver:
                     return ver if ver.startswith("v") else f"v{ver}"
