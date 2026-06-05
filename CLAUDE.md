@@ -147,9 +147,26 @@ These old slugs remain valid for import/export backward-compat but are remapped 
 - "Import from clipboard" button accepts either a single JSON object or a one-element array. Strict validation lives in `src/poi_io.parse_poi`.
 
 ## Git workflow
-- Always work on a **feature branch** (`feat/<name>`, `fix/<name>`, etc.) — never commit directly to `main`.
+
+### Branch rules (non-negotiable)
+- **NEVER push directly to `main`** — this is a hard rule, no exceptions.
+- **ALWAYS create a feature branch** before any work: `feat/<name>`, `fix/<name>`, `chore/<name>`, etc.
 - Push the branch and open a PR toward `main` with `gh pr create`.
 - `main` is the trunk; source and target must differ for GitHub PRs.
+
+### Pushing to main — explicit confirmation required
+Pushing directly to `main` (via `git push origin main`) is **forbidden** unless:
+1. The user explicitly asks for it in their message, **OR**
+2. Claude proposes it, explains why, and the user confirms.
+
+If unsure, always ask before pushing to `main`. The cost of asking is low; the cost of polluting `main` is high (no PR trail, no review, harder to revert).
+
+### Workflow for every task
+1. `git checkout -b feat/<name>` (or `fix/`, `chore/`, etc.) — **before** any code change
+2. Commit incrementally on the feature branch
+3. `git push origin feat/<name>`
+4. `gh pr create --base main --head feat/<name>`
+5. Never merge or push to `main` directly
 
 ## Release workflow
 - Releases are **local**, not CI: `.\tools\release.ps1 -Version vX.Y.Z` chains build → SFTP upload to the VPS → git tag → GitHub Release.
