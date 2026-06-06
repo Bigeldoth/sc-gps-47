@@ -4,7 +4,6 @@ Handles reading and writing of the config.ini file.
 """
 import configparser
 import os
-import sys
 import logging
 
 logger = logging.getLogger(__name__)

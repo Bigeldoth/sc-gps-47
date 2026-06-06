@@ -1,6 +1,6 @@
 """PADEK utility widgets for SpaceDrive GPS."""
 from PyQt6.QtWidgets import QWidget
-from PyQt6.QtGui import QPainter, QBrush, QColor, QPen
+from PyQt6.QtGui import QPainter, QBrush, QColor
 from PyQt6.QtCore import Qt, QRect
 
 

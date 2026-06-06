@@ -21,7 +21,6 @@ from engine_installer import (
     detect_cuda,
     detect_cuda_version,
     detect_gpu_paddle_status,
-    detect_gpu_unsupported_by_paddle,
     detect_paddleocr,
     detect_paddlepaddle_gpu,
     detect_tesseract,

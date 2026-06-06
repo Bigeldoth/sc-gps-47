@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                              QTabWidget, QCheckBox, QComboBox, QSpinBox, QDoubleSpinBox,
                              QFormLayout)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
-from PyQt6.QtGui import QPalette, QColor, QFontDatabase, QFont
+from PyQt6.QtGui import QFont
 
 logger = logging.getLogger(__name__)
 
