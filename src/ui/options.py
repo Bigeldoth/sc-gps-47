@@ -335,31 +335,34 @@ class OptionsWindow(QDialog):
         layout = QVBoxLayout()
         layout.addWidget(self._section_title("OCR Engines"))
 
-        form = QFormLayout()
+        self._ocr_form = QFormLayout()
 
         self.text_engine_combo = QComboBox()
         self.text_engine_combo.addItems(["tesseract", "paddle"])
-        form.addRow("Text engine:", self.text_engine_combo)
+        self._ocr_form.addRow("Text engine:", self.text_engine_combo)
 
         self.pipeline_mode_combo = QComboBox()
         self.pipeline_mode_combo.addItems(["hybrid", "full_text"])
-        form.addRow("Pipeline mode:", self.pipeline_mode_combo)
+        self._ocr_form.addRow("Pipeline mode:", self.pipeline_mode_combo)
 
         self.paddle_device_combo = QComboBox()
         self.paddle_device_combo.addItems(["cpu", "gpu"])
-        form.addRow("Paddle device:", self.paddle_device_combo)
+        self._ocr_form.addRow("Paddle device:", self.paddle_device_combo)
 
         self.glyph_engine_combo = QComboBox()
         self.glyph_engine_combo.addItems(["ncc", "onnx"])
-        form.addRow("Glyph engine:", self.glyph_engine_combo)
+        self._ocr_form.addRow("Glyph engine:", self.glyph_engine_combo)
 
         self.onnx_threshold_spin = QDoubleSpinBox()
         self.onnx_threshold_spin.setRange(0.0, 1.0)
         self.onnx_threshold_spin.setSingleStep(0.05)
         self.onnx_threshold_spin.setDecimals(2)
-        form.addRow("ONNX confidence threshold:", self.onnx_threshold_spin)
+        self._ocr_form.addRow("ONNX confidence threshold:", self.onnx_threshold_spin)
 
-        layout.addLayout(form)
+        layout.addLayout(self._ocr_form)
+
+        self.text_engine_combo.currentIndexChanged.connect(self._update_engine_visibility)
+        self.glyph_engine_combo.currentIndexChanged.connect(self._update_engine_visibility)
 
         # Engine management (install / detect Tesseract & Paddle).
         button_row = QHBoxLayout()
@@ -441,6 +444,27 @@ class OptionsWindow(QDialog):
             gpu_index, tooltip, Qt.ItemDataRole.ToolTipRole,
         )
 
+    def _update_engine_visibility(self):
+        """Show/hide OCR form rows and debug sections based on selected engines."""
+        is_paddle = self.text_engine_combo.currentText() == "paddle"
+        is_onnx = self.glyph_engine_combo.currentText() == "onnx"
+
+        # Paddle device row (OCR form)
+        lbl = self._ocr_form.labelForField(self.paddle_device_combo)
+        if lbl:
+            lbl.setVisible(is_paddle)
+        self.paddle_device_combo.setVisible(is_paddle)
+
+        # ONNX confidence threshold row (OCR form)
+        lbl = self._ocr_form.labelForField(self.onnx_threshold_spin)
+        if lbl:
+            lbl.setVisible(is_onnx)
+        self.onnx_threshold_spin.setVisible(is_onnx)
+
+        # PaddleOCR diagnostic section (Debug tab)
+        if hasattr(self, "_paddle_diag_widget"):
+            self._paddle_diag_widget.setVisible(is_paddle)
+
     def _open_engine_manager(self):
         try:
             from ui.engine_manager import EngineManagerDialog
@@ -485,10 +509,12 @@ class OptionsWindow(QDialog):
             "during normal play."
         ))
 
-        # ── PaddleOCR diagnostic ────────────────────────────────────────
-        layout.addSpacing(12)
-        layout.addWidget(self._section_title("PaddleOCR diagnostic"))
-        layout.addWidget(self._hint(
+        # ── PaddleOCR diagnostic (only shown when text_engine = paddle) ─
+        self._paddle_diag_widget = QWidget()
+        paddle_diag_layout = QVBoxLayout(self._paddle_diag_widget)
+        paddle_diag_layout.setContentsMargins(0, 12, 0, 0)
+        paddle_diag_layout.addWidget(self._section_title("PaddleOCR diagnostic"))
+        paddle_diag_layout.addWidget(self._hint(
             "Captures N live HUD strips, runs paddle on each, and saves the "
             "raw image + an annotated visualisation + a JSON / Markdown "
             "summary under diagnostics/paddle/<timestamp>/. The summary is "
@@ -510,7 +536,8 @@ class OptionsWindow(QDialog):
         self.run_paddle_diag_button.clicked.connect(self._on_run_paddle_diagnostic)
         diag_row.addWidget(self.run_paddle_diag_button)
         diag_row.addStretch()
-        layout.addLayout(diag_row)
+        paddle_diag_layout.addLayout(diag_row)
+        layout.addWidget(self._paddle_diag_widget)
 
         layout.addStretch()
         widget.setLayout(layout)
@@ -1024,6 +1051,9 @@ class OptionsWindow(QDialog):
         if idx >= 0:
             self.glyph_engine_combo.setCurrentIndex(idx)
         self.onnx_threshold_spin.setValue(cfg.get_onnx_confidence_threshold())
+
+        # Apply initial engine visibility now that all combos are loaded
+        self._update_engine_visibility()
 
         # Debug
         self.save_ocr_check.setChecked(self._cfg_bool('Debug', 'save_ocr_images', False))
