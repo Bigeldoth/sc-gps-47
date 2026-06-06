@@ -107,7 +107,7 @@ class ConfigManager:
 
         if not self.config.has_section('Navigation'):
             self.config.add_section('Navigation')
-            self.config.set('Navigation', 'arrival_radius_m', '2000')
+            self.config.set('Navigation', 'arrival_radius_m', '1000')
 
         if not self.config.has_section('Hotkeys'):
             self.config.add_section('Hotkeys')
@@ -176,7 +176,7 @@ class ConfigManager:
                 'reset_gps_nav': 'shift+f5',
             },
             'Navigation': {
-                'arrival_radius_m': '2000.0',
+                'arrival_radius_m': '1000.0',
             },
             'Kalman': {
                 'max_speed_km_s': '2.5',
@@ -358,9 +358,9 @@ class ConfigManager:
         common ~1-2 s display lag at touchdown.
         """
         try:
-            value = self.config.getfloat('Navigation', 'arrival_radius_m', fallback=100.0)
+            value = self.config.getfloat('Navigation', 'arrival_radius_m', fallback=1000.0)
         except Exception:
-            return 100.0
+            return 1000.0
         return max(1.0, value)
 
     def set_arrival_radius_m(self, radius_m):
