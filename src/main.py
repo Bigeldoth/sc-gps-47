@@ -6,11 +6,11 @@ import logging
 import threading
 import configparser
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QLabel, QVBoxLayout,
-                             QWidget, QFrame, QSystemTrayIcon, QMenu, QInputDialog, QFileDialog,
+                             QWidget, QFrame, QSystemTrayIcon, QMenu,
                              QDialog, QHBoxLayout, QLineEdit, QPushButton,
-                             QRadioButton, QButtonGroup, QComboBox, QMessageBox)
+                             QButtonGroup, QComboBox, QMessageBox)
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QObject
-from PyQt6.QtGui import QIcon, QAction, QColor, QCursor, QFontDatabase, QFont
+from PyQt6.QtGui import QIcon, QAction, QFontDatabase, QFont
 from app_paths import user_data_dir, bundle_dir
 from ui.widgets import SignalBarsWidget
 from capture import ScreenCapture
@@ -20,8 +20,6 @@ from navigation import (
     format_distance,
     calculate_velocity_bearing,
     calculate_absolute_bearing,
-    format_axis_delta,
-    ema_angle,
     _zones_match,
 )
 from config_manager import ConfigManager
@@ -31,7 +29,6 @@ from telemetry import create_session_recorder
 from ui.options import OptionsWindow
 from ui.poi_manager import POIManagerWindow
 from poi_categories import POI_CATEGORIES
-import poi_io
 
 # Read config.ini from the same paths ConfigManager uses so the logging
 # setup honors what the user changed in Options. Order matters: bundle is

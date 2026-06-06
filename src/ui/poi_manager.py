@@ -3,17 +3,14 @@ POI (Points of Interest) Manager for SpaceDrive GPS.
 Allows searching, adding, editing, deleting, and selecting POIs.
 """
 import logging
-import json
-import os
-import sys
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                              QPushButton, QTableWidget, QTableWidgetItem,
                              QHeaderView, QMessageBox, QLineEdit, QWidget,
-                             QAbstractItemView, QInputDialog,
+                             QAbstractItemView,
                              QRadioButton, QButtonGroup, QComboBox, QMenu,
                              QFileDialog, QApplication)
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QPalette, QColor, QFontDatabase, QFont, QAction
+from PyQt6.QtGui import QColor, QFont, QAction
 
 import poi_io
 from poi_categories import POI_CATEGORIES, label_for, color_for
