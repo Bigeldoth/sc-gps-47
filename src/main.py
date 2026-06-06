@@ -1564,18 +1564,6 @@ class GPSOverlay(QMainWindow):
 
         tray_menu.addSeparator()
 
-        data_menu = tray_menu.addMenu("Data")
-
-        export_action = QAction("Export points (JSON)", self)
-        export_action.triggered.connect(self.export_data)
-        data_menu.addAction(export_action)
-
-        import_action = QAction("Import points (JSON)", self)
-        import_action.triggered.connect(self.import_data)
-        data_menu.addAction(import_action)
-
-        tray_menu.addSeparator()
-
         quit_action = QAction("Quit", self)
         quit_action.triggered.connect(self.quit_application)
         tray_menu.addAction(quit_action)
@@ -1852,90 +1840,6 @@ class GPSOverlay(QMainWindow):
                 QSystemTrayIcon.MessageIcon.Critical,
                 3000,
             )
-
-    def export_data(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Export points", "", "JSON Files (*.json)")
-        if path:
-            if self.nav.export_points(path):
-                self.tray_icon.showMessage("Success", "Points exported.", QSystemTrayIcon.MessageIcon.Information)
-
-    def import_data(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Import points", "", "JSON Files (*.json)")
-        if not path:
-            return
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                text = f.read()
-        except OSError as e:
-            QMessageBox.critical(self, "Error", f"Could not read file:\n{e}")
-            return
-
-        try:
-            pois = poi_io.parse_poi_list(text)
-        except ValueError as e:
-            QMessageBox.warning(self, "Invalid file", f"File does not contain valid POI data:\n\n{e}")
-            return
-
-        imported = skipped = replaced = renamed = 0
-        for poi_data in pois:
-            name_lower = poi_data["name"].lower()
-            existing_idx = next(
-                (i for i, p in enumerate(self.nav.user_poi)
-                 if str(p.get("name", "")).lower() == name_lower),
-                None,
-            )
-            if existing_idx is not None:
-                reply = QMessageBox.question(
-                    self,
-                    "Duplicate POI",
-                    f"A POI named '{poi_data['name']}' already exists.\n\n"
-                    "Yes = Replace existing\n"
-                    "No = Keep both (auto-rename imported one)\n"
-                    "Cancel = Skip this POI",
-                    QMessageBox.StandardButton.Yes
-                    | QMessageBox.StandardButton.No
-                    | QMessageBox.StandardButton.Cancel,
-                    QMessageBox.StandardButton.Cancel,
-                )
-                if reply == QMessageBox.StandardButton.Cancel:
-                    skipped += 1
-                    continue
-                if reply == QMessageBox.StandardButton.Yes:
-                    self.nav.user_poi.pop(existing_idx)
-                    replaced += 1
-                else:
-                    poi_data["name"] = self._next_free_poi_name(poi_data["name"])
-                    renamed += 1
-            else:
-                imported += 1
-            self.nav.user_poi.append(poi_data)
-
-        if imported + replaced + renamed == 0:
-            self.tray_icon.showMessage(
-                "Import", f"Nothing imported ({skipped} skipped).",
-                QSystemTrayIcon.MessageIcon.Warning, 3000,
-            )
-            return
-
-        try:
-            self.nav.save_user_poi()
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to save POIs:\n{e}")
-            return
-
-        parts = []
-        if imported:
-            parts.append(f"{imported} added")
-        if replaced:
-            parts.append(f"{replaced} replaced")
-        if renamed:
-            parts.append(f"{renamed} renamed")
-        if skipped:
-            parts.append(f"{skipped} skipped")
-        self.tray_icon.showMessage(
-            "Import complete", ", ".join(parts) + ".",
-            QSystemTrayIcon.MessageIcon.Information, 3000,
-        )
 
     def _next_free_poi_name(self, base_name: str) -> str:
         """Return a non-colliding name by appending ' (2)', ' (3)', ..."""
