@@ -68,6 +68,17 @@ def user_data_dir() -> Path:
     return path
 
 
+def install_dir() -> Path:
+    """Directory containing the app executable (may require elevation to write in bundle).
+
+    Dev:    <repo>/
+    Bundle: parent of sys.executable, e.g. C:\\Program Files\\SpaceDrive\\
+    """
+    if is_frozen():
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent
+
+
 def scripts_dir() -> Path:
     """Directory containing the helper scripts (paddle_worker.py, install_paddle.ps1)."""
     return bundle_dir() / "scripts"

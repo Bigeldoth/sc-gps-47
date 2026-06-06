@@ -881,7 +881,19 @@ class OptionsWindow(QDialog):
             QMessageBox.critical(self, "Update Failed", message)
             return
 
-        # Show restart countdown dialog
+        # Elevation path: UAC-elevated PS1 launched, app must quit so it can replace the exe
+        if message == "ELEVATION_REQUIRED":
+            QMessageBox.information(
+                self,
+                "Update — Administrator Required",
+                "An administrator prompt (UAC) will appear to apply the update.\n\n"
+                "The application will close now. It will restart automatically once the "
+                "update is complete.",
+            )
+            self._quit_for_update()
+            return
+
+        # Normal path: files applied in-place, show countdown then restart
         self._show_restart_countdown(message)
 
     def _show_restart_countdown(self, message: str):
@@ -942,6 +954,15 @@ class OptionsWindow(QDialog):
 
         # Quit current instance — sys.exit ensures we actually exit even if
         # QApplication.quit() is swallowed by a nested event loop
+        QApplication.quit()
+        sys.exit(0)
+
+    def _quit_for_update(self):
+        """Quit without relaunching — the elevated PS1 script handles the relaunch."""
+        import sys
+        from PyQt6.QtWidgets import QApplication
+
+        logger.info("Quitting for elevated update apply")
         QApplication.quit()
         sys.exit(0)
 
