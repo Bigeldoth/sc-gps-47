@@ -821,6 +821,9 @@ class OptionsWindow(QDialog):
         self.update_now_button.setEnabled(True)
         self.skip_button.setEnabled(True)
 
+        # Always store full installer URL as fallback (used if delta fails)
+        self._latest_full_url = latest_json.get("url", "")
+
         # Show update size and store delta info for download
         delta_info = latest_json.get("delta", {})
         if delta_info.get("available") and delta_info.get("url"):
@@ -834,7 +837,6 @@ class OptionsWindow(QDialog):
             self.update_size_label.setText("Full installer (open browser to download)")
             self._latest_delta_url = ""
             self._latest_delta_checksum = ""
-            self._latest_full_url = latest_json.get("url", "")
 
         # Show changelog
         changelog = latest_json.get("changelog", {})
@@ -905,7 +907,17 @@ class OptionsWindow(QDialog):
         dialog.close()
 
         if not success:
-            QMessageBox.critical(self, "Update Failed", message)
+            full_url = getattr(self, "_latest_full_url", "")
+            if full_url:
+                box = QMessageBox(QMessageBox.Icon.Critical, "Update Failed", message, parent=self)
+                dl_btn = box.addButton("Download Full Installer", QMessageBox.ButtonRole.AcceptRole)
+                box.addButton(QMessageBox.StandardButton.Close)
+                box.exec()
+                if box.clickedButton() is dl_btn:
+                    import webbrowser
+                    webbrowser.open(full_url)
+            else:
+                QMessageBox.critical(self, "Update Failed", message)
             return
 
         # Elevation path: UAC-elevated PS1 launched, app must quit so it can replace the exe
