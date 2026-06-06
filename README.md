@@ -42,10 +42,10 @@ SpaceDrive continuously reads the coordinates displayed by the game's debug HUD 
 - **Capture region**: 600×150 px top right (first 3 HUD lines are enough).
 
 ### Navigation
-- **System POIs** loaded from `data/poi.json` + **User POIs** in `data/user_poi.json`.
+- **User POIs** stored in `%LOCALAPPDATA%\SpaceDrive\data\user_poi.json` — 8 community categories (hidden, cave, circuit, tactical, industry, logistics, loot, racing) shared with the SpaceDrive Community Hub.
 - **3D Euclidean distance** in **planet-relative (OOC)** frame — invariant to planet orbits, unlike Root/SolarSystem frame.
 - **Cross-OOC calculation refusal**: if target and player are not in the same ObjectContainer, overlay indicates this instead of showing false distance.
-- **Snap-on-large-jump** on distance: on abrupt arrival, bypass EMA to prevent lagging.
+- **Import / export**: clipboard or JSON file, compatible with the SpaceDrive Community Hub.
 
 ### Quick snapshot hotkey
 - `Shift+F3` freezes coordinates **at the exact moment of press** in a snapshot — value does not drift while dialog remains open.
@@ -99,6 +99,17 @@ python src/main.py
 ```
 
 See [`docs/BUILD.md`](docs/BUILD.md) for the full build + Sandbox-test workflow.
+
+---
+
+## Automatic updates
+
+SpaceDrive includes a **delta update system** — only the files that changed between releases are downloaded (~1–6 MB instead of the full 70 MB installer).
+
+- Open *Options → Updates → Check for Updates* at any time.
+- If a new version is available, click **Update Now** to download, verify (SHA-256), and apply the delta.
+- If the app is installed in `C:\Program Files\`, a UAC prompt will appear to authorize the write — the app then closes, applies the update, and restarts automatically.
+- Rolling back: the previous files are backed up before any write; if the apply fails, the backup is restored automatically.
 
 ---
 
@@ -161,8 +172,8 @@ Shortcuts are reconfigurable via `Shift+F2`.
 └────────┬─────────┘
          ▼
 ┌──────────────────┐
-│ VelocityTracker  │  Sample pos over 50 ms → EMA velocity →
-│ (velocity_tracker.py) │ direction of movement
+│ VelocityTracker  │  Per-axis constant-velocity Kalman filter →
+│ (velocity_tracker.py) │ movement heading + dead-reckoning (FRESH/COASTING/LOST)
 └────────┬─────────┘
          ▼
 ┌──────────────────┐
