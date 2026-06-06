@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                              QHeaderView, QMessageBox, QKeySequenceEdit, QWidget,
                              QTabWidget, QCheckBox, QComboBox, QSpinBox, QDoubleSpinBox,
                              QFormLayout)
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt6.QtGui import QPalette, QColor, QFontDatabase, QFont
 
 logger = logging.getLogger(__name__)
@@ -130,6 +130,8 @@ class OptionsWindow(QDialog):
         self.setWindowTitle("SpaceDrive GPS — Settings")
         self.setMinimumWidth(680)
         self.setMinimumHeight(530)
+        # Larger minimum height to accommodate expanded Advanced Mode
+        self.resize(680, 750)
 
         self._apply_dark_theme()
         self._create_ui()
@@ -208,8 +210,8 @@ class OptionsWindow(QDialog):
         self.refresh_spin.setSuffix(" ms")
         form.addRow("Display refresh interval:", self.refresh_spin)
 
-        self.show_status_check = QCheckBox("Show status bar in overlay")
-        form.addRow("", self.show_status_check)
+        self.compact_mode_check = QCheckBox("Compact mode (hide coordinates, smaller window)")
+        form.addRow("", self.compact_mode_check)
 
         layout.addLayout(form)
         layout.addStretch()
@@ -236,9 +238,37 @@ class OptionsWindow(QDialog):
             "more reactive readout near the destination."
         ))
 
-        # ── Kalman filter tuning (advanced) ─────────────────────────────
+        # ── Advanced Mode Button ─────────────────────────────────────────
         layout.addSpacing(12)
-        layout.addWidget(self._section_title("Filter Tuning (Advanced)"))
+        self.advanced_mode_button = QPushButton("▶ Advanced Mode")
+        self.advanced_mode_button.setCheckable(True)
+        self.advanced_mode_button.setChecked(False)
+        self.advanced_mode_button.setStyleSheet("""
+            QPushButton {
+                background: rgba(111,232,255,0.10);
+                color: #6FE8FF;
+                border: 1px solid rgba(111,232,255,0.45);
+                border-radius: 6px;
+                padding: 6px 12px;
+                text-align: left;
+            }
+            QPushButton:hover {
+                background: rgba(111,232,255,0.22);
+                border-color: rgba(111,232,255,0.8);
+            }
+            QPushButton:checked {
+                background: rgba(111,232,255,0.25);
+            }
+        """)
+        layout.addWidget(self.advanced_mode_button)
+
+        # ── Kalman filter tuning (advanced, initially hidden) ──────────────
+        self.kalman_widget = QWidget()
+        self.kalman_widget.setVisible(False)
+        kalman_layout = QVBoxLayout(self.kalman_widget)
+        kalman_layout.setContentsMargins(0, 0, 0, 0)
+
+        kalman_layout.addWidget(self._section_title("Filter Tuning (Advanced)"))
 
         kalman_form = QFormLayout()
 
@@ -276,8 +306,8 @@ class OptionsWindow(QDialog):
         self.kalman_coast_s_spin.setSuffix(" s")
         kalman_form.addRow("Coast window:", self.kalman_coast_s_spin)
 
-        layout.addLayout(kalman_form)
-        layout.addWidget(self._hint(
+        kalman_layout.addLayout(kalman_form)
+        kalman_layout.addWidget(self._hint(
             "Advanced Kalman tuning knobs for the velocity/heading filter. "
             "Defaults are seeded from live telemetry — only change these if you "
             "know what you are doing.\n"
@@ -288,6 +318,12 @@ class OptionsWindow(QDialog):
             "Coast window = how long dead-reckoning lasts through an OCR dropout "
             "before the filter re-seeds."
         ))
+        kalman_layout.addStretch()
+
+        layout.addWidget(self.kalman_widget)
+
+        # Connect button to toggle visibility
+        self.advanced_mode_button.toggled.connect(self._on_advanced_mode_toggled)
 
         layout.addStretch()
         widget.setLayout(layout)
@@ -930,9 +966,9 @@ class OptionsWindow(QDialog):
 
         # General
         self.ocr_slider.setValue(cfg.get_scan_interval())
-        self.opacity_spin.setValue(float(cfg.get('Overlay', 'default_opacity', fallback='0.7')))
-        self.refresh_spin.setValue(int(cfg.get('Settings', 'refresh_interval_ms', fallback='150')))
-        self.show_status_check.setChecked(self._cfg_bool('Overlay', 'show_status_bar', True))
+        self.opacity_spin.setValue(float(cfg.get('Overlay', 'default_opacity', fallback='1.0')))
+        self.refresh_spin.setValue(int(cfg.get('Settings', 'refresh_interval_ms', fallback='200')))
+        self.compact_mode_check.setChecked(self._cfg_bool('Overlay', 'compact_mode', False))
 
         # Navigation
         self.arrival_radius_spin.setValue(int(round(cfg.get_arrival_radius_m())))
@@ -1019,6 +1055,22 @@ class OptionsWindow(QDialog):
             modify_button.clicked.connect(lambda _checked, r=row: self._modify_hotkey(r))
             self.hotkey_table.setCellWidget(row, 2, modify_button)
 
+    def _on_advanced_mode_toggled(self, checked):
+        """Toggle visibility of advanced Kalman tuning options."""
+        self.kalman_widget.setVisible(checked)
+        # Update button text with arrow
+        arrow = "▼" if checked else "▶"
+        self.advanced_mode_button.setText(f"{arrow} Advanced Mode")
+        # Schedule window resize after layout update
+        QTimer.singleShot(100, self._resize_window)
+
+    def _resize_window(self):
+        """Resize window to fit content after Advanced Mode toggle."""
+        # Get the tabs widget's size hint
+        self.tabs.adjustSize()
+        # Resize the dialog with some padding
+        self.resize(self.width(), self.tabs.sizeHint().height() + 120)
+
     def _cfg_bool(self, section, option, default):
         raw = self.config_manager.get(section, option, fallback=str(default))
         return str(raw).strip().lower() in ('1', 'true', 'yes', 'on')
@@ -1047,7 +1099,7 @@ class OptionsWindow(QDialog):
             cfg.set_scan_interval(self.ocr_slider.value())
             self._set_cfg('Overlay', 'default_opacity', f"{self.opacity_spin.value():.2f}")
             self._set_cfg('Settings', 'refresh_interval_ms', self.refresh_spin.value())
-            self._set_cfg('Overlay', 'show_status_bar', self.show_status_check.isChecked())
+            self._set_cfg('Overlay', 'compact_mode', self.compact_mode_check.isChecked())
 
             # Navigation
             cfg.set_arrival_radius_m(self.arrival_radius_spin.value())
