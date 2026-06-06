@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Tuple
 
-from app_paths import user_data_dir
+from app_paths import user_data_dir, bundle_dir
 from config_manager import ConfigManager
 
 logger = logging.getLogger(__name__)
@@ -308,8 +308,9 @@ class UpdateManager:
                 logger.info("all delta files verified")
 
             # Phase 4: Determine app install directory
-            # Typically %LOCALAPPDATA%\SpaceDrive
-            app_dir = user_data_dir()
+            # Points to the actual installation (not user data directory).
+            # In dev: repo root; in bundle: sys._MEIPASS or Program Files\SpaceDrive
+            app_dir = bundle_dir()
             if not app_dir.exists():
                 raise ValueError(f"app directory not found: {app_dir}")
 
@@ -381,7 +382,7 @@ class UpdateManager:
             return False, "no backup found"
 
         try:
-            app_dir = user_data_dir()
+            app_dir = bundle_dir()
             for backup_file in backup_dir.rglob("*"):
                 if not backup_file.is_file():
                     continue
