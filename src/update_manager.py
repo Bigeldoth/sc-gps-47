@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Tuple
 
-from app_paths import user_data_dir, bundle_dir
+from app_paths import install_dir, user_data_dir
 from config_manager import ConfigManager
 
 logger = logging.getLogger(__name__)
@@ -92,6 +92,17 @@ def _version_compare(v1: str, v2: str) -> int:
 def _version_gte(v1: str, v2: str) -> bool:
     """Returns True if v1 >= v2."""
     return _version_compare(v1, v2) >= 0
+
+
+def _is_writable(path: Path) -> bool:
+    """Return True if we can write a temp file inside path without elevation."""
+    probe = path / ".spacedrive_write_probe"
+    try:
+        probe.write_bytes(b"")
+        probe.unlink()
+        return True
+    except OSError:
+        return False
 
 
 class UpdateMetadata:
@@ -308,11 +319,22 @@ class UpdateManager:
                 logger.info("all delta files verified")
 
             # Phase 4: Determine app install directory
-            # Points to the actual installation (not user data directory).
-            # In dev: repo root; in bundle: sys._MEIPASS or Program Files\SpaceDrive
-            app_dir = bundle_dir()
+            app_dir = install_dir()
             if not app_dir.exists():
-                raise ValueError(f"app directory not found: {app_dir}")
+                raise ValueError(f"app install directory not found: {app_dir}")
+
+            # If the install dir is not writable (e.g. C:\Program Files), use UAC elevation.
+            if not _is_writable(app_dir):
+                logger.info(f"install dir not writable, requesting elevation: {app_dir}")
+                ok, elev_msg = self._apply_with_elevation(
+                    files_dir, app_dir,
+                    extract_dir / "DELETED.txt",
+                )
+                metadata.state = "completed" if ok else "failed"
+                metadata.save(self.metadata_file)
+                if ok:
+                    return True, "ELEVATION_REQUIRED"
+                return False, elev_msg
 
             # Phase 5: Back up files that will be replaced
             backup_dir = self.staging_dir / backup_dir_name
@@ -374,6 +396,79 @@ class UpdateManager:
             else:
                 return False, f"Delta apply failed ({exc}). Rollback also failed: {rollback_msg}"
 
+    def _apply_with_elevation(
+        self, files_dir: Path, app_dir: Path, deleted_file: Path
+    ) -> Tuple[bool, str]:
+        """Write a PS1 apply script and launch it with UAC elevation.
+
+        Returns (True, '') if the elevated process was launched successfully,
+        (False, reason) if the user cancelled UAC or launch failed.
+        """
+        if sys.platform != "win32":
+            return False, "elevation only supported on Windows"
+
+        import ctypes
+
+        deleted_arg = str(deleted_file) if deleted_file.exists() else ""
+        app_exe = str(Path(sys.executable).resolve())
+        script_path = self.staging_dir / "apply_update.ps1"
+
+        # ASCII-only PS1 — Unicode chars break cp1252 parsing
+        ps1 = (
+            "param(\n"
+            "    [string]$FilesDir,\n"
+            "    [string]$AppDir,\n"
+            "    [string]$AppExe,\n"
+            "    [string]$DeletedFile\n"
+            ")\n\n"
+            "$timeout = 15\n"
+            "$elapsed = 0\n"
+            "while ($elapsed -lt $timeout) {\n"
+            "    $running = Get-Process -Name 'spaceDrive' -ErrorAction SilentlyContinue\n"
+            "    if (-not $running) { break }\n"
+            "    Start-Sleep -Seconds 1\n"
+            "    $elapsed++\n"
+            "}\n\n"
+            "$filesDirFull = (Resolve-Path $FilesDir).Path.TrimEnd('\\')\n"
+            "Get-ChildItem -Path $filesDirFull -Recurse -File | ForEach-Object {\n"
+            "    $rel = $_.FullName.Substring($filesDirFull.Length + 1)\n"
+            "    $dest = Join-Path $AppDir $rel\n"
+            "    $destDir = Split-Path -Parent $dest\n"
+            "    if (-not (Test-Path $destDir)) {\n"
+            "        New-Item -ItemType Directory -Force -Path $destDir | Out-Null\n"
+            "    }\n"
+            "    Copy-Item -Force -Path $_.FullName -Destination $dest\n"
+            "}\n\n"
+            "if ($DeletedFile -and (Test-Path $DeletedFile)) {\n"
+            "    Get-Content $DeletedFile | Where-Object { $_.Trim() -ne '' } | ForEach-Object {\n"
+            "        $toDelete = Join-Path $AppDir $_.Trim()\n"
+            "        if (Test-Path $toDelete) {\n"
+            "            Remove-Item -Force $toDelete -ErrorAction SilentlyContinue\n"
+            "        }\n"
+            "    }\n"
+            "}\n\n"
+            "if (Test-Path $AppExe) {\n"
+            "    Start-Process -FilePath $AppExe\n"
+            "}\n"
+        )
+        script_path.write_text(ps1, encoding="utf-8")
+
+        args = (
+            f'-ExecutionPolicy Bypass -WindowStyle Hidden -File "{script_path}" '
+            f'-FilesDir "{files_dir}" '
+            f'-AppDir "{app_dir}" '
+            f'-AppExe "{app_exe}" '
+            f'-DeletedFile "{deleted_arg}"'
+        )
+        ret = ctypes.windll.shell32.ShellExecuteW(
+            None, "runas", "powershell.exe", args, None, 0
+        )
+        if ret <= 32:
+            logger.error(f"ShellExecuteW elevation failed: code {ret}")
+            return False, f"UAC elevation failed or was cancelled (code {ret})"
+        logger.info("elevated apply script launched")
+        return True, ""
+
     def rollback(self, current_version: str) -> Tuple[bool, str]:
         """Restore from backup if apply failed."""
         backup_dir_name = f"backup_v{current_version}"
@@ -382,7 +477,7 @@ class UpdateManager:
             return False, "no backup found"
 
         try:
-            app_dir = bundle_dir()
+            app_dir = install_dir()
             for backup_file in backup_dir.rglob("*"):
                 if not backup_file.is_file():
                     continue
