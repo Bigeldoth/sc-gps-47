@@ -109,7 +109,7 @@ class POIManagerWindow(QDialog):
         self.poi_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.poi_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.poi_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.poi_table.doubleClicked.connect(self._set_as_destination)
+        self.poi_table.doubleClicked.connect(self._goto_poi)
         self.poi_table.verticalHeader().setVisible(False)
 
         layout.addWidget(self.poi_table)
@@ -135,10 +135,6 @@ class POIManagerWindow(QDialog):
         button_layout.addWidget(self.import_button)
 
         button_layout.addStretch()
-
-        self.destination_button = QPushButton("Set destination")
-        self.destination_button.clicked.connect(self._set_as_destination)
-        button_layout.addWidget(self.destination_button)
 
         self.goto_button = QPushButton("GO")
         self.goto_button.setObjectName("btn_primary")
@@ -415,19 +411,6 @@ class POIManagerWindow(QDialog):
 
             logger.info(f"POI deleted: {poi['name']}")
             QMessageBox.information(self, "Success", f"POI '{poi['name']}' deleted successfully.")
-
-    def _set_as_destination(self):
-        """Sets the selected POI as destination"""
-        poi = self._get_selected_poi()
-        if not poi:
-            QMessageBox.warning(self, "Warning", "Please select a POI.")
-            return
-
-        # Emit signal
-        self.destination_changed.emit(poi)
-
-        logger.info(f"Destination set: {poi['name']}")
-        QMessageBox.information(self, "Success", f"Destination set: {poi['name']}")
 
     def _goto_poi(self):
         """Immediately navigates to the selected POI"""
