@@ -9,6 +9,7 @@ import logging
 import shutil
 import ssl
 import subprocess
+import sys
 import urllib.request
 import urllib.error
 from datetime import datetime, timezone
