@@ -405,6 +405,7 @@ class UpdateManager:
         Returns (True, '') if the elevated process was launched successfully,
         (False, reason) if the user cancelled UAC or launch failed.
         """
+        import sys  # belt-and-suspenders: also imported at module level
         if sys.platform != "win32":
             return False, "elevation only supported on Windows"
 
