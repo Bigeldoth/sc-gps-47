@@ -103,10 +103,11 @@ class ConfigManager:
             self.config.set('Overlay', 'default_opacity', '1.0')
             self.config.set('Overlay', 'default_position_x', '50')
             self.config.set('Overlay', 'default_position_y', '50')
+            self.config.set('Overlay', 'compact_mode', 'False')
 
         if not self.config.has_section('Navigation'):
             self.config.add_section('Navigation')
-            self.config.set('Navigation', 'arrival_radius_m', '100')
+            self.config.set('Navigation', 'arrival_radius_m', '2000')
 
         if not self.config.has_section('Hotkeys'):
             self.config.add_section('Hotkeys')
@@ -165,7 +166,7 @@ class ConfigManager:
                 'default_opacity': '1.00',
                 'default_position_x': '50',
                 'default_position_y': '50',
-                'show_status_bar': 'True',
+                'compact_mode': 'False',
             },
             'Hotkeys': {
                 'toggle_overlay': 'shift+f1',
@@ -175,7 +176,7 @@ class ConfigManager:
                 'reset_gps_nav': 'shift+f5',
             },
             'Navigation': {
-                'arrival_radius_m': '100.0',
+                'arrival_radius_m': '2000.0',
             },
             'Kalman': {
                 'max_speed_km_s': '2.5',

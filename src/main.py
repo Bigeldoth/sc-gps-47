@@ -631,10 +631,10 @@ class GPSOverlay(QMainWindow):
         self.pos_label.setStyleSheet("color: #6FE8FF; background: transparent;")
         inner.addWidget(self.pos_label)
 
-        sep2 = QFrame()
-        sep2.setFrameShape(QFrame.Shape.HLine)
-        sep2.setStyleSheet("background: rgba(238,243,246,12); border: none; max-height: 1px;")
-        inner.addWidget(sep2)
+        self.sep2 = QFrame()
+        self.sep2.setFrameShape(QFrame.Shape.HLine)
+        self.sep2.setStyleSheet("background: rgba(238,243,246,12); border: none; max-height: 1px;")
+        inner.addWidget(self.sep2)
 
         # Navigation
         self.nav_label = QLabel("NO TARGET")
@@ -1444,6 +1444,17 @@ class GPSOverlay(QMainWindow):
         self.nav_label.setText(f"▶ {name}\n  {dist_str}{arrow_str}")
         self.nav_label.setStyleSheet(f"color: {nav_color}; font-size: 9pt; {_font_css}")
 
+    def _apply_compact_mode(self, enabled: bool):
+        """Apply or remove compact mode: hide coordinates and shrink window."""
+        self._compact_mode = enabled
+        # In compact mode: hide coordinates and separator, reduce window height from 155 to 95
+        self.pos_label.setVisible(not enabled)
+        self.sep2.setVisible(not enabled)
+        height = 95 if enabled else 155
+        # Get current geometry and update height only
+        geo = self.geometry()
+        self.setGeometry(geo.x(), geo.y(), geo.width(), height)
+
     def init_window_properties(self):
         flags = Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowTransparentForInput
         self.setWindowFlags(flags)
@@ -1458,6 +1469,10 @@ class GPSOverlay(QMainWindow):
             self.setWindowOpacity(opacity)
         except (ValueError, TypeError):
             self.setWindowOpacity(1.0)  # Fallback to default
+
+        # Apply compact mode from config
+        compact_mode = str(self.config_manager.get('Overlay', 'compact_mode', fallback='False')).lower() in ('true', '1', 'yes')
+        self._apply_compact_mode(compact_mode)
 
         if self.isVisible():
             self.show()
@@ -1674,6 +1689,12 @@ class GPSOverlay(QMainWindow):
             logger.info(f"Overlay opacity updated: {opacity:.2f}")
         except (ValueError, TypeError):
             logger.warning("Invalid opacity value in config, keeping current value")
+
+        # Apply compact mode change live
+        compact_mode = str(self.config_manager.get('Overlay', 'compact_mode', fallback='False')).lower() in ('true', '1', 'yes')
+        if compact_mode != getattr(self, '_compact_mode', False):
+            self._apply_compact_mode(compact_mode)
+            logger.info(f"Compact mode {'enabled' if compact_mode else 'disabled'}")
 
         # Hot-reload the OCR processor so an engine/mode/device change in
         # Options takes effect on the next tick — no app restart needed.
