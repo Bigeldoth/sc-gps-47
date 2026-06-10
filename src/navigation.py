@@ -488,6 +488,8 @@ class NavigationEngine:
         """True if the player is considered to be in the target zone.
 
         Logic:
+          0. No OOC on the target (manually added POI): always navigable, no
+             zone constraint can be verified so we skip the check entirely.
           1. Permanent lock after the first OCR-confirmed match via ``update_zone_tracking``.
           2. Otherwise: tolerance for ``_ZONE_GRACE_PERIOD_S`` (3 min) from
              ``set_target`` — assume in-zone.
@@ -495,6 +497,8 @@ class NavigationEngine:
         """
         if not self.target:
             return False
+        if self.target.get("ooc") is None:
+            return True
         if self._zone_match_locked:
             return True
         if self._zone_last_match_ts is None:
