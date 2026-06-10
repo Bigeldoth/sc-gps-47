@@ -1378,11 +1378,6 @@ class GPSOverlay(QMainWindow):
         target_ooc = self.nav.target.get("ooc")
         current_ooc = self.current_data.get("ooc")
 
-        if target_ooc is None:
-            self.nav_label.setText(f"▶ {self.nav.target['name']}\n  Legacy POI — recreate")
-            self.nav_label.setStyleSheet(f"color: #D9A368; font-size: 9pt; {_font_css}")
-            return
-
         if not self.nav.is_target_in_same_ooc(self.current_data):
             self.nav_label.setText(
                 f"▶ {self.nav.target['name']}\n"

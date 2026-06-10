@@ -2,6 +2,7 @@
 import os
 import sys
 import time
+import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
@@ -98,16 +99,17 @@ def test_distance_ooc_match_computed():
     assert abs(d - 100.0) < 1e-6
 
 
-def test_distance_legacy_target_no_ooc_returns_none():
-    """Legacy POI without ooc: no zone can ever be confirmed (update_zone_tracking
-    needs both OOCs), so once the grace window expires it is out-of-zone → None."""
+def test_distance_no_ooc_target_always_navigable():
+    """POI without ooc (manually added): zone check is skipped entirely so
+    navigation works even past the grace period."""
     nav = NavigationEngine()
-    nav.set_target(100.0, 200.0, 300.0, "POI_legacy", ooc=None)
+    nav.set_target(100.0, 200.0, 300.0, "POI_no_ooc", ooc=None)
     nav._zone_last_match_ts = time.monotonic() - (_ZONE_GRACE_PERIOD_S + 10)
     d = nav.calculate_distance(
         {"x": 100.0, "y": 200.0, "z": 300.0, "ooc": "Stanton_1_Hurston"}
     )
-    assert d is None
+    assert d is not None
+    assert d == pytest.approx(0.0, abs=1e-6)
 
 
 def test_is_target_in_same_ooc():
