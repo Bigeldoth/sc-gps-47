@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QLabel, QVBoxLayout,
                              QWidget, QFrame, QSystemTrayIcon, QMenu,
                              QDialog, QHBoxLayout, QLineEdit, QPushButton,
                              QButtonGroup, QComboBox, QMessageBox)
-from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QObject
+from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QObject, QRect
 from PyQt6.QtGui import QIcon, QAction, QFontDatabase, QFont
 from app_paths import user_data_dir, bundle_dir
 from ui.widgets import SignalBarsWidget
@@ -500,6 +500,48 @@ class _SavePOIDialog(QDialog):
 
     def get_description(self):
         return self.desc_input.text().strip()
+
+
+class _UnlockOverlay(QWidget):
+    """Semi-transparent drag handle shown over the MFD when unlocked.
+
+    Left-drag moves the parent window; right-click emits lock_requested.
+    """
+
+    lock_requested = pyqtSignal()
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet("background-color: rgba(30, 30, 30, 190);")
+        label = QLabel("UNLOCK - MOVE ME.\nRIGHT CLICK FOR SAVE", self)
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.setStyleSheet(
+            "color: white; font-size: 10pt; font-weight: 800;"
+            " background: transparent;"
+        )
+        lay = QVBoxLayout(self)
+        lay.addWidget(label)
+        self._drag_offset = None
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_offset = (
+                event.globalPosition().toPoint()
+                - self.parent().frameGeometry().topLeft()
+            )
+        elif event.button() == Qt.MouseButton.RightButton:
+            self.lock_requested.emit()
+
+    def mouseMoveEvent(self, event):
+        if event.buttons() & Qt.MouseButton.LeftButton and self._drag_offset:
+            self.parent().move(
+                event.globalPosition().toPoint() - self._drag_offset
+            )
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_offset = None
 
 
 class GPSOverlay(QMainWindow):
@@ -1451,8 +1493,26 @@ class GPSOverlay(QMainWindow):
         flags = Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowTransparentForInput
         self.setWindowFlags(flags)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setGeometry(50, 50, 340, 155)
+
+        # Load saved position; reset to factory (50, 50) if out of screen bounds.
+        try:
+            px = int(self.config_manager.get('Overlay', 'default_position_x', fallback='50'))
+            py = int(self.config_manager.get('Overlay', 'default_position_y', fallback='50'))
+        except (ValueError, TypeError):
+            px, py = 50, 50
+        screen = QApplication.primaryScreen()
+        if screen and not screen.availableGeometry().contains(QRect(px, py, 340, 155)):
+            px, py = 50, 50
+        self.setGeometry(px, py, 340, 155)
+
         self.central_widget.setStyleSheet("background-color: transparent; border: none;")
+
+        # Drag-to-reposition overlay (hidden until _unlock_mfd() is called).
+        if not hasattr(self, '_unlock_overlay'):
+            self._unlock_overlay = _UnlockOverlay(self)
+            self._unlock_overlay.lock_requested.connect(self._lock_mfd)
+        self._unlock_overlay.setGeometry(0, 0, self.width(), self.height())
+        self._unlock_overlay.hide()
 
         # Apply overlay opacity from config
         try:
@@ -1468,6 +1528,47 @@ class GPSOverlay(QMainWindow):
 
         if self.isVisible():
             self.show()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, '_unlock_overlay'):
+            self._unlock_overlay.setGeometry(0, 0, self.width(), self.height())
+
+    def _unlock_mfd(self):
+        """Remove click-through flag and show the drag overlay."""
+        self._stay_on_top_timer.stop()
+        flags = (
+            Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.FramelessWindowHint
+        )
+        self.setWindowFlags(flags)
+        self.show()
+        self._unlock_overlay.setGeometry(0, 0, self.width(), self.height())
+        self._unlock_overlay.show()
+        self._unlock_overlay.raise_()
+
+    def _lock_mfd(self):
+        """Save position, hide drag overlay, restore click-through flag."""
+        self._unlock_overlay.hide()
+        pos = self.frameGeometry().topLeft()
+        self.config_manager.config['Overlay']['default_position_x'] = str(pos.x())
+        self.config_manager.config['Overlay']['default_position_y'] = str(pos.y())
+        self.config_manager.save()
+        flags = (
+            Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowTransparentForInput
+        )
+        self.setWindowFlags(flags)
+        self.show()
+        self._stay_on_top_timer.start(1000)
+
+    def _reset_mfd_position(self):
+        """Reset MFD position to factory default (50, 50)."""
+        self.config_manager.config['Overlay']['default_position_x'] = '50'
+        self.config_manager.config['Overlay']['default_position_y'] = '50'
+        self.config_manager.save()
+        self.move(50, 50)
 
     def _reassert_on_top(self):
         """Re-raise the overlay so it stays above SC's borderless window.
@@ -1612,6 +1713,8 @@ class GPSOverlay(QMainWindow):
             if self.options_window is None or not self.options_window.isVisible():
                 self.options_window = OptionsWindow(self.config_manager, self.hotkey_listener, self)
                 self.options_window.options_saved.connect(self._on_options_saved)
+                self.options_window.unlock_mfd_requested.connect(self._unlock_mfd)
+                self.options_window.reset_position_requested.connect(self._reset_mfd_position)
             self._bring_dialog_to_front(self.options_window)
         except Exception:
             logger.exception("Error opening options")
