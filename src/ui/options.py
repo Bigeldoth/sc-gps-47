@@ -121,6 +121,8 @@ class OptionsWindow(QDialog):
     """Tabbed options dialog (dark MFD-style theme)."""
 
     options_saved = pyqtSignal()
+    unlock_mfd_requested = pyqtSignal()
+    reset_position_requested = pyqtSignal()
 
     def __init__(self, config_manager, hotkey_listener, parent=None):
         super().__init__(parent)
@@ -214,9 +216,35 @@ class OptionsWindow(QDialog):
         form.addRow("", self.compact_mode_check)
 
         layout.addLayout(form)
+
+        layout.addSpacing(10)
+        layout.addWidget(self._section_title("MFD Position"))
+        pos_row = QHBoxLayout()
+
+        self.unlock_mfd_btn = QPushButton("Unlock MFD")
+        self.unlock_mfd_btn.setObjectName("btn_primary")
+        self.unlock_mfd_btn.clicked.connect(self._on_unlock_mfd)
+        pos_row.addWidget(self.unlock_mfd_btn)
+
+        self.reset_pos_btn = QPushButton("Reset Position")
+        self.reset_pos_btn.clicked.connect(self._on_reset_position)
+        pos_row.addWidget(self.reset_pos_btn)
+
+        layout.addLayout(pos_row)
+        layout.addWidget(self._hint(
+            "Unlock: close this dialog then drag the overlay. Right-click to lock and save."
+        ))
+
         layout.addStretch()
         widget.setLayout(layout)
         return widget
+
+    def _on_unlock_mfd(self):
+        self.unlock_mfd_requested.emit()
+        self.close()
+
+    def _on_reset_position(self):
+        self.reset_position_requested.emit()
 
     # ----- Navigation tab -----
     def _create_navigation_tab(self):
