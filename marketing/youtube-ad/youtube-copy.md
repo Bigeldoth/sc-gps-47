@@ -66,9 +66,28 @@ sponsored by Cloud Imperium Games. Star Citizen is a trademark of Cloud Imperium
 
 ### Tags
 
-`star citizen, star citizen gps, star citizen navigation, star citizen overlay, star citizen
-poi, star citizen exploration, star citizen tips, spacedrive, spacedrive gps, star citizen
-tools, star citizen mining, star citizen caves, stanton, pyro`
+YouTube caps the whole tag field at **500 characters**, commas included, and ignores the
+overflow silently — each block below is pre-counted to fit. Paste one block as-is.
+
+Main video — 27 tags, 451 characters:
+
+```
+star citizen, star citizen gps, star citizen navigation, star citizen overlay, star citizen poi, star citizen tools, star citizen tips, star citizen guide, star citizen exploration, star citizen caves, star citizen mining, star citizen salvage, star citizen bunkers, star citizen hud, star citizen beginners guide, spacedrive, spacedrive gps, sc gps, stanton, pyro, gps overlay, waypoint, navigation overlay, open source, free software, pc gaming, ocr
+```
+
+Order matters: the first tags weigh most, so the exact-match terms a player would type
+(`star citizen gps`, `star citizen navigation`) come before the brand, and the brand comes
+before the generic terms. `sc gps` is there because the repo and the community shorten it
+that way.
+
+### Hashtags
+
+Only the **first three** hashtags of the description show above the title — keep them the
+three you actually want seen:
+
+```
+#StarCitizen #SpaceDrive #StarCitizenTips
+```
 
 ### Pinned comment
 
@@ -94,6 +113,12 @@ https://spacedrive.padek-interactive.tech
 #StarCitizen #StarCitizenTips #SpaceDrive #PCGaming
 ```
 
+Tags — 15 tags, 219 characters:
+
+```
+star citizen, star citizen tips, star citizen gps, star citizen poi, star citizen caves, star citizen exploration, spacedrive, spacedrive gps, gps overlay, waypoint, stanton, pyro, shorts, pc gaming, star citizen shorts
+```
+
 ## Short #2 — `spacedrive-short-2-howto.mp4`
 
 **Title**: `Save it. Target it. Fly to it. — Star Citizen GPS in 30 seconds`
@@ -106,4 +131,10 @@ reading, no injection.
 https://spacedrive.padek-interactive.tech
 
 #StarCitizen #StarCitizenTips #SpaceDrive #PCGaming
+```
+
+Tags — 16 tags, 221 characters:
+
+```
+star citizen, star citizen tips, star citizen gps, star citizen tutorial, star citizen guide, star citizen tools, star citizen poi, spacedrive, spacedrive gps, gps overlay, how to, hotkey, stanton, pyro, shorts, pc gaming
 ```
