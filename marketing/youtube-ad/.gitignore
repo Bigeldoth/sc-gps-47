@@ -1,0 +1,8 @@
+# Rendered takes and review frames — regenerate with tools/capture.mjs + tools/preview.mjs
+*.mp4
+scene-*.png
+check*.png
+cta-*.png
+arrowzoom*.png
+crop*.png
+sb-*.jpg

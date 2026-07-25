@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SpaceDrive GPS — Short #2 (How it works)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+/* ===========================================================
+   SpaceDrive GPS — vertical (1080x1920) silent short, cut #2.
+   "Save it. Target it. Fly to it." — the three-step listicle
+   format, built on the app's real screens: the save dialog,
+   the POI list with its category taxonomy, and the MFD.
+   30.0 s, no audio.
+
+   Same engine as short-1-lost.html (rAF clock, white sync cue,
+   ?auto / ?scene / ?countdown). Colours are the PADEK tokens
+   from assets/padek-theme.qss. No colour emoji — CEF has no
+   emoji font and renders them as tofu.
+   =========================================================== */
+
+:root {
+  --emerald: #19C28A; --neon: #6FE8FF; --cobalt: #1A3FAE;
+  --copper: #D9A368; --orange: #FF7A45; --danger: #E5484D;
+  --violet: #A78BFA; --amber: #FBBF24;
+  --s900: #0E1216; --s800: #161B22; --s700: #1B2128;
+  --s600: #2A323D; --s500: #3B4654;
+  --fg1: #EEF3F6; --fg2: #B6C3CE; --fg3: #7E8B97; --fg4: #4F5965;
+  --font-display: 'Manrope', 'Segoe UI', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Consolas', monospace;
+  --spring: cubic-bezier(0.34, 1.4, 0.64, 1);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { width: 100%; height: 100%; background: #000; overflow: hidden; font-family: var(--font-display); color: var(--fg1); }
+
+#viewport { position: fixed; inset: 0; background: #000; }
+#stage {
+  position: absolute; left: 50%; top: 50%;
+  width: 1080px; height: 1920px;
+  transform: translate(-50%, -50%) scale(var(--s, 1));
+  transform-origin: center center;
+  background: var(--s900); overflow: hidden;
+}
+
+/* ─── Deep-space backdrop ─────────────────────────────────── */
+#space { position: absolute; inset: 0; z-index: 0; pointer-events: none; }
+#space::before {
+  content: ''; position: absolute; inset: 0;
+  background:
+    radial-gradient(ellipse 70% 45% at 82% 10%, rgba(25,194,138,.15), transparent 70%),
+    radial-gradient(ellipse 80% 50% at 16% 86%, rgba(26,63,174,.30), transparent 70%),
+    radial-gradient(ellipse 60% 40% at 45% 45%, rgba(111,232,255,.07), transparent 70%);
+}
+#space::after {
+  content: ''; position: absolute; inset: 0; opacity: .5;
+  background-image:
+    linear-gradient(rgba(111,232,255,.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(111,232,255,.045) 1px, transparent 1px);
+  background-size: 90px 90px, 90px 90px;
+  mask-image: radial-gradient(ellipse 75% 60% at 50% 50%, #000 20%, transparent 78%);
+}
+#stars i { position: absolute; background: #fff; border-radius: 50%; }
+#vignette {
+  position: absolute; inset: 0; z-index: 3; pointer-events: none;
+  background: radial-gradient(ellipse 78% 62% at 50% 46%, transparent 45%, rgba(0,0,0,.72) 100%);
+}
+#scan {
+  position: absolute; left: 0; right: 0; height: 320px; z-index: 3; pointer-events: none;
+  background: linear-gradient(180deg, transparent, rgba(111,232,255,.055), transparent);
+  animation: sweep 7s linear infinite;
+}
+@keyframes sweep { from { top: -340px } to { top: 1920px } }
+
+/* ─── Scene plumbing ──────────────────────────────────────── */
+.scene {
+  position: absolute; inset: 0; z-index: 2; opacity: 0; visibility: hidden;
+  transition: opacity .35s ease;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding: 0 70px; gap: 46px;
+}
+.scene.on { opacity: 1; visibility: visible; }
+.anim { opacity: 0; }
+.scene.on .anim { animation: pop .5s var(--spring) both; animation-delay: var(--d, 0s); }
+.scene.on .anim.fade  { animation-name: fadeIn; animation-duration: .6s; animation-timing-function: ease; }
+.scene.on .anim.up    { animation-name: slideU; }
+.scene.on .anim.left  { animation-name: slideL; }
+.scene.on .anim.stamp { animation-name: stampIn; animation-duration: .55s; }
+.scene.on .anim.wide  { animation-name: wideIn; animation-duration: .7s; }
+
+@keyframes pop     { from { opacity:0; transform: scale(.9) } to { opacity:1; transform: scale(1) } }
+@keyframes fadeIn  { from { opacity:0 } to { opacity:1 } }
+@keyframes slideU  { from { opacity:0; transform: translateY(46px) } to { opacity:1; transform: none } }
+@keyframes slideL  { from { opacity:0; transform: translateX(-56px) } to { opacity:1; transform: none } }
+@keyframes stampIn {
+  0%   { opacity:0; transform: scale(1.7) }
+  60%  { opacity:1; transform: scale(.95) }
+  100% { opacity:1; transform: scale(1) }
+}
+@keyframes wideIn  { from { opacity:0; letter-spacing: .5em } to { opacity:1; letter-spacing: .18em } }
+
+/* ─── Shared type ─────────────────────────────────────────── */
+.kicker {
+  display: inline-flex; align-items: center; gap: 14px;
+  font-weight: 800; font-size: 30px; letter-spacing: .22em; text-transform: uppercase;
+  color: var(--emerald); padding: 13px 30px;
+  border: 1px solid rgba(25,194,138,.45); border-radius: 999px;
+  background: rgba(25,194,138,.08);
+}
+.kicker .dot { width: 10px; height: 10px; border-radius: 50%; background: currentColor; box-shadow: 0 0 14px currentColor; }
+h1.head { font-weight: 800; font-size: 100px; line-height: 1.04; text-align: center; letter-spacing: -.02em; }
+h1.head em { font-style: normal; color: var(--emerald); }
+.sub { font-size: 40px; font-weight: 600; color: var(--fg2); text-align: center; line-height: 1.35; max-width: 880px; }
+
+/* Step header: a big numeral + the verb, used by S1..S3. */
+.stephead { display: flex; align-items: center; gap: 28px; }
+.stephead .num {
+  width: 104px; height: 104px; border-radius: 26px; display: grid; place-items: center;
+  font-size: 58px; font-weight: 800; color: var(--s900); background: var(--emerald);
+  box-shadow: 0 0 46px rgba(25,194,138,.4);
+}
+.stephead .verb { font-size: 78px; font-weight: 800; letter-spacing: -.01em; }
+.stephead .verb em { font-style: normal; color: var(--emerald); }
+
+/* ─── The MFD overlay (a faithful mock of the real widget) ── */
+.mfd {
+  position: relative; width: 880px;
+  background: rgba(14, 18, 22, .93);
+  border: 2px solid var(--emerald); border-radius: 14px;
+  box-shadow: 0 0 60px rgba(25,194,138,.22), inset 0 0 40px rgba(0,0,0,.6);
+  overflow: hidden;
+}
+.mfd .head { display: flex; align-items: center; gap: 14px; padding: 18px 24px; border-bottom: 1px solid rgba(238,243,246,.09); }
+.mfd .brand { font-size: 24px; font-weight: 800; letter-spacing: .2em; color: var(--fg3); }
+.mfd .spacer { flex: 1 1 auto; }
+.mfd .bars { display: flex; align-items: flex-end; gap: 4px; height: 22px; }
+.mfd .bars b { width: 6px; background: var(--emerald); border-radius: 2px; }
+.mfd .bars b:nth-child(1) { height: 30% } .mfd .bars b:nth-child(2) { height: 55% }
+.mfd .bars b:nth-child(3) { height: 78% } .mfd .bars b:nth-child(4) { height: 100% }
+.mfd .live { font-size: 23px; font-weight: 800; letter-spacing: .18em; color: var(--emerald); }
+.mfd .pulse { width: 13px; height: 13px; border-radius: 50%; background: var(--emerald); box-shadow: 0 0 16px var(--emerald); animation: blink 1.2s steps(1,end) infinite; }
+@keyframes blink { 0%,55% { opacity: 1 } 56%,100% { opacity: .18 } }
+.mfd .pos { font-family: var(--font-mono); font-size: 37px; line-height: 1.5; color: var(--neon); padding: 20px 24px 16px; white-space: pre; }
+.mfd .nav { padding: 16px 24px 22px; border-top: 1px solid rgba(238,243,246,.07); font-size: 38px; font-weight: 800; line-height: 1.45; color: var(--emerald); }
+.mfd .nav .dist { font-family: var(--font-mono); font-size: 44px; }
+.mfd .nav .target { color: var(--fg1); letter-spacing: .04em; }
+.mfd .nav .none { color: var(--fg4); letter-spacing: .12em; }
+.arrowglyph {
+  display: inline-block; width: 36px; height: 36px; vertical-align: -7px;
+  transform: rotate(var(--rot, 0deg)); transition: transform .5s var(--spring);
+}
+.arrowglyph svg { display: block; width: 100%; height: 100%; fill: currentColor; }
+
+/* ═══ S0 — HOOK ══════════════════════════════════════════ */
+#s-hook .spots { display: flex; flex-direction: column; gap: 22px; width: 100%; max-width: 880px; }
+#s-hook .spot {
+  display: flex; align-items: center; gap: 22px; padding: 24px 30px;
+  background: rgba(22,27,34,.8); border: 1px solid var(--s600); border-radius: 14px;
+  font-size: 36px; font-weight: 700;
+}
+#s-hook .spot .g { font-size: 30px; width: 44px; text-align: center; }
+#s-hook .spot .tag { margin-left: auto; font-size: 24px; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; color: var(--fg4); }
+#s-hook .nomark {
+  font-size: 46px; font-weight: 800; color: var(--danger); letter-spacing: .04em;
+  border: 3px solid var(--danger); border-radius: 14px; padding: 18px 40px; text-align: center;
+  box-shadow: 0 0 50px rgba(229,72,77,.3);
+}
+
+/* ═══ S1 — STEP 1 : SAVE ═════════════════════════════════ */
+.keys { display: flex; align-items: center; gap: 18px; }
+.keycap {
+  font-family: var(--font-mono); font-size: 44px; font-weight: 700; color: var(--fg1);
+  padding: 20px 34px; border: 2px solid var(--s500); border-bottom-width: 8px;
+  border-radius: 16px; background: var(--s700); box-shadow: 0 10px 30px rgba(0,0,0,.5);
+}
+.keys .plus { font-size: 40px; font-weight: 800; color: var(--fg3); }
+.dialog {
+  width: 100%; max-width: 880px; background: var(--s800);
+  border: 1px solid var(--s600); border-radius: 16px; overflow: hidden;
+  box-shadow: 0 24px 60px rgba(0,0,0,.6);
+}
+.dialog .bar { padding: 20px 28px; background: var(--s700); border-bottom: 1px solid var(--s600); font-size: 24px; font-weight: 800; letter-spacing: .18em; color: var(--fg3); text-transform: uppercase; }
+.dialog .body { padding: 28px; display: flex; flex-direction: column; gap: 20px; }
+.dialog .field { display: flex; flex-direction: column; gap: 10px; }
+.dialog .label { font-size: 22px; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; color: var(--fg3); }
+.dialog .input {
+  font-size: 34px; font-weight: 700; padding: 18px 22px; border-radius: 10px;
+  background: var(--s900); border: 1px solid var(--s600); color: var(--fg1);
+}
+.dialog .input.mono { font-family: var(--font-mono); color: var(--neon); font-weight: 400; font-size: 30px; }
+.dialog .caret { display: inline-block; width: 3px; height: 34px; background: var(--emerald); vertical-align: -6px; animation: caret 1s steps(1,end) infinite; }
+@keyframes caret { 0%,50% { opacity: 1 } 51%,100% { opacity: 0 } }
+.cats { display: flex; flex-wrap: wrap; gap: 14px; }
+.cat {
+  display: inline-flex; align-items: center; gap: 12px; font-size: 25px; font-weight: 800;
+  letter-spacing: .06em; padding: 12px 22px; border-radius: 999px;
+  border: 1px solid var(--s600); color: var(--fg3); background: rgba(14,18,22,.6);
+}
+.cat.sel { color: var(--s900); background: var(--c, var(--emerald)); border-color: transparent; }
+.cat .g { font-size: 22px; }
+
+/* ═══ S2 — STEP 2 : TARGET ═══════════════════════════════ */
+.poilist { width: 100%; max-width: 880px; display: flex; flex-direction: column; gap: 16px; }
+.poi {
+  display: flex; align-items: center; gap: 22px; padding: 22px 28px;
+  background: rgba(22,27,34,.85); border: 1px solid var(--s600); border-left: 4px solid var(--c, var(--fg4));
+  border-radius: 12px; font-size: 34px; font-weight: 700;
+}
+.poi .g { color: var(--c, var(--fg3)); font-size: 26px; width: 34px; text-align: center; }
+.poi .dist { margin-left: auto; font-family: var(--font-mono); font-size: 28px; color: var(--fg3); font-weight: 400; }
+.poi.hit { border-color: var(--emerald); border-left-color: var(--emerald); background: rgba(25,194,138,.12); box-shadow: 0 0 40px rgba(25,194,138,.25); }
+.poi.hit .dist { color: var(--emerald); }
+
+/* ═══ S3 — STEP 3 : FLY ══════════════════════════════════ */
+#s-fly .note { font-size: 33px; font-weight: 600; color: var(--fg3); text-align: center; max-width: 880px; }
+#s-fly .arrived {
+  font-size: 40px; font-weight: 800; letter-spacing: .2em; text-transform: uppercase; color: var(--emerald);
+  padding: 16px 36px; border: 2px solid var(--emerald); border-radius: 999px;
+  opacity: 0; transition: opacity .35s ease; box-shadow: 0 0 44px rgba(25,194,138,.35);
+}
+#s-fly .arrived.on { opacity: 1; }
+
+/* ═══ S4 — CTA ═══════════════════════════════════════════ */
+#s-cta { gap: 30px; }
+#s-cta .punch { font-size: 96px; font-weight: 800; text-align: center; line-height: 1.05; letter-spacing: -.02em; }
+#s-cta .punch em { font-style: normal; color: var(--emerald); }
+#s-cta .wordmark { font-size: 74px; font-weight: 800; letter-spacing: .04em; }
+#s-cta .wordmark em { font-style: normal; color: var(--emerald); }
+#s-cta .url {
+  font-family: var(--font-mono); font-size: 34px; font-weight: 700; color: var(--s900);
+  background: var(--emerald); padding: 18px 40px; border-radius: 999px;
+  box-shadow: 0 0 46px rgba(25,194,138,.45);
+}
+#s-cta .fine { font-size: 32px; font-weight: 700; color: var(--fg2); letter-spacing: .05em; }
+#s-cta .fine2 { font-size: 22px; font-weight: 600; color: var(--fg4); letter-spacing: .06em; text-transform: uppercase; max-width: 820px; text-align: center; line-height: 1.4; }
+#s-cta .arrow { width: 74px; height: 74px; border-radius: 50%; border: 2px solid var(--emerald); display: grid; place-items: center; }
+#s-cta .arrow span { display: inline-block; font-size: 34px; color: var(--emerald); animation: bounce 1.15s ease-in-out infinite; }
+@keyframes bounce { 0%,100% { transform: translateY(0) } 50% { transform: translateY(9px) } }
+
+/* ─── Start chrome (never recorded) ───────────────────────── */
+#chrome { position: absolute; inset: 0; z-index: 50; display: grid; place-items: center; gap: 26px; align-content: center; background: rgba(14,18,22,.97); padding: 0 40px; text-align: center; }
+#chrome.hidden { display: none; }
+#chrome h1 { font-size: 46px; font-weight: 800; letter-spacing: .04em; }
+#chrome h1 em { font-style: normal; color: var(--emerald); }
+#chrome .play { width: 150px; height: 150px; border-radius: 50%; border: 2px solid var(--emerald); background: rgba(25,194,138,.12); color: var(--emerald); font-size: 54px; cursor: pointer; }
+#chrome p { font-size: 22px; font-weight: 700; color: var(--fg3); }
+#chrome kbd { font-family: var(--font-mono); font-size: 18px; border: 1px solid var(--s600); border-radius: 6px; padding: 3px 10px; background: var(--s800); color: var(--fg2); }
+#countdown { position: absolute; inset: 0; z-index: 60; display: none; place-items: center; background: var(--s900); font-size: 240px; font-weight: 800; color: var(--emerald); }
+#countdown.on { display: grid; }
+#devbar { position: absolute; left: 0; bottom: 0; height: 6px; z-index: 70; background: var(--neon); width: 0; display: none; }
+body.dev #devbar { display: block; }
+/* Sync cue for tools/trim.mjs — WHITE, because this ad is near-black throughout. */
+#cue { position: absolute; inset: 0; z-index: 80; background: #fff; display: none; }
+#cue.on { display: block; }
+</style>
+</head>
+<body>
+
+<div id="viewport">
+<div id="stage">
+  <div id="space"><div id="stars"></div></div>
+  <div id="scan"></div>
+  <div id="vignette"></div>
+
+  <!-- ═══ S0 — HOOK (0.0 → 5.6) ═══════════════════════════ -->
+  <section class="scene" id="s-hook">
+    <div class="kicker anim stamp" style="--d:.05s"><i class="dot"></i>Star Citizen</div>
+    <h1 class="head anim up" style="--d:.3s">The spots<br>worth <em>keeping.</em></h1>
+
+    <div class="spots">
+      <div class="spot anim left" style="--d:.9s"><span class="g" style="color:var(--neon)">&#9679;</span>The cave with the good loot<span class="tag">Cave</span></div>
+      <div class="spot anim left" style="--d:1.25s"><span class="g" style="color:var(--danger)">&#9650;</span>The bunker that always spawns<span class="tag">Tactical</span></div>
+      <div class="spot anim left" style="--d:1.6s"><span class="g" style="color:var(--amber)">&#9670;</span>That landing pad nobody knows<span class="tag">Hidden</span></div>
+    </div>
+
+    <div class="nomark anim stamp" style="--d:2.6s">The game marks none of them.</div>
+  </section>
+
+  <!-- ═══ S1 — STEP 1 · SAVE (5.6 → 12.4) ═════════════════ -->
+  <section class="scene" id="s-save">
+    <div class="stephead anim up" style="--d:.05s">
+      <div class="num">1</div>
+      <div class="verb"><em>Save</em> it</div>
+    </div>
+
+    <div class="keys anim stamp" style="--d:.4s">
+      <span class="keycap">Shift</span><span class="plus">+</span><span class="keycap">F3</span>
+    </div>
+
+    <div class="dialog anim up" style="--d:.9s">
+      <div class="bar">Save POI &mdash; position frozen</div>
+      <div class="body">
+        <div class="field">
+          <div class="label">Coordinates (OOC frame)</div>
+          <div class="input mono">4133.5612&nbsp;&nbsp;-1964.1387&nbsp;&nbsp;-529.8944</div>
+        </div>
+        <div class="field">
+          <div class="label">Name</div>
+          <div class="input">Lyria Cave 7<span class="caret"></span></div>
+        </div>
+        <div class="cats">
+          <span class="cat sel" style="--c:var(--neon)"><span class="g">&#9679;</span>Cave</span>
+          <span class="cat"><span class="g">&#9650;</span>Tactical</span>
+          <span class="cat"><span class="g">&#9670;</span>Hidden</span>
+          <span class="cat"><span class="g">&#9733;</span>Loot</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="sub anim fade" style="--d:1.6s">The hotkey freezes your position at the exact moment you press it &mdash; it cannot drift while you type.</div>
+  </section>
+
+  <!-- ═══ S2 — STEP 2 · TARGET (12.4 → 18.0) ══════════════ -->
+  <section class="scene" id="s-target">
+    <div class="stephead anim up" style="--d:.05s">
+      <div class="num">2</div>
+      <div class="verb"><em>Target</em> it</div>
+    </div>
+
+    <div class="poilist">
+      <div class="poi anim left" style="--d:.4s; --c:var(--amber)"><span class="g">&#9670;</span>Daymar Ridge Stash<span class="dist">142 km</span></div>
+      <div class="poi hit anim left" style="--d:.7s; --c:var(--neon)"><span class="g">&#9679;</span>Lyria Cave 7<span class="dist">12.4 km</span></div>
+      <div class="poi anim left" style="--d:1.0s; --c:var(--danger)"><span class="g">&#9650;</span>Bunker &mdash; Hurston L2<span class="dist">308 km</span></div>
+      <div class="poi anim left" style="--d:1.3s; --c:var(--violet)"><span class="g">&#9671;</span>Supply run &mdash; Orison<span class="dist">1 204 km</span></div>
+    </div>
+
+    <div class="sub anim fade" style="--d:1.9s">Your own POIs. Eight categories, shared with the SpaceDrive Community Hub.</div>
+  </section>
+
+  <!-- ═══ S3 — STEP 3 · FLY (18.0 → 25.2) ═════════════════ -->
+  <section class="scene" id="s-fly">
+    <div class="stephead anim up" style="--d:.05s">
+      <div class="num">3</div>
+      <div class="verb"><em>Fly</em> to it</div>
+    </div>
+
+    <div class="mfd">
+      <div class="head">
+        <span class="brand">SPACEDRIVE GPS</span>
+        <span class="spacer"></span>
+        <span class="bars"><b></b><b></b><b></b><b></b></span>
+        <span class="pulse"></span>
+        <span class="live">LIVE</span>
+      </div>
+      <div class="pos" id="mfdPos">X:    4133.56   Y:  -1964.13
+Z:    -529.89</div>
+      <div class="nav">
+        <span class="target">&#9654; LYRIA CAVE 7</span><br>
+        &nbsp;&nbsp;<span class="dist" id="mfdDist">12.4 km</span>
+        &nbsp;&nbsp;<span class="arrowglyph" id="mfdArrow" style="--rot:38deg"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 1.5 L21 12.5 L15 12.5 L15 22.5 L9 22.5 L9 12.5 L3 12.5 Z"/></svg></span>
+      </div>
+    </div>
+
+    <div class="arrived" id="arrived">Arrived &middot; 17 m</div>
+    <div class="note anim fade" style="--d:1.2s">Distance and heading update while you fly. Lose the read for a second and it coasts on your last velocity.</div>
+  </section>
+
+  <!-- ═══ S4 — CTA (25.2 → 30.0) ══════════════════════════ -->
+  <section class="scene" id="s-cta">
+    <div class="punch anim up" style="--d:.05s">Save it once.<br><em>Find it forever.</em></div>
+    <div class="wordmark anim stamp" style="--d:.5s">SPACE<em>DRIVE</em> GPS</div>
+    <div class="url anim pop" style="--d:.9s">spacedrive.padek-interactive.tech</div>
+    <div class="fine anim fade" style="--d:1.15s">Download &amp; community POIs &middot; Windows 10 / 11</div>
+    <div class="fine2 anim fade" style="--d:1.35s">Unofficial tool &middot; not affiliated with Cloud Imperium Games</div>
+    <div class="arrow anim fade" style="--d:1.6s"><span>&#9660;</span></div>
+  </section>
+
+  <div id="chrome">
+    <h1>SPACE<em>DRIVE</em> GPS<br>Short #2 &middot; 30 s &middot; 1080&times;1920</h1>
+    <button class="play" id="playBtn" aria-label="Play">&#9654;</button>
+    <p><kbd>Space</kbd> play &middot; <kbd>R</kbd> replay &middot; <kbd>F</kbd> fullscreen</p>
+  </div>
+  <div id="countdown"></div>
+  <div id="cue"></div>
+  <div id="devbar"></div>
+
+</div>
+</div>
+
+<script>
+const AD = {
+  DURATION: 30,
+  SCENES: [
+    { id: 's-hook',   start: 0.0,  end: 5.6  },
+    { id: 's-save',   start: 5.6,  end: 12.4 },
+    { id: 's-target', start: 12.4, end: 18.0 },
+    { id: 's-fly',    start: 18.0, end: 25.2 },
+    { id: 's-cta',    start: 25.2, end: 30.0 }
+  ]
+};
+
+/* The approach run, scene-relative. Same table shape as short #1. */
+const FLY_CUES = [
+  { at: 0.8, dist: '12.4 km', rot: 38,  pos: ['4133.56', '-1964.13', '-529.89'] },
+  { at: 2.2, dist: '6.9 km',  rot: 16,  pos: ['4129.12', '-1960.44', '-526.90'] },
+  { at: 3.4, dist: '2.1 km',  rot: -12, pos: ['4126.02', '-1958.31', '-524.88'] },
+  { at: 4.4, dist: '640 m',   rot: 4,   pos: ['4124.68', '-1957.57', '-524.16'] },
+  { at: 5.4, dist: '17 m',    rot: 0,   pos: ['4124.52', '-1957.45', '-524.07'], arrived: true }
+];
+
+/* The heading arrow is drawn, not typed: a rotated text triangle reads as the
+   wrong direction at intermediate angles. */
+const ARROW_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 1.5 L21 12.5 L15 12.5 L15 22.5 L9 22.5 L9 12.5 L3 12.5 Z"/></svg>';
+const DOT_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="6.5"/></svg>';
+
+const params = new URLSearchParams(location.search);
+const stage = document.getElementById('stage');
+const chrome_ = document.getElementById('chrome');
+const countdownEl = document.getElementById('countdown');
+const devbar = document.getElementById('devbar');
+if (params.get('dev') === '1') document.body.classList.add('dev');
+
+function fit() { stage.style.setProperty('--s', Math.min(innerWidth / 1080, innerHeight / 1920)); }
+addEventListener('resize', fit); fit();
+
+(function stars() {
+  const box = document.getElementById('stars');
+  for (let i = 0; i < 150; i++) {
+    const s = document.createElement('i');
+    const r = Math.random();
+    const size = r > .92 ? 3.4 : r > .7 ? 2.2 : 1.4;
+    s.style.width = s.style.height = size + 'px';
+    s.style.left = (Math.random() * 100) + '%';
+    s.style.top = (Math.random() * 100) + '%';
+    s.style.opacity = (0.18 + Math.random() * 0.62).toFixed(2);
+    if (r > .95) s.style.boxShadow = '0 0 8px rgba(111,232,255,.9)';
+    box.appendChild(s);
+  }
+})();
+
+const timers = [];
+const mfdDist = document.getElementById('mfdDist');
+const mfdArrow = document.getElementById('mfdArrow');
+const mfdPos = document.getElementById('mfdPos');
+const arrived = document.getElementById('arrived');
+
+const pad = (v, n) => String(v).padStart(n, ' ');
+function setPos(p) { mfdPos.textContent = `X: ${pad(p[0], 10)}   Y: ${pad(p[1], 10)}\nZ: ${pad(p[2], 10)}`; }
+
+function runFlyCues() {
+  for (const c of FLY_CUES) {
+    timers.push(setTimeout(() => {
+      mfdDist.textContent = c.dist;
+      mfdArrow.style.setProperty('--rot', c.rot + 'deg');
+      // Inside the arrival radius the app drops the directional arrow for a
+      // terminal marker — the bearing swings wildly as range -> 0.
+      mfdArrow.innerHTML = c.arrived ? DOT_SVG : ARROW_SVG;
+      arrived.classList.toggle('on', !!c.arrived);
+      setPos(c.pos);
+    }, c.at * 1000));
+  }
+}
+
+function resetFly() {
+  mfdDist.textContent = '12.4 km';
+  mfdArrow.innerHTML = ARROW_SVG;
+  mfdArrow.style.setProperty('--rot', '38deg');
+  arrived.classList.remove('on');
+  setPos(['4133.56', '-1964.13', '-529.89']);
+}
+
+let rafId = null, startedAt = 0, current = -1;
+
+function enterScene(i) {
+  AD.SCENES.forEach((s, idx) => document.getElementById(s.id).classList.toggle('on', idx === i));
+  if (AD.SCENES[i].id === 's-fly') { resetFly(); runFlyCues(); }
+  current = i;
+}
+
+function tick(now) {
+  const t = (now - startedAt) / 1000;
+  if (document.body.classList.contains('dev')) devbar.style.width = Math.min(100, (t / AD.DURATION) * 100) + '%';
+  const i = AD.SCENES.findIndex(s => t >= s.start && t < s.end);
+  if (i !== -1 && i !== current) enterScene(i);
+  if (t >= AD.DURATION) { stop(); return; }
+  rafId = requestAnimationFrame(tick);
+}
+
+function stop() { cancelAnimationFrame(rafId); enterScene(AD.SCENES.length - 1); }
+
+function reset() {
+  cancelAnimationFrame(rafId);
+  timers.forEach(id => clearTimeout(id));
+  timers.length = 0;
+  current = -1;
+  AD.SCENES.forEach(s => document.getElementById(s.id).classList.remove('on'));
+  resetFly();
+}
+
+async function start() {
+  chrome_.classList.add('hidden');
+  reset();
+  const cd = parseInt(params.get('countdown') || '0', 10);
+  if (cd > 0) {
+    countdownEl.classList.add('on');
+    for (let n = cd; n > 0; n--) { countdownEl.textContent = n; await new Promise(r => setTimeout(r, 1000)); }
+    countdownEl.classList.remove('on');
+  }
+  const cue = document.getElementById('cue');
+  cue.classList.add('on');
+  await new Promise(r => setTimeout(r, 70));
+  cue.classList.remove('on');
+  await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+  startedAt = performance.now();
+  rafId = requestAnimationFrame(tick);
+}
+
+window.ad = { start, stop, reset, enterScene, scenes: AD.SCENES, duration: AD.DURATION };
+
+document.getElementById('playBtn').addEventListener('click', start);
+document.addEventListener('keydown', e => {
+  if (e.code === 'Space' || e.code === 'Enter') { e.preventDefault(); start(); }
+  if (e.key.toLowerCase() === 'r') start();
+  if (e.key.toLowerCase() === 'f') { document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen(); }
+});
+
+function whenReady(fn) {
+  let done = false;
+  const go = () => { if (!done) { done = true; fn(); } };
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(go);
+  setTimeout(go, 4000);
+}
+if (params.get('auto') === '1') whenReady(() => setTimeout(start, 500));
+if (params.get('scene') !== null) {
+  const i = Math.max(0, Math.min(AD.SCENES.length - 1, parseInt(params.get('scene'), 10) || 0));
+  whenReady(() => { chrome_.classList.add('hidden'); enterScene(i); });
+}
+</script>
+</body>
+</html>

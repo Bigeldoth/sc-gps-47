@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SpaceDrive GPS — YouTube ad 30 s</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+/* ===========================================================
+   SpaceDrive GPS — landscape (1920x1080) silent ad, 30.0 s.
+   The YouTube cut: the pain, the product, the overlay working,
+   the reassurance, the CTA. Same beats as the vertical shorts,
+   laid out in two columns where the width allows it.
+
+   Same engine as short-1-lost.html (rAF clock, white sync cue,
+   ?auto / ?scene / ?countdown / ?dev). PADEK colour tokens.
+   No colour emoji — CEF renders them as tofu.
+   =========================================================== */
+
+:root {
+  --emerald: #19C28A; --neon: #6FE8FF; --cobalt: #1A3FAE;
+  --copper: #D9A368; --orange: #FF7A45; --danger: #E5484D;
+  --violet: #A78BFA; --amber: #FBBF24;
+  --s900: #0E1216; --s800: #161B22; --s700: #1B2128;
+  --s600: #2A323D; --s500: #3B4654;
+  --fg1: #EEF3F6; --fg2: #B6C3CE; --fg3: #7E8B97; --fg4: #4F5965;
+  --font-display: 'Manrope', 'Segoe UI', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Consolas', monospace;
+  --spring: cubic-bezier(0.34, 1.4, 0.64, 1);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { width: 100%; height: 100%; background: #000; overflow: hidden; font-family: var(--font-display); color: var(--fg1); }
+
+#viewport { position: fixed; inset: 0; background: #000; }
+#stage {
+  position: absolute; left: 50%; top: 50%;
+  width: 1920px; height: 1080px;
+  transform: translate(-50%, -50%) scale(var(--s, 1));
+  transform-origin: center center;
+  background: var(--s900); overflow: hidden;
+}
+
+/* ─── Deep-space backdrop ─────────────────────────────────── */
+#space { position: absolute; inset: 0; z-index: 0; pointer-events: none; }
+#space::before {
+  content: ''; position: absolute; inset: 0;
+  background:
+    radial-gradient(ellipse 55% 70% at 14% 16%, rgba(25,194,138,.15), transparent 70%),
+    radial-gradient(ellipse 60% 80% at 88% 84%, rgba(26,63,174,.30), transparent 70%),
+    radial-gradient(ellipse 50% 60% at 55% 45%, rgba(111,232,255,.06), transparent 70%);
+}
+#space::after {
+  content: ''; position: absolute; inset: 0; opacity: .5;
+  background-image:
+    linear-gradient(rgba(111,232,255,.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(111,232,255,.045) 1px, transparent 1px);
+  background-size: 96px 96px, 96px 96px;
+  mask-image: radial-gradient(ellipse 70% 75% at 50% 50%, #000 20%, transparent 80%);
+}
+#stars i { position: absolute; background: #fff; border-radius: 50%; }
+#vignette {
+  position: absolute; inset: 0; z-index: 3; pointer-events: none;
+  background: radial-gradient(ellipse 70% 75% at 50% 48%, transparent 45%, rgba(0,0,0,.72) 100%);
+}
+#scan {
+  position: absolute; left: 0; right: 0; height: 260px; z-index: 3; pointer-events: none;
+  background: linear-gradient(180deg, transparent, rgba(111,232,255,.05), transparent);
+  animation: sweep 7s linear infinite;
+}
+@keyframes sweep { from { top: -280px } to { top: 1080px } }
+
+/* ─── Scene plumbing ──────────────────────────────────────── */
+.scene {
+  position: absolute; inset: 0; z-index: 2; opacity: 0; visibility: hidden;
+  transition: opacity .35s ease;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding: 0 120px; gap: 34px;
+}
+.scene.on { opacity: 1; visibility: visible; }
+.anim { opacity: 0; }
+.scene.on .anim { animation: pop .5s var(--spring) both; animation-delay: var(--d, 0s); }
+.scene.on .anim.fade  { animation-name: fadeIn; animation-duration: .6s; animation-timing-function: ease; }
+.scene.on .anim.up    { animation-name: slideU; }
+.scene.on .anim.left  { animation-name: slideL; }
+.scene.on .anim.right { animation-name: slideR; }
+.scene.on .anim.stamp { animation-name: stampIn; animation-duration: .55s; }
+.scene.on .anim.wide  { animation-name: wideIn; animation-duration: .7s; }
+
+@keyframes pop     { from { opacity:0; transform: scale(.9) } to { opacity:1; transform: scale(1) } }
+@keyframes fadeIn  { from { opacity:0 } to { opacity:1 } }
+@keyframes slideU  { from { opacity:0; transform: translateY(40px) } to { opacity:1; transform: none } }
+@keyframes slideL  { from { opacity:0; transform: translateX(-56px) } to { opacity:1; transform: none } }
+@keyframes slideR  { from { opacity:0; transform: translateX(56px) } to { opacity:1; transform: none } }
+@keyframes stampIn {
+  0%   { opacity:0; transform: scale(1.6) }
+  60%  { opacity:1; transform: scale(.96) }
+  100% { opacity:1; transform: scale(1) }
+}
+@keyframes wideIn  { from { opacity:0; letter-spacing: .5em } to { opacity:1; letter-spacing: .18em } }
+
+/* ─── Shared type ─────────────────────────────────────────── */
+.kicker {
+  display: inline-flex; align-items: center; gap: 13px;
+  font-weight: 800; font-size: 24px; letter-spacing: .22em; text-transform: uppercase;
+  color: var(--emerald); padding: 11px 26px;
+  border: 1px solid rgba(25,194,138,.45); border-radius: 999px;
+  background: rgba(25,194,138,.08);
+}
+.kicker .dot { width: 9px; height: 9px; border-radius: 50%; background: currentColor; box-shadow: 0 0 14px currentColor; }
+h1.head { font-weight: 800; font-size: 92px; line-height: 1.03; letter-spacing: -.02em; }
+h1.head em { font-style: normal; color: var(--emerald); }
+.sub { font-size: 32px; font-weight: 600; color: var(--fg2); line-height: 1.35; }
+.cols { display: flex; align-items: center; justify-content: center; gap: 90px; width: 100%; }
+.cols .left { flex: 1 1 0; display: flex; flex-direction: column; align-items: flex-start; gap: 30px; }
+.cols .right { flex: 0 0 auto; }
+
+/* ─── The MFD overlay (a faithful mock of the real widget) ── */
+.mfd {
+  position: relative; width: 760px;
+  background: rgba(14, 18, 22, .93);
+  border: 2px solid var(--emerald); border-radius: 14px;
+  box-shadow: 0 0 60px rgba(25,194,138,.22), inset 0 0 40px rgba(0,0,0,.6);
+  transition: border-color .4s linear, box-shadow .4s linear;
+  overflow: hidden;
+}
+.mfd .head { display: flex; align-items: center; gap: 14px; padding: 16px 22px; border-bottom: 1px solid rgba(238,243,246,.09); }
+.mfd .brand { font-size: 21px; font-weight: 800; letter-spacing: .2em; color: var(--fg3); }
+.mfd .spacer { flex: 1 1 auto; }
+.mfd .bars { display: flex; align-items: flex-end; gap: 4px; height: 20px; }
+.mfd .bars b { width: 5px; background: var(--emerald); border-radius: 2px; transition: background .4s linear; }
+.mfd .bars b:nth-child(1) { height: 30% } .mfd .bars b:nth-child(2) { height: 55% }
+.mfd .bars b:nth-child(3) { height: 78% } .mfd .bars b:nth-child(4) { height: 100% }
+.mfd .live { font-size: 20px; font-weight: 800; letter-spacing: .18em; color: var(--emerald); transition: color .4s linear; }
+.mfd .pulse { width: 12px; height: 12px; border-radius: 50%; background: var(--emerald); box-shadow: 0 0 16px var(--emerald); animation: blink 1.2s steps(1,end) infinite; transition: background .4s linear; }
+@keyframes blink { 0%,55% { opacity: 1 } 56%,100% { opacity: .18 } }
+.mfd .pos { font-family: var(--font-mono); font-size: 32px; line-height: 1.5; color: var(--neon); padding: 18px 22px 14px; white-space: pre; }
+.mfd .nav { padding: 14px 22px 20px; border-top: 1px solid rgba(238,243,246,.07); font-size: 33px; font-weight: 800; line-height: 1.45; color: var(--emerald); transition: color .4s linear; }
+.mfd .nav .dist { font-family: var(--font-mono); font-size: 38px; }
+.mfd .nav .target { color: var(--fg1); letter-spacing: .04em; }
+.mfd .nav .dr { color: var(--copper); font-size: 27px; letter-spacing: .1em; }
+.arrowglyph {
+  display: inline-block; width: 32px; height: 32px; vertical-align: -6px;
+  transform: rotate(var(--rot, 0deg)); transition: transform .5s var(--spring);
+}
+.arrowglyph svg { display: block; width: 100%; height: 100%; fill: currentColor; }
+.mfd.aging { border-color: var(--copper); box-shadow: 0 0 60px rgba(217,163,104,.22), inset 0 0 40px rgba(0,0,0,.6); }
+.mfd.aging .live, .mfd.aging .nav { color: var(--copper); }
+.mfd.aging .pulse, .mfd.aging .bars b { background: var(--copper); }
+
+/* ═══ S0 — HOOK ══════════════════════════════════════════ */
+#s-hook .huddump {
+  width: 760px; padding: 30px 34px;
+  font-family: var(--font-mono); font-size: 26px; line-height: 1.65; color: var(--fg2);
+  background: rgba(0,0,0,.55); border: 1px solid var(--s600); border-radius: 12px;
+}
+#s-hook .huddump b { color: var(--neon); font-weight: 400; }
+#s-hook .huddump .cap { display: block; font-family: var(--font-display); font-size: 20px; font-weight: 800; letter-spacing: .16em; color: var(--fg4); margin-bottom: 12px; text-transform: uppercase; }
+#s-hook .later { font-size: 30px; font-weight: 800; letter-spacing: .3em; color: var(--fg3); text-transform: uppercase; }
+#s-hook .gone {
+  font-size: 52px; font-weight: 800; color: var(--danger); letter-spacing: .02em;
+  border: 3px solid var(--danger); border-radius: 14px; padding: 16px 36px;
+  box-shadow: 0 0 50px rgba(229,72,77,.32);
+}
+
+/* ═══ S1 — BRAND ═════════════════════════════════════════ */
+#s-brand .mark { display: flex; align-items: center; gap: 28px; }
+#s-brand .diamond {
+  width: 86px; height: 86px; border: 4px solid var(--emerald); border-radius: 12px;
+  transform: rotate(45deg); box-shadow: 0 0 46px rgba(25,194,138,.5);
+  display: grid; place-items: center;
+}
+#s-brand .diamond i { width: 24px; height: 24px; background: var(--emerald); border-radius: 4px; box-shadow: 0 0 22px var(--emerald); }
+#s-brand .wordmark { font-size: 96px; font-weight: 800; line-height: 1; }
+#s-brand .wordmark em { font-style: normal; color: var(--emerald); }
+#s-brand .tag { font-size: 46px; font-weight: 700; text-align: center; line-height: 1.25; }
+#s-brand .meta { display: flex; gap: 18px; flex-wrap: wrap; justify-content: center; }
+#s-brand .meta span {
+  font-size: 25px; font-weight: 700; letter-spacing: .1em; color: var(--fg2);
+  padding: 12px 26px; border: 1px solid var(--s600); border-radius: 999px; background: rgba(22,27,34,.7);
+}
+
+/* ═══ S2 — THE OVERLAY WORKING ═══════════════════════════ */
+#s-live .caption { font-size: 62px; font-weight: 800; line-height: 1.08; letter-spacing: -.02em; }
+#s-live .caption em { font-style: normal; color: var(--neon); }
+#s-live .track { width: 100%; max-width: 640px; }
+#s-live .trackbar { height: 8px; background: var(--s700); border: 1px solid var(--s600); border-radius: 999px; overflow: hidden; }
+#s-live .trackbar i { display: block; height: 100%; width: 0%; background: linear-gradient(90deg, var(--neon), var(--emerald)); box-shadow: 0 0 18px rgba(25,194,138,.6); transition: width .9s linear; }
+#s-live .tracklabels { display: flex; justify-content: space-between; margin-top: 12px; font-size: 21px; font-weight: 700; letter-spacing: .14em; color: var(--fg4); text-transform: uppercase; }
+#s-live .drchip {
+  align-self: flex-start; font-size: 22px; font-weight: 800; letter-spacing: .16em; text-transform: uppercase;
+  color: var(--copper); padding: 11px 24px; border: 1px solid rgba(217,163,104,.5);
+  border-radius: 999px; background: rgba(217,163,104,.1); opacity: 0; transition: opacity .3s ease;
+}
+#s-live .drchip.on { opacity: 1; }
+
+/* ═══ S3 — PROOF ═════════════════════════════════════════ */
+#s-proof .title { font-size: 56px; font-weight: 800; text-align: center; }
+#s-proof .tiles { display: flex; gap: 32px; width: 100%; }
+#s-proof .tile {
+  flex: 1 1 0; padding: 40px 36px; background: rgba(22,27,34,.85);
+  border: 1px solid var(--s600); border-top: 4px solid var(--emerald); border-radius: 16px;
+  display: flex; flex-direction: column; gap: 18px; min-height: 400px;
+}
+#s-proof .tile .g { font-size: 46px; color: var(--emerald); }
+#s-proof .tile h3 { font-size: 40px; font-weight: 800; line-height: 1.2; }
+#s-proof .tile p { font-size: 28px; font-weight: 600; color: var(--fg3); line-height: 1.4; }
+
+/* ═══ S4 — CTA ═══════════════════════════════════════════ */
+#s-cta { gap: 26px; }
+#s-cta .punch { font-size: 92px; font-weight: 800; text-align: center; line-height: 1.05; letter-spacing: -.02em; }
+#s-cta .punch em { font-style: normal; color: var(--emerald); }
+#s-cta .wordmark { font-size: 62px; font-weight: 800; letter-spacing: .04em; }
+#s-cta .wordmark em { font-style: normal; color: var(--emerald); }
+#s-cta .url {
+  font-family: var(--font-mono); font-size: 32px; font-weight: 700; color: var(--s900);
+  background: var(--emerald); padding: 17px 38px; border-radius: 999px;
+  box-shadow: 0 0 46px rgba(25,194,138,.45);
+}
+#s-cta .fine { font-size: 28px; font-weight: 700; color: var(--fg2); letter-spacing: .05em; }
+#s-cta .fine2 { font-size: 21px; font-weight: 600; color: var(--fg4); letter-spacing: .06em; text-transform: uppercase; }
+
+/* ─── Start chrome (never recorded) ───────────────────────── */
+#chrome { position: absolute; inset: 0; z-index: 50; display: grid; place-items: center; gap: 24px; align-content: center; background: rgba(14,18,22,.97); padding: 0 40px; text-align: center; }
+#chrome.hidden { display: none; }
+#chrome h1 { font-size: 44px; font-weight: 800; letter-spacing: .04em; }
+#chrome h1 em { font-style: normal; color: var(--emerald); }
+#chrome .play { width: 140px; height: 140px; border-radius: 50%; border: 2px solid var(--emerald); background: rgba(25,194,138,.12); color: var(--emerald); font-size: 50px; cursor: pointer; }
+#chrome p { font-size: 21px; font-weight: 700; color: var(--fg3); }
+#chrome kbd { font-family: var(--font-mono); font-size: 17px; border: 1px solid var(--s600); border-radius: 6px; padding: 3px 10px; background: var(--s800); color: var(--fg2); }
+#countdown { position: absolute; inset: 0; z-index: 60; display: none; place-items: center; background: var(--s900); font-size: 220px; font-weight: 800; color: var(--emerald); }
+#countdown.on { display: grid; }
+#devbar { position: absolute; left: 0; bottom: 0; height: 6px; z-index: 70; background: var(--neon); width: 0; display: none; }
+body.dev #devbar { display: block; }
+/* Sync cue for tools/trim.mjs — WHITE, because this ad is near-black throughout. */
+#cue { position: absolute; inset: 0; z-index: 80; background: #fff; display: none; }
+#cue.on { display: block; }
+</style>
+</head>
+<body>
+
+<div id="viewport">
+<div id="stage">
+  <div id="space"><div id="stars"></div></div>
+  <div id="scan"></div>
+  <div id="vignette"></div>
+
+  <!-- ═══ S0 — HOOK (0.0 → 6.2) ═══════════════════════════ -->
+  <section class="scene" id="s-hook">
+    <div class="cols">
+      <div class="left">
+        <div class="kicker anim stamp" style="--d:.05s"><i class="dot"></i>Star Citizen</div>
+        <h1 class="head anim up" style="--d:.3s">You found<br>the <em>perfect spot.</em></h1>
+        <div class="later anim fade" style="--d:2.9s">Two days later</div>
+        <div class="gone anim stamp" style="--d:3.4s">No marker. No waypoint.</div>
+      </div>
+      <div class="right">
+        <div class="huddump anim right" style="--d:1.0s">
+          <span class="cap">Debug HUD &middot; r_DisplayInfo 2</span>
+          Zone: <b>OOC_Stanton3a_Lyria</b><br>
+          Pos: <b>4133.5612 km</b><br>
+          &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<b>-1964.1387 km</b><br>
+          &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<b>-529.8944 km</b>
+        </div>
+      </div>
+    </div>
+    <div class="sub anim fade" style="--d:4.4s">Star Citizen will not remember it for you.</div>
+  </section>
+
+  <!-- ═══ S1 — BRAND (6.2 → 10.6) ═════════════════════════ -->
+  <section class="scene" id="s-brand">
+    <div class="mark anim stamp" style="--d:.05s">
+      <div class="diamond"><i></i></div>
+      <div class="wordmark">SPACE<em>DRIVE</em> GPS</div>
+    </div>
+    <div class="tag anim up" style="--d:.6s">The navigation layer the 'verse never shipped.</div>
+    <div class="meta">
+      <span class="anim up" style="--d:1.1s">Reads the game's own debug HUD</span>
+      <span class="anim up" style="--d:1.35s">No memory access</span>
+      <span class="anim up" style="--d:1.6s">Screen capture only</span>
+    </div>
+  </section>
+
+  <!-- ═══ S2 — THE OVERLAY WORKING (10.6 → 19.2) ══════════ -->
+  <section class="scene" id="s-live">
+    <div class="cols">
+      <div class="left">
+        <div class="caption anim up" style="--d:.05s">Save the spot once.<br><em>Fly back to it forever.</em></div>
+        <div class="sub anim fade" style="--d:.5s">Distance, heading and data freshness &mdash; live, on top of the game.</div>
+        <div class="track anim fade" style="--d:.8s">
+          <div class="trackbar"><i id="trackFill"></i></div>
+          <div class="tracklabels"><span>Departure</span><span id="trackEta">On course</span></div>
+        </div>
+        <div class="drchip" id="drChip">Signal dropped &middot; dead reckoning</div>
+      </div>
+      <div class="right">
+        <div class="mfd" id="mfd">
+          <div class="head">
+            <span class="brand">SPACEDRIVE GPS</span>
+            <span class="spacer"></span>
+            <span class="bars"><b></b><b></b><b></b><b></b></span>
+            <span class="pulse"></span>
+            <span class="live">LIVE</span>
+          </div>
+          <div class="pos" id="mfdPos">X:    4133.56   Y:  -1964.13
+Z:    -529.89</div>
+          <div class="nav">
+            <span class="target">&#9654; LYRIA CAVE 7</span><br>
+            &nbsp;&nbsp;<span class="dist" id="mfdDist">12.4 km</span>
+            &nbsp;&nbsp;<span class="arrowglyph" id="mfdArrow" style="--rot:38deg"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 1.5 L21 12.5 L15 12.5 L15 22.5 L9 22.5 L9 12.5 L3 12.5 Z"/></svg></span><span class="dr" id="mfdDr"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══ S3 — PROOF (19.2 → 24.8) ════════════════════════ -->
+  <section class="scene" id="s-proof">
+    <div class="title anim up" style="--d:.05s">Built to sit on top of the game</div>
+    <div class="tiles">
+      <div class="tile anim up" style="--d:.35s">
+        <div class="g">&#9679;</div>
+        <h3>No memory reading.<br>No injection.</h3>
+        <p>100% screenshot-based &mdash; it reads the debug HUD the same way a streaming overlay reads your screen.</p>
+      </div>
+      <div class="tile anim up" style="--d:.6s">
+        <div class="g">&#9670;</div>
+        <h3>One hotkey saves<br>your position</h3>
+        <p>Shift+F3 freezes the exact coordinates you are on, so the value cannot drift while you name the spot.</p>
+      </div>
+      <div class="tile anim up" style="--d:.85s">
+        <div class="g">&#9650;</div>
+        <h3>Your POIs,<br>your file</h3>
+        <p>Eight categories, import and export by clipboard or JSON, shared with the SpaceDrive Community Hub.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══ S4 — CTA (24.8 → 30.0) ══════════════════════════ -->
+  <section class="scene" id="s-cta">
+    <div class="punch anim up" style="--d:.05s">Never lose a <em>spot</em> again.</div>
+    <div class="wordmark anim stamp" style="--d:.5s">SPACE<em>DRIVE</em> GPS</div>
+    <div class="url anim pop" style="--d:.9s">spacedrive.padek-interactive.tech</div>
+    <div class="fine anim fade" style="--d:1.15s">Download &amp; community POIs &middot; Windows 10 / 11</div>
+    <div class="fine2 anim fade" style="--d:1.35s">Unofficial tool &middot; not affiliated with Cloud Imperium Games</div>
+  </section>
+
+  <div id="chrome">
+    <h1>SPACE<em>DRIVE</em> GPS &mdash; YouTube ad &middot; 30 s &middot; 1920&times;1080</h1>
+    <button class="play" id="playBtn" aria-label="Play">&#9654;</button>
+    <p><kbd>Space</kbd> play &middot; <kbd>R</kbd> replay &middot; <kbd>F</kbd> fullscreen</p>
+  </div>
+  <div id="countdown"></div>
+  <div id="cue"></div>
+  <div id="devbar"></div>
+
+</div>
+</div>
+
+<script>
+const AD = {
+  DURATION: 30,
+  SCENES: [
+    { id: 's-hook',  start: 0.0,  end: 6.2  },
+    { id: 's-brand', start: 6.2,  end: 10.6 },
+    { id: 's-live',  start: 10.6, end: 19.2 },
+    { id: 's-proof', start: 19.2, end: 24.8 },
+    { id: 's-cta',   start: 24.8, end: 30.0 }
+  ]
+};
+
+/* The approach run, scene-relative — same table as the vertical cut. */
+const LIVE_CUES = [
+  { at: 0.6, dist: '12.4 km', rot: 38,  fill: 4,   eta: 'On course',   aging: false, pos: ['4133.56', '-1964.13', '-529.89'] },
+  { at: 2.0, dist: '8.1 km',  rot: 22,  fill: 34,  eta: 'On course',   aging: false, pos: ['4129.90', '-1961.04', '-527.11'] },
+  { at: 3.3, dist: '3.7 km',  rot: -14, fill: 62,  eta: 'Turn right',  aging: false, pos: ['4126.38', '-1958.77', '-525.02'] },
+  { at: 4.6, dist: '820 m',   rot: 6,   fill: 84,  eta: 'On course',   aging: true,  pos: ['4124.71', '-1957.60', '-524.18'] },
+  { at: 5.9, dist: '210 m',   rot: 0,   fill: 95,  eta: 'Approaching', aging: false, pos: ['4124.55', '-1957.48', '-524.09'] },
+  { at: 7.0, dist: '17 m',    rot: 0,   fill: 100, eta: 'Arrived',     aging: false, pos: ['4124.52', '-1957.45', '-524.07'], arrived: true }
+];
+
+/* The heading arrow is drawn, not typed: a rotated text triangle reads as the
+   wrong direction at intermediate angles. */
+const ARROW_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 1.5 L21 12.5 L15 12.5 L15 22.5 L9 22.5 L9 12.5 L3 12.5 Z"/></svg>';
+const DOT_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="6.5"/></svg>';
+
+const params = new URLSearchParams(location.search);
+const stage = document.getElementById('stage');
+const chrome_ = document.getElementById('chrome');
+const countdownEl = document.getElementById('countdown');
+const devbar = document.getElementById('devbar');
+if (params.get('dev') === '1') document.body.classList.add('dev');
+
+function fit() { stage.style.setProperty('--s', Math.min(innerWidth / 1920, innerHeight / 1080)); }
+addEventListener('resize', fit); fit();
+
+(function stars() {
+  const box = document.getElementById('stars');
+  for (let i = 0; i < 160; i++) {
+    const s = document.createElement('i');
+    const r = Math.random();
+    const size = r > .92 ? 3.2 : r > .7 ? 2.1 : 1.3;
+    s.style.width = s.style.height = size + 'px';
+    s.style.left = (Math.random() * 100) + '%';
+    s.style.top = (Math.random() * 100) + '%';
+    s.style.opacity = (0.18 + Math.random() * 0.62).toFixed(2);
+    if (r > .95) s.style.boxShadow = '0 0 8px rgba(111,232,255,.9)';
+    box.appendChild(s);
+  }
+})();
+
+const timers = [];
+const mfd = document.getElementById('mfd');
+const mfdDist = document.getElementById('mfdDist');
+const mfdArrow = document.getElementById('mfdArrow');
+const mfdPos = document.getElementById('mfdPos');
+const mfdDr = document.getElementById('mfdDr');
+const drChip = document.getElementById('drChip');
+const trackFill = document.getElementById('trackFill');
+const trackEta = document.getElementById('trackEta');
+
+const pad = (v, n) => String(v).padStart(n, ' ');
+function setPos(p) { mfdPos.textContent = `X: ${pad(p[0], 10)}   Y: ${pad(p[1], 10)}\nZ: ${pad(p[2], 10)}`; }
+
+function runLiveCues() {
+  for (const c of LIVE_CUES) {
+    timers.push(setTimeout(() => {
+      mfdDist.textContent = c.dist;
+      mfdArrow.style.setProperty('--rot', c.rot + 'deg');
+      // Inside the arrival radius the app drops the directional arrow for a
+      // terminal marker — the bearing swings wildly as range -> 0.
+      mfdArrow.innerHTML = c.arrived ? DOT_SVG : ARROW_SVG;
+      trackFill.style.width = c.fill + '%';
+      trackEta.textContent = c.eta;
+      // One beat of AGING colour: the feed drops, the border goes copper and
+      // the readout is tagged DR while the filter coasts on the last velocity.
+      mfd.classList.toggle('aging', !!c.aging);
+      drChip.classList.toggle('on', !!c.aging);
+      mfdDr.textContent = c.aging ? '  DR' : '';
+      setPos(c.pos);
+    }, c.at * 1000));
+  }
+}
+
+function resetLive() {
+  mfd.classList.remove('aging');
+  drChip.classList.remove('on');
+  mfdDr.textContent = '';
+  mfdDist.textContent = '12.4 km';
+  mfdArrow.innerHTML = ARROW_SVG;
+  mfdArrow.style.setProperty('--rot', '38deg');
+  trackFill.style.width = '0%';
+  trackEta.textContent = 'On course';
+  setPos(['4133.56', '-1964.13', '-529.89']);
+}
+
+let rafId = null, startedAt = 0, current = -1;
+
+function enterScene(i) {
+  AD.SCENES.forEach((s, idx) => document.getElementById(s.id).classList.toggle('on', idx === i));
+  if (AD.SCENES[i].id === 's-live') { resetLive(); runLiveCues(); }
+  current = i;
+}
+
+function tick(now) {
+  const t = (now - startedAt) / 1000;
+  if (document.body.classList.contains('dev')) devbar.style.width = Math.min(100, (t / AD.DURATION) * 100) + '%';
+  const i = AD.SCENES.findIndex(s => t >= s.start && t < s.end);
+  if (i !== -1 && i !== current) enterScene(i);
+  if (t >= AD.DURATION) { stop(); return; }
+  rafId = requestAnimationFrame(tick);
+}
+
+function stop() { cancelAnimationFrame(rafId); enterScene(AD.SCENES.length - 1); }
+
+function reset() {
+  cancelAnimationFrame(rafId);
+  timers.forEach(id => clearTimeout(id));
+  timers.length = 0;
+  current = -1;
+  AD.SCENES.forEach(s => document.getElementById(s.id).classList.remove('on'));
+  resetLive();
+}
+
+async function start() {
+  chrome_.classList.add('hidden');
+  reset();
+  const cd = parseInt(params.get('countdown') || '0', 10);
+  if (cd > 0) {
+    countdownEl.classList.add('on');
+    for (let n = cd; n > 0; n--) { countdownEl.textContent = n; await new Promise(r => setTimeout(r, 1000)); }
+    countdownEl.classList.remove('on');
+  }
+  const cue = document.getElementById('cue');
+  cue.classList.add('on');
+  await new Promise(r => setTimeout(r, 70));
+  cue.classList.remove('on');
+  await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+  startedAt = performance.now();
+  rafId = requestAnimationFrame(tick);
+}
+
+window.ad = { start, stop, reset, enterScene, scenes: AD.SCENES, duration: AD.DURATION };
+
+document.getElementById('playBtn').addEventListener('click', start);
+document.addEventListener('keydown', e => {
+  if (e.code === 'Space' || e.code === 'Enter') { e.preventDefault(); start(); }
+  if (e.key.toLowerCase() === 'r') start();
+  if (e.key.toLowerCase() === 'f') { document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen(); }
+});
+
+function whenReady(fn) {
+  let done = false;
+  const go = () => { if (!done) { done = true; fn(); } };
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(go);
+  setTimeout(go, 4000);
+}
+if (params.get('auto') === '1') whenReady(() => setTimeout(start, 500));
+if (params.get('scene') !== null) {
+  const i = Math.max(0, Math.min(AD.SCENES.length - 1, parseInt(params.get('scene'), 10) || 0));
+  whenReady(() => { chrome_.classList.add('hidden'); enterScene(i); });
+}
+</script>
+</body>
+</html>

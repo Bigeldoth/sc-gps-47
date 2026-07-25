@@ -204,6 +204,18 @@ Star Citizen has used **Easy Anti-Cheat (EAC)** since November 2021. Any memory-
 
 ---
 
+## SpaceDrive Community Hub
+
+SpaceDrive has a companion website: **[spacedrive.padek-interactive.tech](https://spacedrive.padek-interactive.tech)**.
+
+- Download the installer and follow releases.
+- Browse, share, rate and validate community POIs.
+- The hub uses the **same POI schema and the same 8 categories** as the desktop app, so a POI
+  exported from the POI Manager (clipboard or JSON file) can be published there — and a POI
+  copied from the hub imports straight back into the overlay.
+
+---
+
 ## Contributing
 
 1. Fork → branch `feat/...` or `fix/...`
