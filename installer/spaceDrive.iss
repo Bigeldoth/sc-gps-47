@@ -30,7 +30,11 @@
 ; SHA-256 of the pinned installer above. The setup refuses to run the download
 ; if it does not match, so this MUST be updated whenever TesseractVersion is.
 ; Refresh it with: .\tools\get_tesseract_hash.ps1
-#define TesseractSha256 "c885fff6998e0608ba4bb8ab51436e1c6775c2bafc2559a19b423e18678b60c9"
+; Overridable via /DTesseractSha256=... so the sandbox harness can build a
+; deliberately-wrong-hash installer and assert that the guard rejects it.
+#ifndef TesseractSha256
+  #define TesseractSha256 "c885fff6998e0608ba4bb8ab51436e1c6775c2bafc2559a19b423e18678b60c9"
+#endif
 
 [Setup]
 AppId={#MyAppId}
