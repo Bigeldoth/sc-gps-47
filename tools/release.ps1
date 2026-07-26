@@ -52,7 +52,10 @@ Write-Host ""
 $BareVersion = $Version.TrimStart("v")
 
 $ConfigFile = Join-Path $RepoRoot "config.ini"
-$ConfigContent = Get-Content $ConfigFile -Raw
+# Read as UTF-8 explicitly: PowerShell 5.1 Get-Content defaults to the ANSI
+# codepage (cp1252) for BOM-less files, so any non-ASCII byte would be decoded
+# as mojibake and then written straight back out by WriteAllText below.
+$ConfigContent = Get-Content $ConfigFile -Raw -Encoding UTF8
 $ConfigContent = $ConfigContent -replace "(?m)^app_version\s*=.*$", "app_version = $Version"
 # Use UTF-8 WITHOUT BOM -- PowerShell 5.1 Set-Content -Encoding utf8 writes BOM,
 # which breaks Python's configparser. Use .NET directly instead.
@@ -60,7 +63,7 @@ $ConfigContent = $ConfigContent -replace "(?m)^app_version\s*=.*$", "app_version
 Write-Host "==> Bumped config.ini -> app_version = $Version"
 
 $IssFile = Join-Path $RepoRoot "installer\spaceDrive.iss"
-$IssContent = Get-Content $IssFile -Raw
+$IssContent = Get-Content $IssFile -Raw -Encoding UTF8
 $IssContent = $IssContent -replace '#define MyAppVersion "[^"]*"', "#define MyAppVersion `"$BareVersion`""
 [System.IO.File]::WriteAllText($IssFile, $IssContent, [System.Text.UTF8Encoding]::new($false))
 Write-Host "==> Bumped spaceDrive.iss -> MyAppVersion = $BareVersion"
