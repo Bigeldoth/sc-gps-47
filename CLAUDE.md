@@ -46,6 +46,27 @@ Note: the separate **SpaceDrive Community Hub** web project *is* bilingual
 Star Citizen GPS overlay that reads in-game HUD coordinates via OCR and provides
 navigation guidance to user-defined POIs.
 
+## SpaceDrive Community Hub — companion web project
+The desktop app has a public community website: players share, rate and validate POIs
+there, and it is also where the installer is downloaded from.
+
+| | |
+|---|---|
+| Production | `https://spacedrive.padek-interactive.tech` |
+| Staging | `https://staging.spacedrive.padek-interactive.tech` |
+| Source | `C:\Users\patri\Project\spaceDrive_community` (separate repo) |
+| Stack | React 18 + Vite, Supabase (Postgres / Auth / Storage), Docker + Coolify on the VPS |
+
+**It is the public face of the project — every user-facing link (marketing, CTA, download
+button, docs) points at `spacedrive.padek-interactive.tech`, not at the GitHub repo.**
+
+The two codebases share the POI schema and the 8-category taxonomy (`src/poi_categories.py`
+here, `pois.js` `SPACEDRIVE_TYPES` there); exports from the POI Manager are meant to be
+importable on the hub and back. Keep the slugs in sync when either side changes.
+
+The hub is bilingual (FR/EN via `LangContext.jsx`); the desktop app is **not** — see the
+English-only decision above.
+
 ## Navigation design
 - **Velocity-based guidance (car-GPS style)**: derives the movement direction from the OCR
   position stream via a per-axis constant-velocity Kalman filter (`VelocityTracker`). Shows
@@ -174,6 +195,13 @@ If unsure, always ask before pushing to `main`. The cost of asking is low; the c
 - The VPS hosts installers at `https://padek-interactive.tech/releases/` and a `latest.json` pointer; the 5 most recent versions are kept (older auto-pruned).
 - CI (`.github/workflows/build.yml`) only runs on PRs as a smoke-test build — no upload, no artifact (keeps the free-plan storage quota clean).
 - VPS credentials live in a gitignored `.env.local` at the repo root (see `docs/BUILD.md`).
+
+## Marketing videos (offline, not shipped)
+`marketing/youtube-ad/` holds self-playing HTML ads (silent, 30 s) rendered to MP4 by
+driving OBS over its websocket: `ad-30s.html` (1920×1080, YouTube) plus
+`short-1-lost.html` / `short-2-howto.html` (1080×1920, YouTube Shorts / TikTok).
+Pipeline and copy rules are in `marketing/youtube-ad/README.md`. The CTA of every cut is
+`spacedrive.padek-interactive.tech` — the Community Hub, not the GitHub repo.
 
 ## Tools (offline, not shipped)
 - `tools/dataset_builder.py` — auto-label glyphs from video/screen capture
