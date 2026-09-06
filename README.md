@@ -68,7 +68,8 @@ SpaceDrive continuously reads the coordinates displayed by the game's debug HUD 
 - `WindowTransparentForInput` → never captures game mouse click.
 - `WindowStaysOnTopHint` → stays visible over Star Citizen.
 - Coordinate color progresses linearly with elapsed time since last valid OCR (dedicated 150 ms timer, independent of capture cycle).
-- **Support on Tipeee** in the system-tray menu opens
+- **Support on Tipeee** in the system-tray menu or the red button with the Tipeee
+  logo in **Options → General** opens
   [Bigeldoth's support page](https://fr.tipeee.com/bigeldoth/) in your default browser.
 
 ---

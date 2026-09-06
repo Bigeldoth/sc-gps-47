@@ -16,9 +16,10 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                              QHeaderView, QMessageBox, QKeySequenceEdit, QWidget,
                              QTabWidget, QCheckBox, QComboBox, QSpinBox, QDoubleSpinBox,
                              QFormLayout)
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
-from PyQt6.QtGui import QFont
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QSize, QUrl
+from PyQt6.QtGui import QDesktopServices, QFont, QIcon
 
+from app_paths import bundle_dir
 from capture_monitors import list_capture_monitors
 
 logger = logging.getLogger(__name__)
@@ -267,8 +268,48 @@ class OptionsWindow(QDialog):
         ))
 
         layout.addStretch()
+        support_row = QHBoxLayout()
+        support_row.addStretch()
+        self.tipeee_button = QPushButton("Support on Tipeee")
+        self.tipeee_button.setIcon(QIcon(str(bundle_dir() / "assets" / "tipeee.svg")))
+        self.tipeee_button.setIconSize(QSize(24, 24))
+        self.tipeee_button.setAutoDefault(False)
+        self.tipeee_button.setDefault(False)
+        self.tipeee_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.tipeee_button.setAccessibleName("Support on Tipeee")
+        self.tipeee_button.setToolTip("Open Bigeldoth's Tipeee page in your browser")
+        self.tipeee_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.tipeee_button.setStyleSheet("""
+            QPushButton {
+                color: #FFFFFF;
+                background: #D84556;
+                border: 1px solid #D84556;
+                border-radius: 6px;
+                padding: 4px 12px;
+                min-height: 26px;
+            }
+            QPushButton:hover {
+                background: #E25364;
+                border-color: #E25364;
+            }
+            QPushButton:focus {
+                border-color: #FFFFFF;
+            }
+            QPushButton:pressed {
+                background: #BB3445;
+                border-color: #BB3445;
+            }
+        """)
+        self.tipeee_button.clicked.connect(self._open_tipeee)
+        support_row.addWidget(self.tipeee_button)
+        layout.addLayout(support_row)
         widget.setLayout(layout)
         return widget
+
+    def _open_tipeee(self):
+        """Open the project's support page in the user's default browser."""
+        if not QDesktopServices.openUrl(QUrl("https://fr.tipeee.com/bigeldoth/")):
+            logger.warning("Could not open the Tipeee support page")
 
     def _refresh_capture_monitors(self, selected_id=None):
         """Refresh available displays while preserving saved or pending choices."""
