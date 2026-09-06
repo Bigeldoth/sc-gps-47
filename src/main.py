@@ -9,11 +9,11 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QLabel, QVBoxLayout,
                              QWidget, QFrame, QSystemTrayIcon, QMenu,
                              QDialog, QHBoxLayout, QLineEdit, QPushButton,
                              QButtonGroup, QComboBox, QMessageBox)
-from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QObject, QRect
+from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, pyqtSlot, QObject, QRect
 from PyQt6.QtGui import QIcon, QAction, QFontDatabase, QFont
 from app_paths import user_data_dir, bundle_dir
 from ui.widgets import SignalBarsWidget
-from capture import ScreenCapture
+from capture import ScreenCapture, CaptureMonitorUnavailable
 from ocr import OCRProcessor
 from navigation import (
     NavigationEngine,
@@ -186,32 +186,100 @@ class GPSWorker(QObject):
     result_ready = pyqtSignal(dict)
     capture_region_changed = pyqtSignal(object)
     reload_requested = pyqtSignal()
+    stopped = pyqtSignal()
+    engine_ready = pyqtSignal()
 
     def __init__(self):
         super().__init__()
-        self.capture = ScreenCapture()
-        self.ocr = _build_ocr_processor(config)
+        # Native capture handles must be created, used and closed on this
+        # object's worker thread. Construction happens on the first scan.
+        self.capture = None
+        self.ocr = None
+        self._ocr_config_signature = None
         self._running = True
-        self._last_capture_region = object()
+        self._capture_epoch = 0
+        self._capture_generation = 0
+        self._source_state = None
+        self._awaiting_region_ack = None
+        try:
+            self._monitor_id = config.get('Capture', 'monitor_id', fallback='')
+        except configparser.InterpolationError:
+            self._monitor_id = config.get('Capture', 'monitor_id', fallback='', raw=True)
         # Cross-thread reload: the UI emits reload_requested after the user
         # saves Options; the slot runs inside the worker thread (queued
         # connection) so OCRProcessor (re)init does not block the UI.
         self.reload_requested.connect(self._reload_ocr)
 
+    def _ensure_capture(self):
+        if self.capture is None:
+            self.capture = ScreenCapture(config)
+            self.capture.configure_monitor(self._monitor_id)
+
+    @staticmethod
+    def _ocr_settings_signature():
+        return tuple(sorted(config.items('OCR', raw=True))) if config.has_section('OCR') else ()
+
+    def _announce_capture_source(self, force=False):
+        """Pause before a new ROI until the UI has hidden the old outline."""
+        region = self.capture.screen_region
+        state = (self.capture.source_identity, region, self.capture.availability_error)
+        if not force and state == self._source_state:
+            return False
+        self._source_state = state
+        self._capture_generation += 1
+        self._awaiting_region_ack = (self._capture_epoch, self._capture_generation)
+        if self.ocr is not None:
+            self.ocr.reset_capture_state()
+        self.capture_region_changed.emit({
+            'epoch': self._capture_epoch,
+            'generation': self._capture_generation,
+            'region': dict(region) if region is not None else None,
+            'error': self.capture.availability_error,
+        })
+        return True
+
+    def _emit_result(self, data):
+        data['capture_epoch'] = self._capture_epoch
+        data['capture_generation'] = self._capture_generation
+        self.result_ready.emit(data)
+
+    @pyqtSlot()
     def process(self):
         if not self._running:
             return
+        if self._awaiting_region_ack is not None:
+            return
         try:
-            region = self.capture.screen_region
-            if region != self._last_capture_region:
-                self._last_capture_region = region
-                self.capture_region_changed.emit(region)
-            images, glyph_data, t_capture = self.capture.capture()
+            self._ensure_capture()
+            self.capture.refresh_region()
+            if self._announce_capture_source():
+                return
+            if self.capture.availability_error:
+                raise CaptureMonitorUnavailable(self.capture.availability_error)
+            if self.ocr is None:
+                self.ocr = _build_ocr_processor(config)
+                self._ocr_config_signature = self._ocr_settings_signature()
+                self.engine_ready.emit()
+                # Engine initialization can take seconds. Revalidate topology
+                # before the first fresh frame, rather than OCR an old image.
+                self.capture.refresh_region()
+                if self._announce_capture_source():
+                    return
+            # The acknowledged ROI cannot be changed implicitly during grab.
+            images, glyph_data, t_capture = self.capture.capture(refresh=False)
             data = self.ocr.extract_data(images)
             # Carry the capture instant alongside the OCR result so the UI
             # thread can derive velocity from measurement time, not handling time.
             data["t_capture"] = t_capture
-            self.result_ready.emit(data)
+            self._emit_result(data)
+        except CaptureMonitorUnavailable as exc:
+            if self._announce_capture_source():
+                return
+            self._emit_result({
+                'x': None, 'y': None, 'z': None, 'location': 'Unknown',
+                'error': str(exc), 'capture_unavailable': True,
+                't_capture': time.monotonic(),
+            })
         except Exception as e:
             # 0xC000013A (3221225786 = STATUS_CONTROL_C_EXIT) is the Tesseract
             # subprocess being signal-terminated mid-call. The payload is
@@ -222,8 +290,37 @@ class GPSWorker(QObject):
                 logger.debug("Tesseract subprocess interrupted (cleanup noise): %s", e)
             else:
                 logger.error(f"GPS worker error: {e}")
-            self.result_ready.emit({"x": None, "y": None, "z": None, "location": "Unknown", "error": str(e), "t_capture": time.monotonic()})
+            self._emit_result({"x": None, "y": None, "z": None, "location": "Unknown", "error": str(e), "t_capture": time.monotonic()})
 
+    @pyqtSlot(int, int)
+    def acknowledge_capture_region(self, epoch, generation):
+        if not self._running or self._awaiting_region_ack != (epoch, generation):
+            return
+        self._awaiting_region_ack = None
+        self.process()
+
+    @pyqtSlot(str, int)
+    def configure_capture(self, monitor_id, epoch):
+        """Apply a saved selection after any in-flight OCR call has finished."""
+        if not self._running:
+            return
+        self._capture_epoch = epoch
+        self._capture_generation = 0
+        self._monitor_id = monitor_id
+        self._awaiting_region_ack = None
+        try:
+            self._ensure_capture()
+            self.capture.configure_monitor(monitor_id)
+            self._announce_capture_source(force=True)
+        except Exception as exc:
+            logger.exception("Cannot configure capture monitor")
+            self._emit_result({
+                'x': None, 'y': None, 'z': None, 'location': 'Unknown',
+                'error': str(exc), 'capture_unavailable': True,
+                't_capture': time.monotonic(),
+            })
+
+    @pyqtSlot()
     def _reload_ocr(self):
         """Rebuilds the OCR processor from the on-disk config.ini.
 
@@ -231,12 +328,21 @@ class GPSWorker(QObject):
         worker thread, off the UI thread.
         """
         try:
+            if not self._running:
+                return
             # Re-read both paths (bundle defaults + user override), same
             # precedence as the initial boot read above.
             config.read([_bundle_config_path, _user_config_path], encoding="utf-8-sig")
+            if self.ocr is None:
+                return
+            signature = self._ocr_settings_signature()
+            if signature == self._ocr_config_signature:
+                return
             old = self.ocr
             new_ocr = _build_ocr_processor(config)
             self.ocr = new_ocr
+            self._ocr_config_signature = signature
+            self.engine_ready.emit()
             try:
                 old.shutdown()
             except Exception as exc:
@@ -245,10 +351,21 @@ class GPSWorker(QObject):
         except Exception as exc:
             logger.error("OCR reload failed: %s", exc)
 
+    @pyqtSlot()
     def stop(self):
         self._running = False
-        self.capture.stop()
-        self.ocr.shutdown()
+        self._awaiting_region_ack = None
+        try:
+            try:
+                if self.capture is not None:
+                    self.capture.stop()
+            finally:
+                if self.ocr is not None:
+                    self.ocr.shutdown()
+        except Exception:
+            logger.exception("Worker cleanup failed")
+        finally:
+            self.stopped.emit()
 
 
 def _fmt_ooc(ooc):
@@ -554,6 +671,9 @@ class _UnlockOverlay(QWidget):
 class GPSOverlay(QMainWindow):
     save_point_signal = pyqtSignal()
     trigger_worker = pyqtSignal()
+    capture_selection_requested = pyqtSignal(str, int)
+    capture_region_acknowledged = pyqtSignal(int, int)
+    stop_worker = pyqtSignal()
     poi_data_updated = pyqtSignal(dict)   # emitted every OCR cycle with current coords
 
     def __init__(self):
@@ -570,6 +690,12 @@ class GPSOverlay(QMainWindow):
         self.poi_manager_window = None
         self._capture_region = None
         self._capture_region_overlay = None
+        self._capture_monitor_id = self.config_manager.get_capture_monitor_id()
+        self._capture_epoch = 0
+        self._capture_generation = 0
+        self._capture_outline_ready = False
+        self._capture_error = None
+        self._quitting = False
 
         # EMA smoothing + stale OCR detection for target distance
         self._smoothed_distance_km = None
@@ -703,11 +829,6 @@ class GPSOverlay(QMainWindow):
         self.init_window_properties()
         self.setup_tray_icon()
         self._setup_worker_thread()
-
-        # Surface an engine fallback (e.g. Paddle selected but its sidecar isn't
-        # installed) so the user isn't silently left on Tesseract. Deferred so
-        # the tray icon and overlay are ready.
-        QTimer.singleShot(1500, self._check_engine_fallback)
 
         scan_interval = self.config_manager.get_scan_interval()
         self.timer = QTimer()
@@ -904,20 +1025,89 @@ class GPSOverlay(QMainWindow):
         self._worker.moveToThread(self._worker_thread)
         self.trigger_worker.connect(self._worker.process)
         self._worker.result_ready.connect(self._on_worker_result)
+        self._worker.engine_ready.connect(self._check_engine_fallback)
         self._worker.capture_region_changed.connect(
             self._on_capture_region_changed, Qt.ConnectionType.QueuedConnection
         )
+        self.capture_selection_requested.connect(
+            self._worker.configure_capture, Qt.ConnectionType.QueuedConnection
+        )
+        self.capture_region_acknowledged.connect(
+            self._worker.acknowledge_capture_region, Qt.ConnectionType.QueuedConnection
+        )
+        self.stop_worker.connect(self._worker.stop, Qt.ConnectionType.QueuedConnection)
+        self._worker.stopped.connect(
+            self._worker_thread.quit, Qt.ConnectionType.DirectConnection
+        )
+        self._worker_thread.finished.connect(self._worker.deleteLater)
+        self._worker_thread.finished.connect(self._finish_quit)
         self._worker_thread.start()
 
-    def _on_capture_region_changed(self, region):
-        """Receive the actual desktop capture bounds from the OCR worker."""
+    def _on_capture_region_changed(self, change):
+        """Hide the previous outline and acknowledge a new physical capture ROI."""
+        if self._quitting or change['epoch'] != self._capture_epoch:
+            return
+        self._capture_generation = change['generation']
+        self._capture_outline_ready = False
+        if self._capture_region_overlay is not None:
+            self._capture_region_overlay.hide()
+        region = change['region']
         self._capture_region = dict(region) if region is not None else None
+        self._capture_error = change['error']
+        self._reset_capture_navigation()
         self._apply_capture_region_setting()
+        # Return to the UI event loop before allowing a grab. The new outline
+        # remains hidden until that first frame finishes, even when OCR fails.
+        epoch, generation = change['epoch'], change['generation']
+        QTimer.singleShot(0, lambda: self.capture_region_acknowledged.emit(epoch, generation))
+
+    def _reset_capture_navigation(self):
+        """Forget measurements from the previous display, retaining the target."""
+        self.current_data = {
+            'x': None, 'y': None, 'z': None, 'ooc': None, 'location': 'Unknown',
+        }
+        self._pos_buffer.clear()
+        self._velocity_tracker.reset()
+        self._last_coord_ts = None
+        self._last_known_ooc = None
+        self._smoothed_distance_km = None
+        self._last_raw_distance_km = None
+        self._smoothed_yaw_off = None
+        self._smoothed_pitch_off = None
+        self._last_raw_yaw_off = None
+        self._last_raw_pitch_off = None
+        self._last_vel_heading = None
+        self._heading_unstable_until = 0.0
+        self._save_snapshot = None
+        self._overlay_message = None
+        self.nav.reset_zone_tracking()
+        self.pos_label.setText('Capture monitor unavailable' if self._capture_error else 'Scanning…')
+        self.poi_data_updated.emit(dict(self.current_data))
+        self._refresh_pos_color()
+        self._refresh_nav_label()
+
+    def _apply_capture_monitor_setting(self):
+        monitor_id = self.config_manager.get_capture_monitor_id()
+        if monitor_id == self._capture_monitor_id:
+            return
+        self._capture_monitor_id = monitor_id
+        self._capture_epoch += 1
+        self._capture_generation = 0
+        self._capture_outline_ready = False
+        self._capture_region = None
+        self._capture_error = None
+        # The new request owns the busy flag. Results from the previous epoch
+        # cannot clear it or seed navigation while the queued switch is pending.
+        self._worker_busy = True
+        self._apply_capture_region_setting()
+        self._reset_capture_navigation()
+        self.capture_selection_requested.emit(monitor_id, self._capture_epoch)
 
     def _apply_capture_region_setting(self):
         """Show the optional capture outline without taking focus from the game."""
         enabled = self.config_manager.get_show_capture_region()
-        if not enabled or not self.is_visible or self._capture_region is None:
+        if (not enabled or not self.is_visible or self._capture_region is None
+                or not self._capture_outline_ready):
             if self._capture_region_overlay is not None:
                 self._capture_region_overlay.hide()
             return
@@ -927,13 +1117,26 @@ class GPSOverlay(QMainWindow):
         self._capture_region_overlay.show()
 
     def _request_update(self):
-        if self._worker_busy:
+        if self._worker_busy or self._quitting:
             return
         self._worker_busy = True
         self.trigger_worker.emit()
 
     def _on_worker_result(self, data):
+        if self._quitting or data.get('capture_epoch', 0) != self._capture_epoch:
+            return
+        if data.get('capture_generation', 0) != self._capture_generation:
+            return
         self._worker_busy = False
+        self._capture_outline_ready = True
+        self._apply_capture_region_setting()
+        if data.get('capture_unavailable'):
+            self._capture_error = data['error']
+            self.pos_label.setText('Capture monitor unavailable')
+            self._refresh_pos_color()
+            self._refresh_nav_label()
+            return
+        self._capture_error = None
 
         # Measurement time stamped at capture (see ScreenCapture.capture).
         # Fed to the velocity tracker so dt reflects the frame interval, not the
@@ -1430,6 +1633,11 @@ class GPSOverlay(QMainWindow):
             "background: transparent;"
         )
 
+        if self._capture_error:
+            self.nav_label.setText('CAPTURE UNAVAILABLE\nSelect a connected monitor in Options.')
+            self.nav_label.setStyleSheet(f"color: #E5484D; font-size: 9pt; {_font_css}")
+            return
+
         # Ephemeral message takes priority (e.g., "Quick save not possible").
         if self._overlay_message is not None:
             text, expire_ts = self._overlay_message
@@ -1660,6 +1868,9 @@ class GPSOverlay(QMainWindow):
         return self.style().standardIcon(self.style().StandardPixmap.SP_ComputerIcon)
 
     def setup_tray_icon(self):
+        from PyQt6.QtCore import QUrl
+        from PyQt6.QtGui import QDesktopServices
+
         self.tray_icon = QSystemTrayIcon(self)
         self.tray_icon.setIcon(self._load_app_icon())
         # Also set as window icon (taskbar, alt-tab, etc.)
@@ -1686,6 +1897,16 @@ class GPSOverlay(QMainWindow):
         reset_gps_action.triggered.connect(self.reset_velocity_tracker)
         tray_menu.addAction(reset_gps_action)
 
+        tray_menu.addSeparator()
+
+        support_action = QAction("Support on Tipeee", self)
+        support_action.triggered.connect(
+            lambda _checked=False: QDesktopServices.openUrl(
+                QUrl("https://fr.tipeee.com/bigeldoth/")
+            )
+        )
+
+        tray_menu.addAction(support_action)
         tray_menu.addSeparator()
 
         quit_action = QAction("Quit", self)
@@ -1775,6 +1996,7 @@ class GPSOverlay(QMainWindow):
             )
 
     def _on_options_saved(self):
+        self._apply_capture_monitor_setting()
         scan_interval = self.config_manager.get_scan_interval()
         self.timer.setInterval(scan_interval)
         logger.info(f"Scan interval updated: {scan_interval} ms")
@@ -1818,10 +2040,6 @@ class GPSOverlay(QMainWindow):
             self._worker.reload_requested.emit()
         except Exception as exc:
             logger.error("Could not request OCR reload: %s", exc)
-
-        # After the (async) reload, surface any engine fallback so changing the
-        # text engine in Options to one that can't start is visible, not silent.
-        QTimer.singleShot(2500, self._check_engine_fallback)
 
     def _on_destination_changed(self, poi):
         self.nav.set_target(
@@ -1978,12 +2196,20 @@ class GPSOverlay(QMainWindow):
         return f"{base_name} ({i})"
 
     def quit_application(self):
+        if self._quitting:
+            return
+        self._quitting = True
+        self.timer.stop()
         if self._capture_region_overlay is not None:
             self._capture_region_overlay.close()
         self.hotkey_listener.cleanup()
-        self._worker.stop()
-        self._worker_thread.quit()
-        self._worker_thread.wait(2000)
+        # Stop is queued behind any running scan so MSS is closed on its owner
+        # thread. Keep the event loop alive until cleanup has completed.
+        self.stop_worker.emit()
+
+    def _finish_quit(self):
+        if not self._quitting:
+            return
         if self._telemetry is not None:
             self._telemetry.close()
         self.tray_icon.hide()

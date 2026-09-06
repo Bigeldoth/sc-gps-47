@@ -88,6 +88,10 @@ class ConfigManager:
             self.config.set('Debug', 'record_telemetry', 'False')
             self.config.set('Debug', 'show_capture_region', 'False')
 
+        if not self.config.has_section('Capture'):
+            self.config.add_section('Capture')
+            self.config.set('Capture', 'monitor_id', '')
+
         if not self.config.has_section('Features'):
             self.config.add_section('Features')
             self.config.set('Features', 'interactive_mode', 'True')
@@ -144,6 +148,9 @@ class ConfigManager:
                 'record_telemetry': 'False',
                 'show_capture_region': 'False',
                 'test_screenshot': '',
+            },
+            'Capture': {
+                'monitor_id': '',
             },
             'Features': {
                 'interactive_mode': 'True',
@@ -461,6 +468,20 @@ class ConfigManager:
             return self.config.getboolean('Debug', 'record_telemetry', fallback=False)
         except Exception:
             return False
+
+    def get_capture_monitor_id(self):
+        """Return the selected display ID; an empty value means primary."""
+        try:
+            return self.config.get('Capture', 'monitor_id', fallback='')
+        except configparser.InterpolationError:
+            # Preserve a literal percent from a manually written display ID.
+            return self.config.get('Capture', 'monitor_id', raw=True, fallback='')
+
+    def set_capture_monitor_id(self, value):
+        """Select a capture display without changing the debug outline option."""
+        if not self.config.has_section('Capture'):
+            self.config.add_section('Capture')
+        self.config.set('Capture', 'monitor_id', str(value).replace('%', '%%'))
 
     def get_show_capture_region(self):
         """Whether to outline the live OCR capture area. Off by default."""

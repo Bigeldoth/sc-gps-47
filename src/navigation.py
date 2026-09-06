@@ -461,6 +461,11 @@ class NavigationEngine:
         self._zone_match_locked = False
         self._zone_last_match_ts = None
 
+    def reset_zone_tracking(self):
+        """Restart zone confirmation after a capture change without losing the target."""
+        self._zone_match_locked = False
+        self._zone_last_match_ts = time.monotonic() if self.target is not None else None
+
     def update_zone_tracking(self, current_pos):
         """Update zone tracking based on the current OCR scan result.
 

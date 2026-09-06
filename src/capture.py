@@ -42,6 +42,8 @@ import numpy as np
 import cv2
 import configparser
 import logging
+import app_paths
+from capture_monitors import list_capture_monitors
 from sc_ocr.segment import find_glyph_regions, save_glyph_crops
 from sc_ocr.preprocess import isolate_channel, flatten_background
 
@@ -79,19 +81,35 @@ _BG_FLATTEN_KERNEL_PX = 3 * UPSCALE_FACTOR
 _isolate_channel_auto = isolate_channel
 
 
-class ScreenCapture:
-    def __init__(self):
-        self._sct = mss.mss()
-        self.monitor_index = 1
+class CaptureMonitorUnavailable(RuntimeError):
+    """The selected physical display cannot currently be captured."""
 
+
+class ScreenCapture:
+    def __init__(self, config=None):
+        # Construct, configure, capture and stop this object on the same thread:
+        # MSS owns native display resources which must not cross Qt threads.
+        self._sct = None
         self._clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
 
-        config = configparser.ConfigParser()
-        config.read('config.ini')
+        if config is None:
+            config = configparser.ConfigParser()
+            config.read(
+                [app_paths.bundle_dir() / 'config.ini',
+                 app_paths.user_data_dir() / 'config.ini'],
+                encoding='utf-8-sig',
+            )
         self._save_debug = config.getboolean('Debug', 'save_ocr_images', fallback=False)
         self._save_glyph_crops = config.getboolean('Debug', 'save_glyph_crops', fallback=False)
         test_path = config.get('Debug', 'test_screenshot', fallback='').strip()
         self._test_screenshot = test_path if test_path else None
+        try:
+            self.monitor_id = config.get('Capture', 'monitor_id', fallback='').strip()
+        except configparser.InterpolationError:
+            self.monitor_id = config.get('Capture', 'monitor_id', fallback='', raw=True).strip()
+        self._source_identity = ('monitor', self.monitor_id, None)
+        self._availability_error = None
+        self._last_refresh = float('-inf')
 
         self._region = None
         if self._test_screenshot:
@@ -118,15 +136,83 @@ class ScreenCapture:
                     "height": custom_h,
                 }
             logger.info(f"Test mode: crop region={self._region} from {w}x{h} image")
+            self._source_identity = (
+                'screenshot', self._test_screenshot,
+                *(self._region[key] for key in ('left', 'top', 'width', 'height')),
+            )
         else:
-            monitor = self._sct.monitors[self.monitor_index]
-            self._region = {
-                "top": monitor["top"],
-                "left": monitor["left"] + monitor["width"] - CAPTURE_WIDTH,
-                "width": CAPTURE_WIDTH,
-                "height": CAPTURE_HEIGHT,
+            self.refresh_region(force=True)
+
+    @property
+    def source_identity(self):
+        """Identify the selection and current bounds for stale-frame rejection."""
+        return self._source_identity
+
+    @property
+    def availability_error(self):
+        """Return an English status message while the selected display is absent."""
+        return self._availability_error
+
+    def configure_monitor(self, monitor_id):
+        """Apply a persisted display choice between captures in the owning thread."""
+        self.monitor_id = str(monitor_id or '').strip()
+        return self.refresh_region(force=True)
+
+    def _clear_display(self, message):
+        self._region = None
+        self._source_identity = ('monitor', self.monitor_id, None)
+        self._availability_error = message
+        self.stop()
+
+    def refresh_region(self, force=False):
+        """Refresh physical topology at most once per second without grabbing pixels.
+
+        Missing saved IDs never fall back to another screen. Re-enumeration lets
+        the same selection resume after reconnection without changing preferences.
+        Return whether the source changed, including availability transitions.
+        """
+        if self._test_screenshot:
+            return False
+        now = time.monotonic()
+        if not force and now - self._last_refresh < 1.0:
+            return False
+        self._last_refresh = now
+        previous = self._source_identity
+        try:
+            monitors = list_capture_monitors()
+            if self.monitor_id:
+                matches = [monitor for monitor in monitors if monitor['id'] == self.monitor_id]
+                if len(matches) != 1:
+                    self._clear_display('Selected display unavailable')
+                    return previous != self._source_identity
+                monitor = matches[0]
+            else:
+                monitor = next((m for m in monitors if m['is_primary']), None)
+                if monitor is None:
+                    self._clear_display('Primary display unavailable')
+                    return previous != self._source_identity
+            width = min(CAPTURE_WIDTH, monitor['width'])
+            height = min(CAPTURE_HEIGHT, monitor['height'])
+            region = {
+                'left': monitor['left'] + monitor['width'] - width,
+                'top': monitor['top'], 'width': width, 'height': height,
             }
-            logger.info(f"Capture {CAPTURE_WIDTH}x{CAPTURE_HEIGHT} top-right, region={self._region}")
+            identity = (
+                'monitor', self.monitor_id, monitor['id'],
+                *(monitor[key] for key in ('left', 'top', 'width', 'height')),
+            )
+            if identity != previous or self._sct is None:
+                self.stop()
+                self._sct = mss.mss()
+            self._region = region
+            self._source_identity = identity
+            self._availability_error = None
+            if identity != previous:
+                logger.info('Capture source: %s, region=%s', monitor['label'], region)
+        except Exception:
+            logger.warning('Capture display enumeration failed', exc_info=True)
+            self._clear_display('Capture displays unavailable')
+        return previous != self._source_identity
 
     @property
     def screen_region(self):
@@ -139,7 +225,14 @@ class ScreenCapture:
             return None
         return dict(self._region)
 
-    def capture(self):
+    def capture(self, *, refresh=True):
+        if not self._test_screenshot:
+            if refresh:
+                self.refresh_region()
+            if self._region is None or self._sct is None:
+                raise CaptureMonitorUnavailable(
+                    self._availability_error or 'Selected display unavailable'
+                )
         # Stamp the frame instant up front so downstream velocity estimation
         # uses the *measurement* time, not the (variable) time the OCR result
         # is later handled on the UI thread. Monotonic clock: immune to wall
@@ -150,7 +243,14 @@ class ScreenCapture:
             img = self._test_img[r["top"]:r["top"] + r["height"],
                                   r["left"]:r["left"] + r["width"]]
         else:
-            raw = self._sct.grab(self._region)
+            try:
+                raw = self._sct.grab(self._region)
+            except Exception as exc:
+                # Invalidate the debug outline and let the next scan retry a
+                # fresh native handle after a display mode/disconnection error.
+                self._clear_display('Capture display unavailable')
+                self._last_refresh = float('-inf')
+                raise CaptureMonitorUnavailable(self._availability_error) from exc
             img = np.asarray(raw, dtype=np.uint8)[:, :, :3]
 
         # Phase A: smart colour channel isolation (text kept bright, never inverted).
@@ -217,7 +317,10 @@ class ScreenCapture:
         return images, glyph_data, t_capture
 
     def stop(self):
-        pass
+        """Release native resources in the same thread that created them."""
+        if self._sct is not None:
+            sct, self._sct = self._sct, None
+            sct.close()
 
 
 if __name__ == "__main__":

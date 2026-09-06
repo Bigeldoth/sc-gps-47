@@ -1,7 +1,7 @@
 """Options window for SpaceDrive GPS.
 
 Tabbed dialog that surfaces the contents of config.ini:
-  - General: scan interval, overlay opacity, status bar
+  - General: capture display, scan interval, overlay opacity, status bar
   - Navigation: arrival radius (in meters)
   - OCR: text engine, glyph engine, ONNX confidence threshold
   - Debug: capture-area outline, image dumps, verbose logging, log level
@@ -18,6 +18,8 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                              QFormLayout)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt6.QtGui import QFont
+
+from capture_monitors import list_capture_monitors
 
 logger = logging.getLogger(__name__)
 
@@ -180,6 +182,35 @@ class OptionsWindow(QDialog):
     def _create_general_tab(self):
         widget = QWidget()
         layout = QVBoxLayout()
+        layout.addWidget(self._section_title("Star Citizen display"))
+        display_row = QHBoxLayout()
+        self.capture_monitor_combo = QComboBox()
+        self.capture_monitor_combo.setMinimumContentsLength(24)
+        self.capture_monitor_combo.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        )
+        self.capture_monitor_combo.setAccessibleName("Star Citizen display")
+        display_row.addWidget(self.capture_monitor_combo, 1)
+        self.refresh_displays_button = QPushButton("Refresh displays")
+        self.refresh_displays_button.clicked.connect(
+            lambda _checked: self._refresh_capture_monitors()
+        )
+        display_row.addWidget(self.refresh_displays_button)
+        layout.addLayout(display_row)
+        layout.addWidget(self._hint(
+            "Choose the screen where Star Citizen is displayed in fullscreen or "
+            "borderless mode. To check the capture area, enable Debug > Show capture region."
+        ))
+        self.capture_monitor_status = self._hint("")
+        self.capture_monitor_status.hide()
+        layout.addWidget(self.capture_monitor_status)
+        self._capture_monitor_ids = set()
+        self._capture_monitor_error = ""
+        self.capture_monitor_combo.currentIndexChanged.connect(
+            self._update_capture_monitor_status
+        )
+
+        layout.addSpacing(10)
         layout.addWidget(self._section_title("OCR Scan Frequency"))
 
         slider_row = QHBoxLayout()
@@ -238,6 +269,55 @@ class OptionsWindow(QDialog):
         layout.addStretch()
         widget.setLayout(layout)
         return widget
+
+    def _refresh_capture_monitors(self, selected_id=None):
+        """Refresh available displays while preserving saved or pending choices."""
+        combo = self.capture_monitor_combo
+        if selected_id is None:
+            selected_id = combo.currentData() or ""
+
+        try:
+            monitors = list_capture_monitors()
+        except Exception:
+            logger.warning("Could not enumerate capture displays", exc_info=True)
+            # A failed refresh must not erase the selection or the previous list.
+            if combo.count() == 0:
+                combo.addItem("Primary display (default)", "")
+            self._capture_monitor_error = (
+                "Could not refresh displays. Your selection is kept; try Refresh displays."
+            )
+        else:
+            self._capture_monitor_error = ""
+            self._capture_monitor_ids = {monitor["id"] for monitor in monitors}
+            combo.clear()
+            combo.addItem("Primary display (default)", "")
+            for monitor in monitors:
+                combo.addItem(monitor["label"], monitor["id"])
+                combo.setItemData(
+                    combo.count() - 1, monitor["label"], Qt.ItemDataRole.ToolTipRole
+                )
+
+        index = combo.findData(selected_id)
+        if index < 0:
+            combo.addItem("Unavailable display (saved selection)", selected_id)
+            index = combo.count() - 1
+            combo.setItemData(index, selected_id, Qt.ItemDataRole.ToolTipRole)
+        combo.setCurrentIndex(index)
+        self._update_capture_monitor_status()
+
+    def _update_capture_monitor_status(self):
+        """Keep availability feedback consistent with the current pending choice."""
+        selected_id = self.capture_monitor_combo.currentData() or ""
+        if self._capture_monitor_error:
+            status = self._capture_monitor_error
+        elif selected_id and selected_id not in self._capture_monitor_ids:
+            status = "The selected display is unavailable. Reconnect it or select another display."
+        elif not self._capture_monitor_ids:
+            status = "No displays available. Try Refresh displays after reconnecting."
+        else:
+            status = ""
+        self.capture_monitor_status.setText(status)
+        self.capture_monitor_status.setVisible(bool(self.capture_monitor_status.text()))
 
     def _on_unlock_mfd(self):
         self.unlock_mfd_requested.emit()
@@ -1060,6 +1140,7 @@ class OptionsWindow(QDialog):
         self.current_version_label.setText(current_version)
 
         # General
+        self._refresh_capture_monitors(cfg.get_capture_monitor_id())
         self.ocr_slider.setValue(cfg.get_scan_interval())
         self.opacity_spin.setValue(float(cfg.get('Overlay', 'default_opacity', fallback='1.0')))
         self.refresh_spin.setValue(int(cfg.get('Settings', 'refresh_interval_ms', fallback='200')))
@@ -1195,6 +1276,7 @@ class OptionsWindow(QDialog):
             cfg = self.config_manager
 
             # General
+            cfg.set_capture_monitor_id(self.capture_monitor_combo.currentData() or "")
             cfg.set_scan_interval(self.ocr_slider.value())
             self._set_cfg('Overlay', 'default_opacity', f"{self.opacity_spin.value():.2f}")
             self._set_cfg('Settings', 'refresh_interval_ms', self.refresh_spin.value())

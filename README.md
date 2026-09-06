@@ -40,6 +40,13 @@ SpaceDrive continuously reads the coordinates displayed by the game's debug HUD 
 - **Strict 3-4 decimal regex**: rejects degraded readings that caused ~17 m errors on saved POIs.
 - **Post-OCR normalization**: fixes common artifacts (`Pos:_`, variants `lkm/Km/kn`, parasitic underscores).
 - **Capture region**: 600×60 px at the top right of the capture monitor.
+- **Capture display**: choose **Options → General → Star Citizen display**, then
+  save to switch the capture monitor without restarting. The default follows the
+  primary display. Explicit choices are remembered by display identity rather
+  than list order. Use **Refresh displays** after changing your display setup.
+  If the selected display is unavailable, capture pauses until it reconnects or
+  you choose another display. Use fullscreen or borderless mode so the HUD is at
+  the top right of the selected display; window detection is not automatic.
 - **Capture debug outline**: enable **Options → Debug → Show capture region** and save
   to show the actual OCR capture bounds. Disabled by default. The cyan outline
   stays outside the captured pixels, passes clicks through, and never takes focus.
@@ -61,6 +68,8 @@ SpaceDrive continuously reads the coordinates displayed by the game's debug HUD 
 - `WindowTransparentForInput` → never captures game mouse click.
 - `WindowStaysOnTopHint` → stays visible over Star Citizen.
 - Coordinate color progresses linearly with elapsed time since last valid OCR (dedicated 150 ms timer, independent of capture cycle).
+- **Support on Tipeee** in the system-tray menu opens
+  [Bigeldoth's support page](https://fr.tipeee.com/bigeldoth/) in your default browser.
 
 ---
 
