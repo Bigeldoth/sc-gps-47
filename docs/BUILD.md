@@ -122,6 +122,10 @@ not override the running binary's identity. A missing/invalid file gives
 To intentionally change a version, replace `vX.Y.Z` below with the desired
 release version, then review and commit all changes on the feature branch:
 
+Follow [the SemVer policy](VERSIONING.md): new compatible features require a
+MINOR increment, fixes alone require PATCH, and incompatible changes require
+MAJOR. Consider the complete release since the last published tag.
+
 ```powershell
 python tools/versioning.py sync --version vX.Y.Z
 python tools/versioning.py check
@@ -129,8 +133,8 @@ python tools/versioning.py check
 
 `sync` updates `VERSION`, `[Updates] app_version` in `config.ini` (legacy mirror),
 and `MyAppVersion` in `installer/spaceDrive.iss`. **Build/release scripts never
-bump versions.** The reliability work synchronizes these declarations to
-`1.0.0`; it does not publish or increment a release.
+bump versions.** The prepared application version is `1.1.0`; the published
+release remains `v1.0.0` until the local release workflow is run explicitly.
 
 The build records source commit/fingerprint, bundle hashes and installer hash
 under ignored `dist/*-provenance.json` files. `-SkipPyInstaller` and `-SkipBuild`

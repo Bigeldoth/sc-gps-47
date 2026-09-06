@@ -6,7 +6,7 @@ Audit date: 2026-09-06. Baseline: `staging` at `55b3d4c`, following the user-tes
 
 The published release is **v1.0.0**. The source checkout still declared 0.7.12 in both `config.ini` and `installer/spaceDrive.iss`. The previous release script changed those files before building but tagged the existing Git commit, so the tagged source could disagree with the shipped application.
 
-This change synchronizes the source to **1.0.0 without incrementing it**. `VERSION` becomes the application-version authority; the configuration and installer declarations are checked mirrors. Build and release commands validate the version rather than silently changing it. User preferences cannot override the running application's version.
+The source is prepared for **v1.1.0**, while the published release remains v1.0.0. The new compatible capture and debug features require a MINOR increment under [the project's SemVer policy](VERSIONING.md). `VERSION` becomes the application-version authority; the configuration and installer declarations are checked mirrors. The old declarations were synchronized before this explicit increment. Build and release commands validate the version rather than silently changing it. User preferences cannot override the running application's version.
 
 The production endpoints were inspected read-only:
 
@@ -48,7 +48,7 @@ Existing v1.0.0 clients read `delta.available` directly in the Options UI. Omitt
 
 New publication metadata uses **`delta_v2`** for the corrected protocol and keeps legacy **`delta.available` false**. Old clients consequently use the full installer for the transition. Corrected clients use a differential only when its declared source and target exactly match the installed and advertised versions. Other installations use the full installer.
 
-No new release is published by this work. The transition takes effect when a later, explicitly incremented release is built and published through the corrected release tooling.
+No new release is published by this work. The transition takes effect when v1.1.0 is built and published through the corrected release tooling.
 
 ## Transaction and publication requirements
 
@@ -75,11 +75,13 @@ The helper confirms completion before the user restarts the GPS manually. It nev
 
 ## Validation
 
-`python -m pytest tests -q`: **327 passed** on Windows (Python 3.12), including six tests that execute the native PowerShell helper. `python tools/versioning.py check` and `git diff --check` pass. The changed PowerShell sources are ASCII-safe. A read-only check through the new client against the real production endpoint correctly reports local v1.0.0 and published v1.0.0 as current.
+`python -m pytest tests -q`: **328 passed** on Windows (Python 3.12), including seven tests that execute the native PowerShell helper. `python tools/versioning.py check` and `git diff --check` pass. The changed PowerShell sources are ASCII-safe. Before incrementing the source, a read-only check through the new client correctly reported local v1.0.0 and published v1.0.0 as current.
 
 Validation uses an isolated feature worktree and disposable installations. The four modes of `python tools/test_update.py --mode all` pass: direct application, archive corruption after verification, automatic rollback after replacements/additions/deletions, and native Windows application followed by rollback. The integration harness uses the real publishing ZIP generator and client discovery/download code with simulated HTTP responses.
 
 Native PowerShell tests additionally verify waiting for the exact parent process, refusing altered staging data, blocking concurrent recovery, and restoring the entire installation after a Windows file lock prevents deletion. Preparation-lock tests cover competing application instances. Network, malformed-manifest, invalid-path, missing-version, user-data preservation, UI worker shutdown, release provenance and interrupted publication cases are included in the pytest suite.
+
+The first CI run exposed a Windows 8.3-path failure that did not occur with ordinary local paths. The failure was reproduced locally: comparing a short application path with its expanded .NET path caused ancestor traversal to miss the installation root. Canonicalizing plan roots and bounding that traversal fixes it; the added native regression test applies and rolls back through an 8.3 alias.
 
 Qt renders cover available deltas, network errors, full-installer fallback, missing version markers and prepared updates, with no clipping at 680 by 668 pixels. No real installed GPS, user configuration or POI file is modified by these checks.
 
@@ -87,7 +89,7 @@ The real UAC consent flow and an upgrade of a complete installed production bund
 
 ## Full installer integrity and validation
 
-The installer integrity correction from [PR #81](https://github.com/Bigeldoth/sc-gps-47/pull/81), commit `949808d6eb28865e34bbd60f04f77810d297d3b0`, is integrated selectively: only `installer/spaceDrive.iss` and `tools/get_tesseract_hash.ps1` are imported. The replacement release pipeline is preserved, and the application version remains **1.0.0**. Other changes or ancestors of that PR are outside this integration.
+The installer integrity correction from [PR #81](https://github.com/Bigeldoth/sc-gps-47/pull/81), commit `949808d6eb28865e34bbd60f04f77810d297d3b0`, is integrated selectively: `installer/spaceDrive.iss` and `tools/get_tesseract_hash.ps1` are incorporated, with the application declaration updated to **1.1.0**. The replacement release pipeline is preserved. Other changes or ancestors of that PR are outside this integration.
 
 The installer now checks the pinned Tesseract SHA-256 during download and immediately before executing the downloaded file. An unreadable file or mismatching hash fails the check. The hash-refresh tool only downloads and hashes the dependency; it does not execute or install it.
 

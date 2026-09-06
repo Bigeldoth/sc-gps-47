@@ -129,6 +129,8 @@ Open **Options → Updates → Check for Updates** to check for a release. Optio
 
 See [the update audit](docs/UPDATE_AUDIT.md) for compatibility, validation and release details.
 
+Releases follow [Semantic Versioning](https://semver.org/): compatible features increment MINOR, corrections alone increment PATCH, and incompatible changes increment MAJOR. See [the project versioning policy](docs/VERSIONING.md).
+
 ---
 
 ## In-game configuration

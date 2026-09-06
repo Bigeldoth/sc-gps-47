@@ -13,7 +13,7 @@
 
 #define MyAppName "SpaceDrive GPS"
 #ifndef MyAppVersion
-  #define MyAppVersion "1.0.0"
+  #define MyAppVersion "1.1.0"
 #endif
 #define MyAppPublisher "Bigeldoth"
 #define MyAppURL "https://github.com/Bigeldoth/sc-gps-47"
