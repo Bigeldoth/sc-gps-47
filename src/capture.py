@@ -128,6 +128,17 @@ class ScreenCapture:
             }
             logger.info(f"Capture {CAPTURE_WIDTH}x{CAPTURE_HEIGHT} top-right, region={self._region}")
 
+    @property
+    def screen_region(self):
+        """Return the live capture rectangle in physical desktop pixels.
+
+        File-backed screenshots have image coordinates, not a desktop region.
+        Return a copy so debug UI consumers cannot change the capture source.
+        """
+        if self._test_screenshot or self._region is None:
+            return None
+        return dict(self._region)
+
     def capture(self):
         # Stamp the frame instant up front so downstream velocity estimation
         # uses the *measurement* time, not the (variable) time the OCR result

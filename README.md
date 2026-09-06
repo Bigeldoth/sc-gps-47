@@ -39,7 +39,12 @@ SpaceDrive continuously reads the coordinates displayed by the game's debug HUD 
 - **Tesseract OEM3 fallback** on 2 binary thresholding passes (Otsu / adaptive) in parallel, used for zone names and metadata. Skipped entirely once NCC reconstructs coordinates.
 - **Strict 3-4 decimal regex**: rejects degraded readings that caused ~17 m errors on saved POIs.
 - **Post-OCR normalization**: fixes common artifacts (`Pos:_`, variants `lkm/Km/kn`, parasitic underscores).
-- **Capture region**: 600×150 px top right (first 3 HUD lines are enough).
+- **Capture region**: 600×60 px at the top right of the capture monitor.
+- **Capture debug outline**: enable **Options → Debug → Show capture region** and save
+  to show the actual OCR capture bounds. Disabled by default. The cyan outline
+  stays outside the captured pixels, passes clicks through, and never takes focus.
+  Edges outside the desktop are clipped. It follows the overlay visibility shortcut
+  and is hidden in screenshot test mode. Save the option unchecked to remove it.
 
 ### Navigation
 - **User POIs** stored in `%LOCALAPPDATA%\SpaceDrive\data\user_poi.json` — 8 community categories (hidden, cave, circuit, tactical, industry, logistics, loot, racing) shared with the SpaceDrive Community Hub.

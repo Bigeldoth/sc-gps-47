@@ -4,7 +4,7 @@ Tabbed dialog that surfaces the contents of config.ini:
   - General: scan interval, overlay opacity, status bar
   - Navigation: arrival radius (in meters)
   - OCR: text engine, glyph engine, ONNX confidence threshold
-  - Debug: image dumps, verbose logging, log level
+  - Debug: capture-area outline, image dumps, verbose logging, log level
   - Hotkeys: 4 global shortcuts
 """
 import logging
@@ -514,6 +514,13 @@ class OptionsWindow(QDialog):
         layout = QVBoxLayout()
         layout.addWidget(self._section_title("Debug & Logging"))
 
+        self.show_capture_region_check = QCheckBox("Show capture region")
+        self.show_capture_region_check.setToolTip(
+            "Draw a noninteractive outline around the live OCR capture area. "
+            "Screenshot test mode has no on-screen capture region."
+        )
+        layout.addWidget(self.show_capture_region_check)
+
         self.save_ocr_check = QCheckBox("Save OCR debug images (debug_capture_*.png)")
         self.save_glyph_check = QCheckBox("Save segmented glyph crops (data/glyphs/)")
         self.verbose_check = QCheckBox("Verbose OCR logging")
@@ -533,8 +540,8 @@ class OptionsWindow(QDialog):
 
         layout.addWidget(self._hint(
             "These options are useful when reporting an OCR issue or building "
-            "a new template set. They have a noticeable I/O cost — leave off "
-            "during normal play."
+            "a new template set. Saving images or telemetry and verbose logging "
+            "have an I/O cost — leave them off during normal play."
         ))
 
         # ── PaddleOCR diagnostic (only shown when text_engine = paddle) ─
@@ -1096,6 +1103,7 @@ class OptionsWindow(QDialog):
         self._update_engine_visibility()
 
         # Debug
+        self.show_capture_region_check.setChecked(cfg.get_show_capture_region())
         self.save_ocr_check.setChecked(self._cfg_bool('Debug', 'save_ocr_images', False))
         self.save_glyph_check.setChecked(self._cfg_bool('Debug', 'save_glyph_crops', False))
         self.verbose_check.setChecked(self._cfg_bool('Debug', 'verbose_mode', False))
@@ -1208,6 +1216,7 @@ class OptionsWindow(QDialog):
             self._set_cfg('OCR', 'onnx_confidence_threshold', f"{self.onnx_threshold_spin.value():.2f}")
 
             # Debug
+            cfg.set_show_capture_region(self.show_capture_region_check.isChecked())
             self._set_cfg('Debug', 'save_ocr_images', self.save_ocr_check.isChecked())
             self._set_cfg('Debug', 'save_glyph_crops', self.save_glyph_check.isChecked())
             self._set_cfg('Debug', 'verbose_mode', self.verbose_check.isChecked())

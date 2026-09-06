@@ -28,6 +28,7 @@ from velocity_tracker import VelocityTracker
 from telemetry import create_session_recorder
 from ui.options import OptionsWindow
 from ui.poi_manager import POIManagerWindow
+from ui.capture_overlay import CaptureRegionOverlay
 from poi_categories import POI_CATEGORIES
 
 # Read config.ini from the same paths ConfigManager uses so the logging
@@ -183,6 +184,7 @@ def _build_ocr_processor(cfg):
 
 class GPSWorker(QObject):
     result_ready = pyqtSignal(dict)
+    capture_region_changed = pyqtSignal(object)
     reload_requested = pyqtSignal()
 
     def __init__(self):
@@ -190,6 +192,7 @@ class GPSWorker(QObject):
         self.capture = ScreenCapture()
         self.ocr = _build_ocr_processor(config)
         self._running = True
+        self._last_capture_region = object()
         # Cross-thread reload: the UI emits reload_requested after the user
         # saves Options; the slot runs inside the worker thread (queued
         # connection) so OCRProcessor (re)init does not block the UI.
@@ -199,6 +202,10 @@ class GPSWorker(QObject):
         if not self._running:
             return
         try:
+            region = self.capture.screen_region
+            if region != self._last_capture_region:
+                self._last_capture_region = region
+                self.capture_region_changed.emit(region)
             images, glyph_data, t_capture = self.capture.capture()
             data = self.ocr.extract_data(images)
             # Carry the capture instant alongside the OCR result so the UI
@@ -561,6 +568,8 @@ class GPSOverlay(QMainWindow):
         self._worker_busy = False
         self.options_window = None
         self.poi_manager_window = None
+        self._capture_region = None
+        self._capture_region_overlay = None
 
         # EMA smoothing + stale OCR detection for target distance
         self._smoothed_distance_km = None
@@ -895,7 +904,27 @@ class GPSOverlay(QMainWindow):
         self._worker.moveToThread(self._worker_thread)
         self.trigger_worker.connect(self._worker.process)
         self._worker.result_ready.connect(self._on_worker_result)
+        self._worker.capture_region_changed.connect(
+            self._on_capture_region_changed, Qt.ConnectionType.QueuedConnection
+        )
         self._worker_thread.start()
+
+    def _on_capture_region_changed(self, region):
+        """Receive the actual desktop capture bounds from the OCR worker."""
+        self._capture_region = dict(region) if region is not None else None
+        self._apply_capture_region_setting()
+
+    def _apply_capture_region_setting(self):
+        """Show the optional capture outline without taking focus from the game."""
+        enabled = self.config_manager.get_show_capture_region()
+        if not enabled or not self.is_visible or self._capture_region is None:
+            if self._capture_region_overlay is not None:
+                self._capture_region_overlay.hide()
+            return
+        if self._capture_region_overlay is None:
+            self._capture_region_overlay = CaptureRegionOverlay(self)
+        self._capture_region_overlay.set_capture_region(self._capture_region)
+        self._capture_region_overlay.show()
 
     def _request_update(self):
         if self._worker_busy:
@@ -1591,6 +1620,8 @@ class GPSOverlay(QMainWindow):
         if active is not None and active is not self:
             return
         self.raise_()
+        if self._capture_region_overlay is not None and self._capture_region_overlay.isVisible():
+            self._capture_region_overlay.raise_()
         if sys.platform == "win32":
             try:
                 import ctypes
@@ -1680,6 +1711,7 @@ class GPSOverlay(QMainWindow):
             self.show()
             self.is_visible = True
             self.toggle_action.setText("Hide overlay")
+        self._apply_capture_region_setting()
 
     @staticmethod
     def _center_on_screen(widget):
@@ -1760,6 +1792,7 @@ class GPSOverlay(QMainWindow):
 
         # Apply the telemetry toggle live (enable/disable without a restart).
         self._apply_telemetry_setting()
+        self._apply_capture_region_setting()
 
         # Refresh hotkeys in case they were modified
         self.hotkey_listener.reload_hotkeys()
@@ -1945,6 +1978,8 @@ class GPSOverlay(QMainWindow):
         return f"{base_name} ({i})"
 
     def quit_application(self):
+        if self._capture_region_overlay is not None:
+            self._capture_region_overlay.close()
         self.hotkey_listener.cleanup()
         self._worker.stop()
         self._worker_thread.quit()
