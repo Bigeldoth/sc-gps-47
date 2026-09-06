@@ -1,4 +1,4 @@
-; SpaceDrive GPS — Inno Setup installer
+; SpaceDrive GPS - Inno Setup installer
 ;
 ; Wraps the PyInstaller one-folder output (dist\spaceDrive\) into a single
 ; .exe installer. Downloads + installs Tesseract OCR (UB-Mannheim) silently
@@ -13,20 +13,24 @@
 
 #define MyAppName "SpaceDrive GPS"
 #ifndef MyAppVersion
-  #define MyAppVersion "0.7.12"
+  #define MyAppVersion "1.0.0"
 #endif
 #define MyAppPublisher "Bigeldoth"
 #define MyAppURL "https://github.com/Bigeldoth/sc-gps-47"
 #define MyAppExeName "spaceDrive.exe"
 #define MyAppId "{{A4DDDFC7-9F1A-46CD-9E60-1B3C9C0F2A0B}"
 
-; Pinned Tesseract release — UB-Mannheim Windows build. Update as needed.
+; Pinned Tesseract release - UB-Mannheim Windows build. Update as needed.
 ; Note: the GitHub release tag carries a leading "v" but the installer
 ; filename does not, so we keep both as separate constants.
 #define TesseractVersion "5.4.0.20240606"
 #define TesseractReleaseTag "v" + TesseractVersion
 #define TesseractInstaller "tesseract-ocr-w64-setup-" + TesseractVersion + ".exe"
 #define TesseractUrl "https://github.com/UB-Mannheim/tesseract/releases/download/" + TesseractReleaseTag + "/" + TesseractInstaller
+; SHA-256 of the pinned installer above. The setup refuses to run the download
+; if it does not match, so this MUST be updated whenever TesseractVersion is.
+; Refresh it with: .\tools\get_tesseract_hash.ps1
+#define TesseractSha256 "c885fff6998e0608ba4bb8ab51436e1c6775c2bafc2559a19b423e18678b60c9"
 
 [Setup]
 AppId={#MyAppId}
@@ -101,6 +105,27 @@ begin
   Result := FileExists(Path1) or FileExists(Path2);
 end;
 
+{ Case-insensitive SHA-256 comparison. GetSHA256OfFile returns lowercase hex,
+  but the constant is hand-maintained so do not depend on its casing. Any
+  failure to hash (unreadable file) is treated as a mismatch: fail closed. }
+function HashMatches(const FileName, ExpectedSha256: String): Boolean;
+var
+  Actual: String;
+begin
+  Result := False;
+  try
+    Actual := GetSHA256OfFile(FileName);
+  except
+    Log('Failed to hash ' + FileName + ': ' + GetExceptionMessage);
+    Exit;
+  end;
+  Result := CompareText(Actual, Trim(ExpectedSha256)) = 0;
+  { Keep the argument array on this line: Inno treats any line starting with
+    '[' as a section tag, even inside [Code]. }
+  if not Result then
+    Log('SHA-256 mismatch for ' + FileName + ' (expected ' + ExpectedSha256 + ', got ' + Actual + ')');
+end;
+
 function OnDownloadProgress(const Url, FileName: String; const Progress, ProgressMax: Int64): Boolean;
 begin
   if Progress = ProgressMax then
@@ -120,7 +145,10 @@ begin
   if CurPageID = wpReady then begin
     if not TesseractDetected then begin
       DownloadPage.Clear;
-      DownloadPage.Add('{#TesseractUrl}', '{#TesseractInstaller}', '');
+      // Third argument is the expected SHA-256: Inno verifies it after the
+      // transfer and raises an exception on mismatch, which the except block
+      // below turns into an error dialog and a blocked Next button.
+      DownloadPage.Add('{#TesseractUrl}', '{#TesseractInstaller}', '{#TesseractSha256}');
       DownloadPage.Show;
       try
         try
@@ -151,11 +179,25 @@ begin
     if not TesseractDetected then begin
       InstallerPath := ExpandConstant('{tmp}\{#TesseractInstaller}');
       if FileExists(InstallerPath) then begin
-        Log('Running Tesseract installer: ' + InstallerPath);
-        if Exec(InstallerPath, '/S', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
-          Log(Format('Tesseract installer exit code: %d', [ResultCode]))
-        else
-          Log('Failed to launch Tesseract installer');
+        // Re-verify immediately before handing the file to Exec. The download
+        // page already checked the hash, but this keeps the guarantee local to
+        // the call that actually runs a third-party binary elevated.
+        if not HashMatches(InstallerPath, '{#TesseractSha256}') then begin
+          Log('Tesseract installer SHA-256 mismatch - refusing to run ' + InstallerPath);
+          SuppressibleMsgBox(
+            'The downloaded Tesseract installer failed its integrity check and was not run.'
+              + #13#10#13#10
+              + 'SpaceDrive GPS is installed, but OCR will not work until Tesseract is '
+              + 'installed manually from https://github.com/UB-Mannheim/tesseract',
+            mbCriticalError, MB_OK, IDOK);
+          DeleteFile(InstallerPath);
+        end else begin
+          Log('Running Tesseract installer: ' + InstallerPath);
+          if Exec(InstallerPath, '/S', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+            Log(Format('Tesseract installer exit code: %d', [ResultCode]))
+          else
+            Log('Failed to launch Tesseract installer');
+        end;
       end;
     end;
 
@@ -172,6 +214,6 @@ begin
 end;
 
 [UninstallDelete]
-; Leave %LOCALAPPDATA%\SpaceDrive\ alone by default — it contains user POIs
+; Leave %LOCALAPPDATA%\SpaceDrive\ alone by default - it contains user POIs
 ; and the sidecar venvs the user may want to reuse after a reinstall. Add a
 ; line here if you want to nuke it on uninstall.
