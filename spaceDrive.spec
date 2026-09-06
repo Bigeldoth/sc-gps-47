@@ -26,6 +26,7 @@ a = Analysis(
         ('assets\\icon.png', 'assets'),
         ('assets\\spacedrive.ico', 'assets'),
         ('assets\\padek-theme.qss', 'assets'),  # Dark theme stylesheet
+        ('assets\\tipeee.svg', 'assets'),  # Support button logo
         # Default config (user override goes in %LOCALAPPDATA%\SpaceDrive\)
         ('config.ini', '.'),
         # Project license shown in About + by the installer

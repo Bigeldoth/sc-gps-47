@@ -1,10 +1,10 @@
 """Options window for SpaceDrive GPS.
 
 Tabbed dialog that surfaces the contents of config.ini:
-  - General: scan interval, overlay opacity, status bar
+  - General: capture display, scan interval, overlay opacity, status bar
   - Navigation: arrival radius (in meters)
   - OCR: text engine, glyph engine, ONNX confidence threshold
-  - Debug: image dumps, verbose logging, log level
+  - Debug: capture-area outline, image dumps, verbose logging, log level
   - Hotkeys: 4 global shortcuts
 """
 import logging
@@ -16,8 +16,11 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                              QHeaderView, QMessageBox, QKeySequenceEdit, QWidget,
                              QTabWidget, QCheckBox, QComboBox, QSpinBox, QDoubleSpinBox,
                              QFormLayout)
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
-from PyQt6.QtGui import QFont
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QSize, QUrl
+from PyQt6.QtGui import QDesktopServices, QFont, QIcon
+
+from app_paths import bundle_dir
+from capture_monitors import list_capture_monitors
 
 logger = logging.getLogger(__name__)
 
@@ -180,6 +183,35 @@ class OptionsWindow(QDialog):
     def _create_general_tab(self):
         widget = QWidget()
         layout = QVBoxLayout()
+        layout.addWidget(self._section_title("Star Citizen display"))
+        display_row = QHBoxLayout()
+        self.capture_monitor_combo = QComboBox()
+        self.capture_monitor_combo.setMinimumContentsLength(24)
+        self.capture_monitor_combo.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        )
+        self.capture_monitor_combo.setAccessibleName("Star Citizen display")
+        display_row.addWidget(self.capture_monitor_combo, 1)
+        self.refresh_displays_button = QPushButton("Refresh displays")
+        self.refresh_displays_button.clicked.connect(
+            lambda _checked: self._refresh_capture_monitors()
+        )
+        display_row.addWidget(self.refresh_displays_button)
+        layout.addLayout(display_row)
+        layout.addWidget(self._hint(
+            "Choose the screen where Star Citizen is displayed in fullscreen or "
+            "borderless mode. To check the capture area, enable Debug > Show capture region."
+        ))
+        self.capture_monitor_status = self._hint("")
+        self.capture_monitor_status.hide()
+        layout.addWidget(self.capture_monitor_status)
+        self._capture_monitor_ids = set()
+        self._capture_monitor_error = ""
+        self.capture_monitor_combo.currentIndexChanged.connect(
+            self._update_capture_monitor_status
+        )
+
+        layout.addSpacing(10)
         layout.addWidget(self._section_title("OCR Scan Frequency"))
 
         slider_row = QHBoxLayout()
@@ -236,8 +268,97 @@ class OptionsWindow(QDialog):
         ))
 
         layout.addStretch()
+        support_row = QHBoxLayout()
+        support_row.addStretch()
+        self.tipeee_button = QPushButton("Support on Tipeee")
+        self.tipeee_button.setIcon(QIcon(str(bundle_dir() / "assets" / "tipeee.svg")))
+        self.tipeee_button.setIconSize(QSize(24, 24))
+        self.tipeee_button.setAutoDefault(False)
+        self.tipeee_button.setDefault(False)
+        self.tipeee_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.tipeee_button.setAccessibleName("Support on Tipeee")
+        self.tipeee_button.setToolTip("Open Bigeldoth's Tipeee page in your browser")
+        self.tipeee_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.tipeee_button.setStyleSheet("""
+            QPushButton {
+                color: #FFFFFF;
+                background: #D84556;
+                border: 1px solid #D84556;
+                border-radius: 6px;
+                padding: 4px 12px;
+                min-height: 26px;
+            }
+            QPushButton:hover {
+                background: #E25364;
+                border-color: #E25364;
+            }
+            QPushButton:focus {
+                border-color: #FFFFFF;
+            }
+            QPushButton:pressed {
+                background: #BB3445;
+                border-color: #BB3445;
+            }
+        """)
+        self.tipeee_button.clicked.connect(self._open_tipeee)
+        support_row.addWidget(self.tipeee_button)
+        layout.addLayout(support_row)
         widget.setLayout(layout)
         return widget
+
+    def _open_tipeee(self):
+        """Open the project's support page in the user's default browser."""
+        if not QDesktopServices.openUrl(QUrl("https://fr.tipeee.com/bigeldoth/")):
+            logger.warning("Could not open the Tipeee support page")
+
+    def _refresh_capture_monitors(self, selected_id=None):
+        """Refresh available displays while preserving saved or pending choices."""
+        combo = self.capture_monitor_combo
+        if selected_id is None:
+            selected_id = combo.currentData() or ""
+
+        try:
+            monitors = list_capture_monitors()
+        except Exception:
+            logger.warning("Could not enumerate capture displays", exc_info=True)
+            # A failed refresh must not erase the selection or the previous list.
+            if combo.count() == 0:
+                combo.addItem("Primary display (default)", "")
+            self._capture_monitor_error = (
+                "Could not refresh displays. Your selection is kept; try Refresh displays."
+            )
+        else:
+            self._capture_monitor_error = ""
+            self._capture_monitor_ids = {monitor["id"] for monitor in monitors}
+            combo.clear()
+            combo.addItem("Primary display (default)", "")
+            for monitor in monitors:
+                combo.addItem(monitor["label"], monitor["id"])
+                combo.setItemData(
+                    combo.count() - 1, monitor["label"], Qt.ItemDataRole.ToolTipRole
+                )
+
+        index = combo.findData(selected_id)
+        if index < 0:
+            combo.addItem("Unavailable display (saved selection)", selected_id)
+            index = combo.count() - 1
+            combo.setItemData(index, selected_id, Qt.ItemDataRole.ToolTipRole)
+        combo.setCurrentIndex(index)
+        self._update_capture_monitor_status()
+
+    def _update_capture_monitor_status(self):
+        """Keep availability feedback consistent with the current pending choice."""
+        selected_id = self.capture_monitor_combo.currentData() or ""
+        if self._capture_monitor_error:
+            status = self._capture_monitor_error
+        elif selected_id and selected_id not in self._capture_monitor_ids:
+            status = "The selected display is unavailable. Reconnect it or select another display."
+        elif not self._capture_monitor_ids:
+            status = "No displays available. Try Refresh displays after reconnecting."
+        else:
+            status = ""
+        self.capture_monitor_status.setText(status)
+        self.capture_monitor_status.setVisible(bool(self.capture_monitor_status.text()))
 
     def _on_unlock_mfd(self):
         self.unlock_mfd_requested.emit()
@@ -514,6 +635,13 @@ class OptionsWindow(QDialog):
         layout = QVBoxLayout()
         layout.addWidget(self._section_title("Debug & Logging"))
 
+        self.show_capture_region_check = QCheckBox("Show capture region")
+        self.show_capture_region_check.setToolTip(
+            "Draw a noninteractive outline around the live OCR capture area. "
+            "Screenshot test mode has no on-screen capture region."
+        )
+        layout.addWidget(self.show_capture_region_check)
+
         self.save_ocr_check = QCheckBox("Save OCR debug images (debug_capture_*.png)")
         self.save_glyph_check = QCheckBox("Save segmented glyph crops (data/glyphs/)")
         self.verbose_check = QCheckBox("Verbose OCR logging")
@@ -533,8 +661,8 @@ class OptionsWindow(QDialog):
 
         layout.addWidget(self._hint(
             "These options are useful when reporting an OCR issue or building "
-            "a new template set. They have a noticeable I/O cost — leave off "
-            "during normal play."
+            "a new template set. Saving images or telemetry and verbose logging "
+            "have an I/O cost — leave them off during normal play."
         ))
 
         # ── PaddleOCR diagnostic (only shown when text_engine = paddle) ─
@@ -1053,6 +1181,7 @@ class OptionsWindow(QDialog):
         self.current_version_label.setText(current_version)
 
         # General
+        self._refresh_capture_monitors(cfg.get_capture_monitor_id())
         self.ocr_slider.setValue(cfg.get_scan_interval())
         self.opacity_spin.setValue(float(cfg.get('Overlay', 'default_opacity', fallback='1.0')))
         self.refresh_spin.setValue(int(cfg.get('Settings', 'refresh_interval_ms', fallback='200')))
@@ -1096,6 +1225,7 @@ class OptionsWindow(QDialog):
         self._update_engine_visibility()
 
         # Debug
+        self.show_capture_region_check.setChecked(cfg.get_show_capture_region())
         self.save_ocr_check.setChecked(self._cfg_bool('Debug', 'save_ocr_images', False))
         self.save_glyph_check.setChecked(self._cfg_bool('Debug', 'save_glyph_crops', False))
         self.verbose_check.setChecked(self._cfg_bool('Debug', 'verbose_mode', False))
@@ -1187,6 +1317,7 @@ class OptionsWindow(QDialog):
             cfg = self.config_manager
 
             # General
+            cfg.set_capture_monitor_id(self.capture_monitor_combo.currentData() or "")
             cfg.set_scan_interval(self.ocr_slider.value())
             self._set_cfg('Overlay', 'default_opacity', f"{self.opacity_spin.value():.2f}")
             self._set_cfg('Settings', 'refresh_interval_ms', self.refresh_spin.value())
@@ -1208,6 +1339,7 @@ class OptionsWindow(QDialog):
             self._set_cfg('OCR', 'onnx_confidence_threshold', f"{self.onnx_threshold_spin.value():.2f}")
 
             # Debug
+            cfg.set_show_capture_region(self.show_capture_region_check.isChecked())
             self._set_cfg('Debug', 'save_ocr_images', self.save_ocr_check.isChecked())
             self._set_cfg('Debug', 'save_glyph_crops', self.save_glyph_check.isChecked())
             self._set_cfg('Debug', 'verbose_mode', self.verbose_check.isChecked())

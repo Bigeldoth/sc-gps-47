@@ -39,7 +39,19 @@ SpaceDrive continuously reads the coordinates displayed by the game's debug HUD 
 - **Tesseract OEM3 fallback** on 2 binary thresholding passes (Otsu / adaptive) in parallel, used for zone names and metadata. Skipped entirely once NCC reconstructs coordinates.
 - **Strict 3-4 decimal regex**: rejects degraded readings that caused ~17 m errors on saved POIs.
 - **Post-OCR normalization**: fixes common artifacts (`Pos:_`, variants `lkm/Km/kn`, parasitic underscores).
-- **Capture region**: 600×150 px top right (first 3 HUD lines are enough).
+- **Capture region**: 600×60 px at the top right of the capture monitor.
+- **Capture display**: choose **Options → General → Star Citizen display**, then
+  save to switch the capture monitor without restarting. The default follows the
+  primary display. Explicit choices are remembered by display identity rather
+  than list order. Use **Refresh displays** after changing your display setup.
+  If the selected display is unavailable, capture pauses until it reconnects or
+  you choose another display. Use fullscreen or borderless mode so the HUD is at
+  the top right of the selected display; window detection is not automatic.
+- **Capture debug outline**: enable **Options → Debug → Show capture region** and save
+  to show the actual OCR capture bounds. Disabled by default. The cyan outline
+  stays outside the captured pixels, passes clicks through, and never takes focus.
+  Edges outside the desktop are clipped. It follows the overlay visibility shortcut
+  and is hidden in screenshot test mode. Save the option unchecked to remove it.
 
 ### Navigation
 - **User POIs** stored in `%LOCALAPPDATA%\SpaceDrive\data\user_poi.json` — 8 community categories (hidden, cave, circuit, tactical, industry, logistics, loot, racing) shared with the SpaceDrive Community Hub.
@@ -56,6 +68,9 @@ SpaceDrive continuously reads the coordinates displayed by the game's debug HUD 
 - `WindowTransparentForInput` → never captures game mouse click.
 - `WindowStaysOnTopHint` → stays visible over Star Citizen.
 - Coordinate color progresses linearly with elapsed time since last valid OCR (dedicated 150 ms timer, independent of capture cycle).
+- **Support on Tipeee** in the system-tray menu or the red button with the Tipeee
+  logo in **Options → General** opens
+  [Bigeldoth's support page](https://fr.tipeee.com/bigeldoth/) in your default browser.
 
 ---
 
