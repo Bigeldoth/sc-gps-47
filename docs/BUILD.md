@@ -4,7 +4,7 @@
 
 ```powershell
 .\tools\build_installer.ps1
-# → dist\SpaceDrive-Setup-v0.7.0.exe
+# → dist\SpaceDrive-Setup-v1.0.0.exe (version read from VERSION)
 ```
 
 That single command runs PyInstaller (one-folder bundle into `dist\spaceDrive\`)
@@ -75,10 +75,10 @@ Close the Sandbox window to discard everything.
 | Component | Source | Location after install |
 |---|---|---|
 | App executable + Python runtime | PyInstaller bundle | `C:\Program Files\SpaceDrive\` |
-| ONNX glyph classifier | `models\spacedrive_ocr.onnx` | `C:\Program Files\SpaceDrive\models\` |
-| NCC templates | `data\templates\` | `C:\Program Files\SpaceDrive\data\` |
-| Default `config.ini` | `config.ini` | `C:\Program Files\SpaceDrive\` |
-| Sidecar provisioners | `scripts\paddle_worker.py`, `scripts\install_paddle.ps1` | `C:\Program Files\SpaceDrive\scripts\` |
+| ONNX glyph classifier | `models\spacedrive_ocr.onnx` | `C:\Program Files\SpaceDrive\_internal\models\` |
+| NCC templates | `data\templates\` | `C:\Program Files\SpaceDrive\_internal\data\` |
+| Default `config.ini` and immutable `VERSION` | Repository files | `C:\Program Files\SpaceDrive\_internal\` |
+| Sidecar provisioners and update helper | `scripts\paddle_worker.py`, `scripts\install_paddle.ps1`, `scripts\apply_update.ps1` | `C:\Program Files\SpaceDrive\_internal\scripts\` |
 | Tesseract OCR | Downloaded from UB-Mannheim during install | `C:\Program Files\Tesseract-OCR\` |
 
 What the installer does **NOT** ship (handled in-app post-install):
@@ -100,7 +100,8 @@ SpaceDrive\
 ├── .venv-paddle\         # PaddleOCR sidecar (Python 3.12)        [optional]
 ├── downloads\            # Python 3.12 installer cache             [transient]
 ├── config.ini            # User overrides (read-write)             [first run]
-├── user_poi.json         # User-defined POIs                       [first run]
+├── data\user_poi.json    # User-defined POIs                       [first run]
+├── updates\             # Downloaded updates and transaction backups
 └── logs\                 # App log + telemetry (spacedrive.log, …) [runtime]
 ```
 
@@ -113,10 +114,29 @@ removes only the bundle, not the user data.
 
 [Semantic Versioning](https://semver.org/): `MAJOR.MINOR.PATCH`.
 
-- Git tag per release: `git tag -a v0.7.0 -m "Sidecar installer"`
-- `setuptools_scm` reads the tag and exposes the version at runtime.
-- **Update `MyAppVersion` in [`installer\spaceDrive.iss`](../installer/spaceDrive.iss)** to match.
-  (Future improvement: read it from `setup.py` automatically.)
+`VERSION` is the source of truth. The installed application reads the bundled
+file through `app_version.get_app_version()`; user configuration and Git tags do
+not override the running binary's identity. A missing/invalid file gives
+`unknown`, so the updater cannot incorrectly claim the app is current.
+
+To intentionally change a version, replace `vX.Y.Z` below with the desired
+release version, then review and commit all changes on the feature branch:
+
+```powershell
+python tools/versioning.py sync --version vX.Y.Z
+python tools/versioning.py check
+```
+
+`sync` updates `VERSION`, `[Updates] app_version` in `config.ini` (legacy mirror),
+and `MyAppVersion` in `installer/spaceDrive.iss`. **Build/release scripts never
+bump versions.** The reliability work synchronizes these declarations to
+`1.0.0`; it does not publish or increment a release.
+
+The build records source commit/fingerprint, bundle hashes and installer hash
+under ignored `dist/*-provenance.json` files. `-SkipPyInstaller` and `-SkipBuild`
+require these receipts and reject stale, modified or mismatched artifacts.
+Release additionally requires a clean committed checkout, including no untracked
+source files, and refuses a tag already attached to a different commit.
 
 ---
 
@@ -124,12 +144,16 @@ removes only the bundle, not the user data.
 
 ```powershell
 # 1. PyInstaller (one-folder)
+python tools/versioning.py check
+python tools/versioning.py snapshot-build
 python -m PyInstaller --clean spaceDrive.spec
 # → dist\spaceDrive\spaceDrive.exe + sidecar files
+python tools/versioning.py record-bundle
 
 # 2. Inno Setup
 & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\spaceDrive.iss
-# → dist\SpaceDrive-Setup-v0.7.0.exe
+python tools/versioning.py record-build
+# → installer matching VERSION, with a verified build receipt
 ```
 
 ---
@@ -143,24 +167,33 @@ consuming the free-plan storage quota with installer artifacts.
 ### One-shot release command
 
 ```powershell
-.\tools\release.ps1 -Version v0.7.4
-.\tools\release.ps1 -Version v0.7.4 -SkipBuild   # if dist\ is already fresh
+.\tools\release.ps1 -Version vX.Y.Z
+.\tools\release.ps1 -Version vX.Y.Z -SkipBuild   # only with matching build receipts
 ```
 
-The script chains three steps:
+Use a new, intentionally synchronized and committed version. Already published
+versions cannot be replaced. The script performs these steps:
 
-1. **Build** — runs [`tools/build_installer.ps1`](../tools/build_installer.ps1)
-   (PyInstaller + Inno Setup)
-2. **Upload to VPS** — SFTPs the installer to the project VPS, regenerates
-   `latest.json`, and prunes old versions (keeps the 5 most recent)
-3. **GitHub Release** — pushes the git tag and creates the release with a link
-   pointing back to the VPS-hosted installer
+1. Check versions, clean source state, local/remote tag identity and GitHub access.
+2. Build with [`tools/build_installer.ps1`](../tools/build_installer.ps1), or
+   validate the existing installer and bundle receipts when `-SkipBuild` is used.
+3. Push a tag identifying that exact source commit and prepare a GitHub **draft**.
+4. Publish verified artifacts over SFTP, then atomically replace `latest.json`.
+5. Publish the GitHub draft. If that final step fails, rerun the same command;
+   an identical completed VPS publication is safe to resume.
+
+An upload failure leaves the old pointer intact and the GitHub release a draft.
+Cleanup of old files runs after the pointer commits; cleanup failures are reported
+as warnings and do not invalidate an otherwise complete publication.
 
 ### Prerequisites
 
 - All the build prerequisites listed above
 - [`paramiko`](https://pypi.org/project/paramiko/) (`pip install paramiko`) for the SFTP upload
 - [`gh` CLI](https://cli.github.com/) authenticated (`gh auth login`)
+- The VPS SSH host key recorded and verified in the host's `~/.ssh/known_hosts`.
+  Unknown or changed server keys are rejected. `VPS_KNOWN_HOSTS` can optionally
+  select an additional known-hosts file.
 - A `.env.local` file at the repo root (gitignored) with the VPS credentials:
 
   ```ini
@@ -174,22 +207,43 @@ The script chains three steps:
 
 ```
 /var/www/spacedrive/releases/
-├── SpaceDrive-Setup-v0.7.4.exe   ← last 5 versions kept, older auto-pruned
-├── SpaceDrive-Setup-v0.7.3.exe
-├── ...
-└── latest.json                   ← { "version": "...", "url": "...", "date": "..." }
+├── SpaceDrive-Setup-vX.Y.Z.exe   ← immutable; last 5 versions retained
+├── deltas\                     ← schema-2 exact-base delta archives
+├── manifests\                  ← complete bundle path → SHA256 manifests
+└── latest.json                 ← atomic publication pointer
 ```
 
 Served by nginx behind Traefik (Dokploy stack) at
 `https://padek-interactive.tech/releases/`. The `latest.json` pointer is what
 the community website fetches to surface the current download link.
 
+The release pointer contains `schema_version: 2`, installer `version`, `url`,
+`checksum` (SHA256), `size_bytes`, and `date`. An optional `delta_v2` has an exact
+`from_version`, `to_version`, URL, SHA256 and size. `delta.available` is explicitly
+`false`: **already-installed legacy clients must use the full installer**, because
+their UI can otherwise activate the old unsafe delta path without checking the
+base version. The current production metadata is not changed by source edits.
+
+A v2 ZIP contains `manifest.json` (schema/from/to), `version.txt`, an exhaustive
+`checksum.sha256` using two spaces and POSIX paths, `DELETED.txt` (possibly empty),
+and changed files under `FILES/`. Deletion-only packages are valid. User data,
+user config and runtime logs are forbidden; bundled defaults under `_internal/`
+remain updateable. The previous published `latest.json`, never filesystem mtime,
+selects the delta base. Without its bundle manifest, publication uses a full
+installer only.
+
+Each remote upload uses a temporary filename, verifies the remote SHA256 and
+size, and is renamed before the pointer changes. Replacing `latest.json` requires
+the OpenSSH atomic POSIX rename extension. Publication takes an SFTP directory
+lock (`.publish-lock`). After an interrupted uploader, verify no release is
+running and inspect the existing pointer/artifacts before removing a stale lock.
+
 ### CI on PRs
 
 [`.github/workflows/build.yml`](../.github/workflows/build.yml) runs on every PR
-against `main`: it installs Python, Tesseract, Inno Setup, and runs
-`build_installer.ps1` end-to-end. **No artifact is stored, nothing is uploaded** —
-the job exists solely to catch broken builds before merge.
+against `main` or `staging`: it checks version consistency, runs the test suite,
+and builds with Python, Tesseract and Inno Setup. **No artifact is stored,
+nothing is uploaded.** Tags do not trigger a second publication workflow.
 
 ---
 

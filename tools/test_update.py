@@ -1,230 +1,187 @@
-"""Local update-pipeline smoke test.
+"""Exercise the real delta producer and updater in disposable installations.
 
-Creates a synthetic delta ZIP (no VPS needed), then runs the full apply
-path of UpdateManager so you can verify the elevation / copy / rollback
-logic without shipping a real release.
-
-Usage (from repo root, with the project venv active):
-    python tools/test_update.py [--mode direct|elevation|bad-checksum|rollback]
-
-Modes
------
-direct          Apply a small delta to a temp dir that IS writable.
-                Exercises Phases 1-8 of apply_delta() without UAC.
-                Expected result: success, temp dir contains updated files.
-
-elevation       Simulate a non-writable install dir.
-                Exercises the UAC / PS1 elevation path.
-                Expected result: dialog requests UAC (you can cancel to verify
-                the error path) or succeeds if accepted.
-
-bad-checksum    Feed a ZIP with a corrupted checksum.
-                Expected result: verify_delta() returns False.
-
-rollback        Force apply_delta() to fail mid-apply, check rollback works.
-                Expected result: staged backup is restored.
+Run ``python tools/test_update.py --mode all`` from the repository. The HTTP
+transport is simulated; files, ZIP checksums, transactions and the Windows
+PowerShell helper are real. No installed application, user profile, production
+server, UAC prompt or release version is changed. Version 1.0.1 is fixture data.
 """
+from __future__ import annotations
+
 import argparse
-import hashlib
-import shutil
+import io
+import json
+from pathlib import Path
+import subprocess
 import sys
 import tempfile
-import zipfile
-from pathlib import Path
+from unittest.mock import patch
 
-# Allow running from repo root without install
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'src'))
+sys.path.insert(0, str(ROOT / 'tools'))
 
-from update_manager import UpdateManager, _is_writable
+from update_manager import LATEST_JSON_URL, UpdateManager, UpdateMetadata
+from upload_vps import _generate_delta, _hash_folder
 
-CURRENT_VERSION = "v0.8.0"
-TARGET_VERSION = "v0.9.0"
+CURRENT_VERSION = 'v1.0.0'
+TARGET_VERSION = 'v1.0.1'
+BASE_URL = 'https://padek-interactive.tech/releases'
+MODES = ('direct', 'bad-checksum', 'rollback', 'native')
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+class Response(io.BytesIO):
+    def __init__(self, data, url):
+        super().__init__(data)
+        self.url = url
+        self.headers = {'Content-Length': str(len(data))}
 
-def _build_delta_zip(dest: Path, files: dict[str, bytes], corrupt_checksum=False) -> str:
-    """Build a minimal delta ZIP matching the format expected by apply_delta().
+    def geturl(self):
+        return self.url
 
-    files: {relative_posix_path: content_bytes}
-    Returns the SHA-256 hex of the produced ZIP.
-    """
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    checksums = {}
-    with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("version.txt", TARGET_VERSION.lstrip("v"))
-        for rel, data in files.items():
-            zf.writestr(f"FILES/{rel}", data)
-            checksums[rel] = hashlib.sha256(data).hexdigest()
-        if corrupt_checksum:
-            checksum_data = "deadbeef0000 some/file.txt"
+
+def snapshot(directory):
+    """Include empty directories so rollback cannot leave added folders behind."""
+    return {path.relative_to(directory).as_posix(): path.read_bytes() if path.is_file() else None
+            for path in directory.rglob('*')}
+
+
+def write_files(directory, files):
+    for name, data in files.items():
+        target = directory / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+
+
+def prepare_fixture(root):
+    install, bundle, data = root / 'app with spaces', root / 'new bundle', root / 'user data'
+    original = {
+        'spaceDrive.exe': b'old executable fixture',
+        '_internal/VERSION': b'1.0.0\n',
+        '_internal/library.dll': b'old library fixture',
+        '_internal/obsolete-a.dll': b'obsolete A',
+        '_internal/obsolete-b.dll': b'obsolete B',
+        '_internal/unchanged.dat': b'unchanged',
+    }
+    updated = {
+        'spaceDrive.exe': b'new executable fixture',
+        '_internal/VERSION': b'1.0.1\n',
+        '_internal/library.dll': b'new library fixture',
+        '_internal/new folder/new.pyd': b'new module fixture',
+        '_internal/unchanged.dat': b'unchanged',
+    }
+    write_files(install, original)
+    write_files(bundle, updated)
+    old_manifest = _hash_folder(install)
+    archive, checksum, size = _generate_delta(old_manifest, bundle, CURRENT_VERSION, TARGET_VERSION, root / 'artifacts')
+    protected = {'config.ini': b'[App]\napp_version = v0.7.12\n', 'data/user_poi.json': b'[{"name":"Keep me"}]'}
+    write_files(install, protected)
+    write_files(data, protected)
+    manifest = {
+        'schema_version': 2, 'version': TARGET_VERSION,
+        'url': f'{BASE_URL}/SpaceDrive-Setup-{TARGET_VERSION}.exe',
+        'delta': {'available': False},
+        'delta_v2': {
+            'available': True, 'from_version': CURRENT_VERSION, 'to_version': TARGET_VERSION,
+            'url': f'{BASE_URL}/deltas/{archive.name}', 'checksum': checksum, 'size_bytes': size,
+        },
+    }
+    manager = UpdateManager(None, CURRENT_VERSION, install_path=install, data_path=data)
+    expected = {**updated, **protected}
+    return manager, archive, manifest, expected
+
+
+def download_fixture(manager, archive, manifest):
+    """Use production discovery, compatibility and download code with fake HTTP."""
+    responses = {LATEST_JSON_URL: json.dumps(manifest).encode(),
+                 manifest['delta_v2']['url']: archive.read_bytes()}
+
+    def urlopen(url, **kwargs):
+        return Response(responses[url], url)
+
+    with patch('update_manager.urllib.request.urlopen', side_effect=urlopen):
+        version, latest = manager.check_for_update()
+        assert version == TARGET_VERSION and manager.can_apply_delta(latest)
+        progress = []
+        downloaded = manager.download_delta(latest['delta_v2']['url'], version, lambda *values: progress.append(values))
+        assert downloaded and progress[-1][0] == 100
+        assert manager.verify_delta(downloaded, latest['delta_v2']['checksum'])
+        return downloaded
+
+
+def run_native(manager, action):
+    metadata = UpdateMetadata.from_file(manager.metadata_file)
+    plan = manager._read_plan(metadata)
+    plan.update(action=action, parent_pid=2147483647, parent_started_filetime=0, notify_user=False)
+    path = manager._save_plan(plan, metadata)
+    result = subprocess.run([
+        'powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+        '-WindowStyle', 'Hidden', '-File', str(ROOT / 'scripts/apply_update.ps1'),
+        '-PlanPath', str(path), '-PlanSha256', metadata.data['plan_sha256'],
+    ], capture_output=True, text=True, timeout=45,
+        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    if result.returncode:
+        raise AssertionError(f'Native {action} failed: {result.stdout}\n{result.stderr}')
+
+
+def run_mode(mode):
+    if mode == 'native' and sys.platform != 'win32':
+        print('[SKIP] Native helper requires Windows.')
+        return
+    with tempfile.TemporaryDirectory(prefix='spacedrive-pipeline-') as temporary:
+        root = Path(temporary)
+        manager, archive, manifest, expected = prepare_fixture(root)
+        before = snapshot(manager.install_path)
+        user_before = {name: (manager.data_path / name).read_bytes() for name in ('config.ini', 'data/user_poi.json')}
+        downloaded = download_fixture(manager, archive, manifest)
+        if mode == 'bad-checksum':
+            downloaded.write_bytes(downloaded.read_bytes() + b'corruption after verification')
+            success, _ = manager.apply_delta(TARGET_VERSION, downloaded)
+            assert not success and snapshot(manager.install_path) == before
+        elif mode == 'rollback':
+            original_unlink = Path.unlink
+            failed = []
+            failure_path = manager.install_path / '_internal/obsolete-b.dll'
+
+            def fail_second_deletion(path, *args, **kwargs):
+                if path == failure_path and not failed:
+                    failed.append(True)
+                    raise PermissionError('Injected failure after replacements, additions and a deletion')
+                return original_unlink(path, *args, **kwargs)
+
+            with patch.object(Path, 'unlink', fail_second_deletion):
+                success, _ = manager.apply_delta(TARGET_VERSION, downloaded)
+            assert failed and not success
+            assert UpdateMetadata.from_file(manager.metadata_file).state == 'rolled_back'
+            assert snapshot(manager.install_path) == before
         else:
-            checksum_data = "\n".join(f"{h} {p}" for p, h in sorted(checksums.items()))
-        zf.writestr("checksum.sha256", checksum_data)
-    with open(dest, "rb") as f:
-        return hashlib.sha256(f.read()).hexdigest()
-
-
-def _make_manager(install_dir_override: Path) -> UpdateManager:
-    """Create an UpdateManager that points its install_dir to a temp path."""
-    um = UpdateManager(config_manager=None, current_version=CURRENT_VERSION)
-
-    # Monkey-patch install_dir() so the test controls where files land
-    import update_manager as _um_mod
-    _um_mod.install_dir = lambda: install_dir_override
-    return um
-
-
-# ---------------------------------------------------------------------------
-# Test modes
-# ---------------------------------------------------------------------------
-
-def test_direct():
-    """Happy path: writable target dir, apply should succeed in-process."""
-    print("\n=== MODE: direct ===")
-    with tempfile.TemporaryDirectory(prefix="sd_update_test_") as tmp:
-        install = Path(tmp) / "app"
-        install.mkdir()
-
-        # Put a "current" file that the delta should overwrite
-        (install / "spaceDrive.exe").write_bytes(b"OLD_EXE_CONTENT")
-        (install / "_internal" / "data.dll").mkdir(parents=True)
-        (install / "_internal" / "data.dll").rmdir()
-        (install / "_internal").mkdir(exist_ok=True)
-        (install / "_internal" / "data.dll").write_bytes(b"OLD_DLL")
-
-        zip_path = Path(tmp) / "delta.zip"
-        expected_checksum = _build_delta_zip(zip_path, {
-            "spaceDrive.exe": b"NEW_EXE_CONTENT_v0.9",
-            "_internal/data.dll": b"NEW_DLL_v0.9",
-            "_internal/new_file.pyd": b"BRAND_NEW",
-        })
-
-        um = _make_manager(install)
-        ok = um.verify_delta(zip_path, expected_checksum)
-        assert ok, "verify_delta failed"
-        print(f"  checksum OK: {expected_checksum[:16]}...")
-
-        success, msg = um.apply_delta(TARGET_VERSION, zip_path)
-        print(f"  apply_delta -> success={success}, msg={msg!r}")
-
-        if success:
-            exe = (install / "spaceDrive.exe").read_bytes()
-            dll = (install / "_internal" / "data.dll").read_bytes()
-            new_pyd = (install / "_internal" / "new_file.pyd").read_bytes()
-            assert exe == b"NEW_EXE_CONTENT_v0.9", "EXE not updated"
-            assert dll == b"NEW_DLL_v0.9", "DLL not updated"
-            assert new_pyd == b"BRAND_NEW", "new file missing"
-            print("  [PASS] All files updated correctly.")
-        else:
-            print(f"  [FAIL] {msg}")
-            sys.exit(1)
-
-
-def test_bad_checksum():
-    """verify_delta() must reject a ZIP with a corrupted checksum file."""
-    print("\n=== MODE: bad-checksum ===")
-    with tempfile.TemporaryDirectory(prefix="sd_update_test_") as tmp:
-        zip_path = Path(tmp) / "delta_bad.zip"
-        real_checksum = _build_delta_zip(zip_path, {"test.txt": b"hello"})
-        wrong_checksum = "a" * 64
-
-        um = _make_manager(Path(tmp) / "app")
-        ok = um.verify_delta(zip_path, wrong_checksum)
-        assert not ok, "verify_delta should have rejected mismatched checksum"
-        print("  [PASS] verify_delta correctly rejected bad checksum.")
-
-
-def test_rollback():
-    """Force a mid-apply error and verify the backup is restored."""
-    print("\n=== MODE: rollback ===")
-    with tempfile.TemporaryDirectory(prefix="sd_update_test_") as tmp:
-        install = Path(tmp) / "app"
-        install.mkdir()
-        (install / "spaceDrive.exe").write_bytes(b"ORIGINAL_EXE")
-
-        zip_path = Path(tmp) / "delta.zip"
-        # Delta has a valid file + a path that will resolve to a dir (triggers OSError)
-        files = {
-            "spaceDrive.exe": b"SHOULD_NOT_LAND",
-        }
-        checksum = _build_delta_zip(zip_path, files)
-
-        um = _make_manager(install)
-
-        # Inject a failure: make the EXE a directory so copy fails
-        (install / "spaceDrive.exe").unlink()
-        (install / "spaceDrive.exe").mkdir()
-
-        success, msg = um.apply_delta(TARGET_VERSION, zip_path)
-        print(f"  apply_delta -> success={success}, msg={msg!r}")
-        assert not success, "Expected failure"
-
-        # After rollback the EXE directory should be gone, but since original
-        # was a file we backed it up -- check backup exists at least
-        backup_dir = um.staging_dir / f"backup_v{CURRENT_VERSION}"
-        print(f"  backup_dir exists: {backup_dir.exists()}")
-        if backup_dir.exists():
-            print("  [PASS] Backup present after rollback.")
-        else:
-            print("  [WARN] No backup found (apply may have failed before backup phase).")
-
-
-def test_elevation():
-    """Simulate a non-writable install dir and trigger the elevation path."""
-    print("\n=== MODE: elevation ===")
-    import stat
-    with tempfile.TemporaryDirectory(prefix="sd_update_test_") as tmp:
-        install = Path(tmp) / "readonly_app"
-        install.mkdir()
-        (install / "spaceDrive.exe").write_bytes(b"OLD")
-
-        # Make the dir read-only so _is_writable() returns False
-        install.chmod(stat.S_IREAD | stat.S_IEXEC)
-        try:
-            if _is_writable(install):
-                print("  [SKIP] Could not make dir read-only on this system (may need admin).")
-                return
-
-            zip_path = Path(tmp) / "delta.zip"
-            _build_delta_zip(zip_path, {"spaceDrive.exe": b"NEW"})
-
-            um = _make_manager(install)
-            print("  Calling apply_delta() on read-only dir...")
-            print("  (A UAC prompt will appear — cancel to test the deny path)")
-            success, msg = um.apply_delta(TARGET_VERSION, zip_path)
-            print(f"  apply_delta -> success={success}, msg={msg!r}")
-            if msg == "ELEVATION_REQUIRED":
-                print("  [PASS] Elevation path triggered.")
-            elif not success:
-                print(f"  [PASS] Elevation denied/failed as expected: {msg}")
+            if mode == 'native':
+                with patch.object(manager, '_execute_plan', return_value=(True, 'prepared')):
+                    success, message = manager.apply_delta(TARGET_VERSION, downloaded)
+                assert success, message
+                assert snapshot(manager.install_path) == before
+                run_native(manager, 'apply')
             else:
-                print("  [INFO] Elevation accepted and applied.")
-        finally:
-            # Restore write permission so tempfile cleanup works
-            install.chmod(stat.S_IREAD | stat.S_IWRITE | stat.S_IEXEC)
+                success, message = manager.apply_delta(TARGET_VERSION, downloaded)
+                assert success, message
+            assert UpdateMetadata.from_file(manager.metadata_file).state == 'completed'
+            installed_files = {name: content for name, content in snapshot(manager.install_path).items() if content is not None}
+            assert installed_files == expected
+            if mode == 'native':
+                run_native(manager, 'rollback')
+                assert UpdateMetadata.from_file(manager.metadata_file).state == 'rolled_back'
+                assert snapshot(manager.install_path) == before
+        for name, content in user_before.items():
+            assert (manager.data_path / name).read_bytes() == content
+    print(f'[PASS] {mode}: disposable installation and user data verified.')
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
-
-MODES = {
-    "direct": test_direct,
-    "elevation": test_elevation,
-    "bad-checksum": test_bad_checksum,
-    "rollback": test_rollback,
-}
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="SpaceDrive update pipeline smoke test")
-    parser.add_argument(
-        "--mode",
-        choices=list(MODES),
-        default="direct",
-        help="Which test to run (default: direct)",
-    )
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--mode', choices=('all', *MODES), default='all')
     args = parser.parse_args()
-    MODES[args.mode]()
+    for mode in MODES if args.mode == 'all' else (args.mode,):
+        run_mode(mode)
+
+
+if __name__ == '__main__':
+    main()

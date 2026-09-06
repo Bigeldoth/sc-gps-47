@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from config_manager import ConfigManager
 from velocity_tracker import VelocityTracker
+import app_paths
 
 
 # Documented defaults (mirror src/velocity_tracker.py class constants).
@@ -31,25 +32,17 @@ _DEFAULTS = {
 
 
 @pytest.fixture
-def cfg():
+def cfg(tmp_path, monkeypatch):
     """A ConfigManager with an empty in-memory config (no [Kalman] section).
 
-    We construct the manager (which may seed from disk), then replace its parser
-    with a fresh empty one so tests are deterministic and never touch the user's
-    real config file on save.
+    Isolate paths before construction: initialization may migrate and save the
+    configuration, even before an explicit setter or save is called.
     """
+    monkeypatch.setattr(app_paths, "bundle_dir", lambda: tmp_path)
+    monkeypatch.setattr(app_paths, "user_data_dir", lambda: tmp_path)
     cm = ConfigManager()
     cm.config = configparser.ConfigParser()
-    # Redirect save() to a throwaway path so set_* round-trip tests can persist
-    # without clobbering the real user config.
-    cm.config_path = os.path.join(
-        os.path.dirname(__file__), "_tmp_kalman_test.ini"
-    )
-    yield cm
-    try:
-        os.remove(cm.config_path)
-    except OSError:
-        pass
+    return cm
 
 
 # ---- ConfigManager: defaults when the section/keys are absent ----

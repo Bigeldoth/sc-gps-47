@@ -1,98 +1,41 @@
 name: Build SpaceDrive GPS
 
-# PRs → smoke-test build only (no upload)
-# Tags (v*) → full release: build + upload to VPS + GitHub Release
-
+# Releases are published locally with tools/release.ps1. CI never publishes.
 on:
   pull_request:
-    branches: [main]
-  push:
-    tags: ['v*']
+    branches: [main, staging]
+
+permissions:
+  contents: read
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  QT_QPA_PLATFORM: offscreen
 
 jobs:
   build:
-    if: github.event_name == 'pull_request'
     runs-on: windows-latest
-
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           cache: pip
-
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
+          pip install -r requirements.txt pytest paramiko
+      - name: Check synchronized versions
+        run: python tools/versioning.py check
+      - name: Run tests
+        run: python -m pytest tests -q
       - name: Install Tesseract OCR
         run: choco install tesseract --no-progress -y
-
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
-
       - name: Build installer (PyInstaller + Inno Setup)
         shell: pwsh
         run: .\tools\build_installer.ps1
-
-  release:
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: windows-latest
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-          cache: pip
-
-      - name: Install Python dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install paramiko
-
-      - name: Install Tesseract OCR
-        run: choco install tesseract --no-progress -y
-
-      - name: Install Inno Setup
-        run: choco install innosetup --no-progress -y
-
-      - name: Build installer (PyInstaller + Inno Setup)
-        shell: pwsh
-        run: .\tools\build_installer.ps1 -Version $env:GITHUB_REF_NAME
-
-      - name: Upload to VPS (SFTP — no GitHub artifact storage)
-        env:
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          VPS_USER: ${{ secrets.VPS_USER }}
-          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
-          VPS_PUBLIC_URL: ${{ secrets.VPS_PUBLIC_URL }}
-        run: python tools/upload_vps.py
-
-      - name: Create GitHub Release
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-          VPS_PUBLIC_URL: ${{ secrets.VPS_PUBLIC_URL }}
-        shell: pwsh
-        run: |
-          $tag = $env:GITHUB_REF_NAME
-          $installer = Get-ChildItem dist -Filter "SpaceDrive-Setup-*.exe" |
-              Sort-Object LastWriteTime -Descending | Select-Object -First 1
-          $url = "$($env:VPS_PUBLIC_URL.TrimEnd('/'))/$($installer.Name)"
-          gh release create $tag `
-            --title "SpaceDrive GPS $tag" `
-            --generate-notes `
-            --notes "## Download`n`n**[$($installer.Name)]($url)**"

@@ -11,7 +11,7 @@ import logging
 import sys
 from pathlib import Path
 
-from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
+from PyQt6.QtWidgets import (QApplication, QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                              QSlider, QPushButton, QTableWidget, QTableWidgetItem,
                              QHeaderView, QMessageBox, QKeySequenceEdit, QWidget,
                              QTabWidget, QCheckBox, QComboBox, QSpinBox, QDoubleSpinBox,
@@ -23,6 +23,36 @@ from app_paths import bundle_dir
 from capture_monitors import list_capture_monitors
 
 logger = logging.getLogger(__name__)
+
+# Keep running workers alive independently of a dialog being closed or replaced.
+_BACKGROUND_TASKS = set()
+
+
+def retain_background_task(thread):
+    """Own a worker until it finishes, even when its original dialog closes."""
+    thread.setParent(QApplication.instance())
+    _BACKGROUND_TASKS.add(thread)
+
+    def release():
+        _BACKGROUND_TASKS.discard(thread)
+        thread.deleteLater()
+
+    thread.finished.connect(release)
+    return thread
+
+
+def background_tasks_running():
+    """Tell application shutdown whether an Options worker still needs time."""
+    return any(thread.isRunning() for thread in tuple(_BACKGROUND_TASKS))
+
+
+def request_background_tasks_stop():
+    """Request cancellation at the next safe worker boundary."""
+    for thread in tuple(_BACKGROUND_TASKS):
+        thread.requestInterruption()
+        cancel = getattr(thread, "cancel", None)
+        if callable(cancel):
+            cancel()
 
 
 class _GpuProbeThread(QThread):
@@ -50,7 +80,8 @@ class _GpuProbeThread(QThread):
 class _UpdateCheckThread(QThread):
     """Checks for available updates off the UI thread."""
 
-    check_complete = pyqtSignal(str, dict)  # new_version, latest_json (or None on error)
+    check_complete = pyqtSignal(str, dict)
+    check_failed = pyqtSignal(str)
 
     def __init__(self, current_version: str):
         super().__init__()
@@ -61,43 +92,51 @@ class _UpdateCheckThread(QThread):
             from update_manager import UpdateManager
             um = UpdateManager(None, self.current_version)
             new_version, latest_json = um.check_for_update()
-            if latest_json is None:
-                latest_json = {}
-            self.check_complete.emit(new_version or "", latest_json)
+            if not self.isInterruptionRequested():
+                self.check_complete.emit(new_version or "", latest_json or {})
         except Exception as exc:
             logger.warning(f"Update check failed: {exc}")
-            self.check_complete.emit("", {})
+            if not self.isInterruptionRequested():
+                self.check_failed.emit(str(exc))
 
 
 class _UpdateApplyThread(QThread):
-    """Downloads and applies delta update off the UI thread."""
+    """Download, verify and prepare an update without replacing live files."""
 
     progress = pyqtSignal(int, str)  # percentage, message
-    complete = pyqtSignal(bool, str)  # success, message
+    complete = pyqtSignal(bool, str)  # prepared, message (pending_exit on success)
 
-    def __init__(self, config_manager, current_version: str, target_version: str, delta_url: str, delta_checksum: str):
+    def __init__(self, config_manager, current_version: str, target_version: str, delta_url: str,
+                 delta_checksum: str, manifest=None):
         super().__init__()
         self.config_manager = config_manager
         self.current_version = current_version
         self.target_version = target_version
         self.delta_url = delta_url
         self.delta_checksum = delta_checksum
+        self.manifest = manifest
 
     def run(self):
         try:
             from update_manager import UpdateManager
-            from pathlib import Path
-
-            um = UpdateManager(self.config_manager, self.current_version)
+            um = UpdateManager(None, self.current_version)
+            if self.manifest is not None:
+                um.set_update_manifest(self.manifest)
 
             # Download
             self.progress.emit(10, "Downloading update...")
             def on_progress(pct, written, total):
+                if self.isInterruptionRequested():
+                    raise InterruptedError("Update preparation cancelled")
                 self.progress.emit(10 + int(pct * 0.8), f"Downloading... {pct}%")
 
             delta_zip = um.download_delta(self.delta_url, self.target_version, on_progress)
             if not delta_zip:
                 self.complete.emit(False, "Download failed")
+                return
+
+            if self.isInterruptionRequested():
+                self.complete.emit(False, "Update preparation cancelled")
                 return
 
             # Verify
@@ -106,18 +145,47 @@ class _UpdateApplyThread(QThread):
                 self.complete.emit(False, "Checksum verification failed")
                 return
 
-            # Apply
-            self.progress.emit(96, "Applying update...")
+            # The helper waits for a clean application exit before replacement.
+            self.progress.emit(96, "Preparing installation after SpaceDrive GPS closes...")
+            if self.isInterruptionRequested():
+                self.complete.emit(False, "Update preparation cancelled")
+                return
             success, msg = um.apply_delta(self.target_version, delta_zip)
-
-            if success:
-                self.complete.emit(True, f"Update to {self.target_version} applied successfully")
-            else:
-                self.complete.emit(False, f"Apply failed: {msg}")
+            self.complete.emit(success, msg)
 
         except Exception as exc:
             logger.error(f"Update apply thread failed: {exc}", exc_info=True)
             self.complete.emit(False, f"Error: {exc}")
+
+
+class _UpdateRecoveryThread(QThread):
+    """Prepare the selected recovery operation away from the Qt UI thread."""
+
+    complete = pyqtSignal(bool, str)
+
+    def __init__(self, manager, action, metadata=None):
+        super().__init__()
+        self.manager = manager
+        self.action = action
+        self.metadata = metadata
+
+    def run(self):
+        try:
+            if self.action == "installer":
+                url = self.manager.get_recovery_installer_url(self.metadata)
+                self.complete.emit(bool(url), url or "No valid installer download is available.")
+                return
+            operations = {
+                "resume": self.manager.resume_interrupted_update,
+                "rollback": self.manager.rollback_interrupted_update,
+            }
+            if self.action not in operations:
+                raise ValueError("Unknown update recovery action")
+            operation = operations[self.action]
+            self.complete.emit(*operation())
+        except Exception as exc:
+            logger.exception("Update recovery preparation failed")
+            self.complete.emit(False, str(exc))
 
 
 class OptionsWindow(QDialog):
@@ -126,11 +194,20 @@ class OptionsWindow(QDialog):
     options_saved = pyqtSignal()
     unlock_mfd_requested = pyqtSignal()
     reset_position_requested = pyqtSignal()
+    shutdown_for_update_requested = pyqtSignal()
 
     def __init__(self, config_manager, hotkey_listener, parent=None):
         super().__init__(parent)
         self.config_manager = config_manager
         self.hotkey_listener = hotkey_listener
+        self._update_busy = False
+        self._update_check_busy = False
+        self._update_prepared = False
+        self._available_update_version = ""
+        self._latest_manifest = {}
+        self._latest_delta_url = ""
+        self._latest_delta_checksum = ""
+        self._latest_full_url = ""
 
         self.setWindowTitle("SpaceDrive GPS — Settings")
         self.setMinimumWidth(680)
@@ -545,7 +622,7 @@ class OptionsWindow(QDialog):
         greyed by `_apply_gpu_status` once the probe finishes. Keeps a reference
         to the thread so it isn't garbage-collected mid-run.
         """
-        self._gpu_probe = _GpuProbeThread(self)
+        self._gpu_probe = retain_background_task(_GpuProbeThread())
         self._gpu_probe.done.connect(self._apply_gpu_status)
         self._gpu_probe.start()
 
@@ -807,7 +884,7 @@ class OptionsWindow(QDialog):
         worker.tick.connect(_on_tick)
         worker.done.connect(_on_done)
         # Keep a reference so the QThread isn't GC'd mid-run.
-        self._diag_worker = worker
+        self._diag_worker = retain_background_task(worker)
         self.run_paddle_diag_button.setEnabled(False)
         worker.start()
 
@@ -838,6 +915,9 @@ class OptionsWindow(QDialog):
         layout = QVBoxLayout()
         layout.addWidget(self._section_title("Application Updates"))
 
+        self.check_updates_on_startup = QCheckBox("Check for updates on startup")
+        layout.addWidget(self.check_updates_on_startup)
+
         # Current version display
         form = QFormLayout()
         self.current_version_label = QLabel("Loading...")
@@ -856,6 +936,7 @@ class OptionsWindow(QDialog):
         # Changelog
         layout.addWidget(self._section_title("Release Notes"))
         self.changelog_text = QLabel("")
+        self.changelog_text.setTextFormat(Qt.TextFormat.PlainText)
         self.changelog_text.setStyleSheet("color: #A8B5C1; font-size: 10px; background: transparent;")
         self.changelog_text.setWordWrap(True)
         layout.addWidget(self.changelog_text)
@@ -885,10 +966,13 @@ class OptionsWindow(QDialog):
         self.update_progress_bar.setVisible(False)
         layout.addWidget(self.update_progress_bar)
 
+        self.update_status_label = self._hint("")
+        self.update_status_label.setTextFormat(Qt.TextFormat.PlainText)
+        layout.addWidget(self.update_status_label)
+
         layout.addWidget(self._hint(
-            "Delta updates download only the changed files (~15-30 MB) instead of "
-            "the full installer (~50 MB). Click 'Check for Updates' to see if a new "
-            "version is available."
+            "Compatible delta updates download only changed files and install after "
+            "SpaceDrive GPS closes. Other versions use the full installer."
         ))
 
         layout.addStretch()
@@ -902,273 +986,208 @@ class OptionsWindow(QDialog):
         return label
 
     def _get_current_app_version(self) -> str:
-        """Get the current app version.
+        """Read the release version shipped with the running application."""
+        from app_version import get_app_version
+        return get_app_version()
 
-        Priority:
-        1. Bundled config.ini (lives in Program Files / bundle dir) — authoritative,
-           always replaced by installer and included in every delta.
-        2. User config.ini [Updates] app_version — legacy fallback.
-        3. installer/spaceDrive.iss — dev-mode fallback.
-        """
-        import configparser
-        from pathlib import Path
-        from app_paths import bundle_dir
-
-        # 1. Read from the bundled (install-dir) config.ini — never user-edited
-        try:
-            bundled_cfg = bundle_dir() / "config.ini"
-            if bundled_cfg.exists():
-                parser = configparser.ConfigParser()
-                parser.read(str(bundled_cfg), encoding="utf-8-sig")
-                ver = parser.get("Updates", "app_version", fallback="").strip()
-                if ver:
-                    return ver if ver.startswith("v") else f"v{ver}"
-        except Exception as exc:
-            logger.debug(f"Could not read bundled config.ini for version: {exc}")
-
-        # 2. User config (legacy / dev fallback)
-        try:
-            app_version = self.config_manager.get("Updates", "app_version", fallback=None)
-            if app_version and app_version.strip():
-                return app_version.strip()
-        except Exception:
-            pass
-
-        # 3. installer/spaceDrive.iss — works only in dev mode
-        try:
-            iss_file = bundle_dir() / "installer" / "spaceDrive.iss"
-            if iss_file.exists():
-                with open(iss_file, "r", encoding="utf-8") as f:
-                    for line in f:
-                        if line.strip().startswith("#define MyAppVersion"):
-                            parts = line.split('"')
-                            if len(parts) >= 2:
-                                ver = parts[1].strip()
-                                if ver:
-                                    return f"v{ver}"
-        except Exception as exc:
-            logger.debug(f"Could not read version from installer config: {exc}")
-
-        logger.warning("App version could not be determined")
-        return "unknown"
+    def _clear_update_offer(self):
+        """Drop every URL and target from the previous check before a new one."""
+        self._available_update_version = ""
+        self._latest_manifest = {}
+        self._latest_delta_url = ""
+        self._latest_delta_checksum = ""
+        self._latest_full_url = ""
+        self.update_now_button.setEnabled(False)
+        self.update_now_button.setText("Update Now")
+        self.skip_button.setEnabled(False)
+        self.update_size_label.setText("—")
+        self.changelog_text.clear()
+        self.update_status_label.clear()
+        self.update_progress_bar.hide()
 
     def _on_check_updates(self):
-        """Check for updates in a background thread."""
+        """Check in a background worker with a distinct failure signal."""
+        if self._update_busy or self._update_check_busy or self._update_prepared:
+            return
+        self._clear_update_offer()
+        self.latest_version_label.setText("Checking...")
+        self._update_check_busy = True
         self.check_update_button.setEnabled(False)
         self.check_update_button.setText("Checking...")
-        self._update_check_thread = _UpdateCheckThread(self._get_current_app_version())
+        self._update_check_thread = retain_background_task(
+            _UpdateCheckThread(self._get_current_app_version())
+        )
         self._update_check_thread.check_complete.connect(self._on_update_check_complete)
+        self._update_check_thread.check_failed.connect(self._on_update_check_failed)
+        self._update_check_thread.finished.connect(self._on_update_check_finished)
         self._update_check_thread.start()
 
-    def _on_update_check_complete(self, new_version: str, latest_json: dict):
-        """Handle update check result."""
-        self.check_update_button.setEnabled(True)
+    def _on_update_check_finished(self):
+        self._update_check_busy = False
+        self._update_check_thread = None
+        self.check_update_button.setEnabled(not self._update_busy and not self._update_prepared)
         self.check_update_button.setText("Check for Updates")
 
+    def _on_update_check_failed(self, message):
+        self._clear_update_offer()
+        self.latest_version_label.setText("Check failed")
+        self.update_status_label.setText(str(message))
+
+    def _on_update_check_complete(self, new_version: str, latest_json: dict):
+        """Offer only a compatible verified delta or a validated installer URL."""
+        from update_manager import UpdateManager
+        self._clear_update_offer()
         if not new_version:
             self.latest_version_label.setText("Up to date")
-            self.update_now_button.setEnabled(False)
-            self.skip_button.setEnabled(False)
             self.changelog_text.setText("You are using the latest version.")
             return
 
-        # Update available
+        try:
+            manager = UpdateManager(None, self._get_current_app_version())
+            full_url = manager.get_full_installer_url(latest_json)
+            frozen = bool(getattr(sys, "frozen", False))
+            delta_info = manager.get_delta_info(latest_json) if frozen else {}
+        except Exception as exc:
+            self._on_update_check_failed(str(exc))
+            return
+        self._available_update_version = new_version
+        self._latest_manifest = latest_json
         self.latest_version_label.setText(new_version)
-        self.update_now_button.setEnabled(True)
+        self._latest_full_url = full_url
+        if delta_info:
+            self._latest_delta_url = delta_info["url"]
+            self._latest_delta_checksum = delta_info["checksum"]
+            size = delta_info.get("size_bytes", 0)
+            self.update_size_label.setText(
+                f"{size / (1024 * 1024):.1f} MB (delta)"
+                if type(size) is int and size > 0 else "Delta update"
+            )
+        elif self._latest_full_url:
+            self.update_now_button.setText("Download Installer")
+            self.update_size_label.setText("Full installer (opens your browser)")
+            self.update_status_label.setText(
+                "Download the installer to update from this version."
+                if frozen else "This source checkout is not updated in place. Download the packaged application."
+            )
+        else:
+            self.update_size_label.setText("No compatible download available")
+            self.update_status_label.setText("No supported update is available for this installation.")
+
+        self.update_now_button.setEnabled(bool(self._latest_delta_url or self._latest_full_url))
         self.skip_button.setEnabled(True)
-
-        # Always store full installer URL as fallback (used if delta fails)
-        self._latest_full_url = latest_json.get("url", "")
-
-        # Show update size and store delta info for download
-        delta_info = latest_json.get("delta", {})
-        if delta_info.get("available") and delta_info.get("url"):
-            size_mb = delta_info.get("size_bytes", 0) / (1024 * 1024)
-            self.update_size_label.setText(f"~{size_mb:.1f} MB (delta)")
-            # Store delta info for _on_update_now()
-            self._latest_delta_url = delta_info.get("url", "")
-            self._latest_delta_checksum = delta_info.get("checksum", "")
-        else:
-            # No delta available — redirect to full installer download page
-            self.update_size_label.setText("Full installer (open browser to download)")
-            self._latest_delta_url = ""
-            self._latest_delta_checksum = ""
-
-        # Show changelog
         changelog = latest_json.get("changelog", {})
-        if changelog:
-            summary = changelog.get("summary", "New version available")
+        if isinstance(changelog, dict):
+            summary = str(changelog.get("summary", f"Version {new_version} is available."))
             highlights = changelog.get("highlights", [])
-            text = f"{summary}\n"
-            for highlight in highlights:
-                text += f"• {highlight}\n"
-            self.changelog_text.setText(text.strip())
+            if not isinstance(highlights, list):
+                highlights = []
+            self.changelog_text.setText("\n".join([summary] + [f"• {item}" for item in highlights]))
         else:
-            self.changelog_text.setText(f"A new version ({new_version}) is available.")
+            self.changelog_text.setText(f"Version {new_version} is available.")
+
+    def _open_full_installer(self):
+        """Revalidate the fallback before opening it in the default browser."""
+        from update_manager import UpdateManager
+        try:
+            manager = UpdateManager(None, self._get_current_app_version())
+            url = manager.get_full_installer_url(self._latest_manifest)
+        except Exception as exc:
+            self.update_status_label.setText(f"Installer download unavailable: {exc}")
+            return
+        if not url:
+            self.update_status_label.setText("No valid installer download is available. Check for updates again.")
+            return
+        if not QDesktopServices.openUrl(QUrl(url)):
+            self.update_status_label.setText("Could not open your browser. Try again.")
 
     def _on_update_now(self):
-        """Initiate delta download and apply, or open browser for full installer."""
-        new_version = self.latest_version_label.text()
-        if not new_version or new_version in ("—", "Up to date"):
+        """Prepare an update while keeping application files untouched until exit."""
+        if self._update_busy or self._update_check_busy or self._update_prepared:
             return
-
-        # No delta available — open browser to download full installer
-        if not getattr(self, "_latest_delta_url", ""):
-            full_url = getattr(self, "_latest_full_url", "")
-            if full_url:
-                import webbrowser
-                webbrowser.open(full_url)
-            else:
-                from PyQt6.QtWidgets import QMessageBox
-                QMessageBox.information(
-                    self, "No Delta Available",
-                    f"No delta update is available for {new_version}.\n"
-                    "Please download the full installer from the releases page."
-                )
+        if not self._available_update_version:
             return
-
+        if not self._latest_delta_url:
+            self._open_full_installer()
+            return
+        from update_manager import UpdateManager
         current_version = self._get_current_app_version()
-
-        # Show progress dialog
-        from PyQt6.QtWidgets import QProgressDialog
-        progress_dialog = QProgressDialog(
-            "Preparing update...", "Cancel", 0, 100, self
-        )
-        progress_dialog.setWindowTitle("Updating SpaceDrive GPS")
-        progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
-        progress_dialog.setCancelButton(None)  # Disable cancel during download
-        progress_dialog.show()
-
-        # Start update thread
-        self._update_thread = _UpdateApplyThread(
-            self.config_manager,
-            current_version,
-            new_version,
-            self._latest_delta_url,
-            self._latest_delta_checksum
-        )
+        manager = UpdateManager(None, current_version)
+        if not getattr(sys, "frozen", False) or not manager.can_apply_delta(self._latest_manifest):
+            self._latest_delta_url = ""
+            self._open_full_installer()
+            return
+        self._update_busy = True
+        self._apply_result = None
+        self.check_update_button.setEnabled(False)
+        self.update_now_button.setEnabled(False)
+        self.skip_button.setEnabled(False)
+        self.save_button.setEnabled(False)
+        self.update_progress_bar.setRange(0, 100)
+        self.update_progress_bar.setValue(0)
+        self.update_progress_bar.show()
+        self.update_status_label.setText("Preparing update. Keep SpaceDrive GPS open until preparation finishes.")
+        self._update_thread = retain_background_task(_UpdateApplyThread(
+            None, current_version, self._available_update_version,
+            self._latest_delta_url, self._latest_delta_checksum, self._latest_manifest,
+        ))
         self._update_thread.progress.connect(self._on_update_progress)
-        self._update_thread.complete.connect(lambda ok, msg: self._on_update_complete(ok, msg, progress_dialog))
+        self._update_thread.complete.connect(self._on_update_complete)
+        self._update_thread.finished.connect(self._on_update_thread_finished)
         self._update_thread.start()
-        self._update_progress_dialog = progress_dialog
 
     def _on_update_progress(self, percent: int, message: str):
-        """Update progress dialog."""
-        if hasattr(self, '_update_progress_dialog'):
-            self._update_progress_dialog.setValue(percent)
-            self._update_progress_dialog.setLabelText(message)
+        self.update_progress_bar.setValue(percent)
+        self.update_status_label.setText(message)
 
-    def _on_update_complete(self, success: bool, message: str, dialog):
-        """Handle update completion and restart."""
-        dialog.close()
+    def _on_update_complete(self, success: bool, message: str):
+        # QThread.complete is emitted just before run returns. Wait for finished
+        # before initiating shutdown or releasing this dialog's busy state.
+        self._apply_result = (success, message)
 
-        if not success:
-            full_url = getattr(self, "_latest_full_url", "")
-            if full_url:
-                box = QMessageBox(QMessageBox.Icon.Critical, "Update Failed", message, parent=self)
-                dl_btn = box.addButton("Download Full Installer", QMessageBox.ButtonRole.AcceptRole)
-                box.addButton(QMessageBox.StandardButton.Close)
-                box.exec()
-                if box.clickedButton() is dl_btn:
-                    import webbrowser
-                    webbrowser.open(full_url)
-            else:
-                QMessageBox.critical(self, "Update Failed", message)
-            return
-
-        # Elevation path: UAC-elevated PS1 launched, app must quit so it can replace the exe
-        if message == "ELEVATION_REQUIRED":
-            QMessageBox.information(
-                self,
-                "Update — Administrator Required",
-                "An administrator prompt (UAC) will appear to apply the update.\n\n"
-                "The application will close now. It will restart automatically once the "
-                "update is complete.",
+    def _on_update_thread_finished(self):
+        from update_manager import UPDATE_PENDING
+        self._update_thread = None
+        self._update_busy = False
+        success, message = self._apply_result or (False, "Update preparation did not finish.")
+        if success and message == UPDATE_PENDING:
+            self._update_prepared = True
+            self.update_progress_bar.setValue(100)
+            self.update_status_label.setText(
+                "Update prepared. SpaceDrive GPS is closing safely. Wait for the update "
+                "confirmation before reopening it."
             )
-            self._quit_for_update()
+            self.shutdown_for_update_requested.emit()
             return
-
-        # Normal path: files applied in-place, show countdown then restart
-        self._show_restart_countdown(message)
-
-    def _show_restart_countdown(self, message: str):
-        """Show 5-second countdown dialog, then restart the app."""
-        from PyQt6.QtCore import QTimer
-
-        countdown_dialog = QMessageBox(self)
-        countdown_dialog.setWindowTitle("Update Complete")
-        countdown_dialog.setIcon(QMessageBox.Icon.Information)
-        # No standard buttons — we control dismissal via the timer
-        countdown_dialog.setStandardButtons(QMessageBox.StandardButton.NoButton)
-
-        self._countdown = 5
-        self._restart_after_countdown = True
-
-        def _update_text():
-            countdown_dialog.setText(
-                f"{message}\n\n"
-                f"Restarting application in {self._countdown} seconds..."
-            )
-
-        # Attach timer to dialog so it lives as long as the dialog does
-        timer = QTimer(countdown_dialog)
-
-        def _tick():
-            self._countdown -= 1
-            if self._countdown <= 0:
-                timer.stop()
-                # accept() causes exec() to return — restart is called after
-                countdown_dialog.accept()
-            else:
-                _update_text()
-
-        timer.timeout.connect(_tick)
-        _update_text()
-        timer.start(1000)
-
-        # exec() blocks here; returns when countdown_dialog.accept() is called
-        countdown_dialog.exec()
-        timer.stop()
-
-        if self._restart_after_countdown:
-            self._restart_application()
-
-    def _restart_application(self):
-        """Relaunch the app process, then quit the current one."""
-        import subprocess
-        import sys
-        from PyQt6.QtWidgets import QApplication
-
-        logger.info("Restarting application after successful update")
-
-        # Re-launch current executable (works for both frozen bundle and dev)
-        try:
-            subprocess.Popen([sys.executable] + sys.argv[1:])
-        except Exception as exc:
-            logger.error(f"Failed to relaunch executable: {exc}")
-
-        # Quit current instance — sys.exit ensures we actually exit even if
-        # QApplication.quit() is swallowed by a nested event loop
-        QApplication.quit()
-        sys.exit(0)
-
-    def _quit_for_update(self):
-        """Quit without relaunching — the elevated PS1 script handles the relaunch."""
-        import sys
-        from PyQt6.QtWidgets import QApplication
-
-        logger.info("Quitting for elevated update apply")
-        QApplication.quit()
-        sys.exit(0)
+        self.save_button.setEnabled(True)
+        self.check_update_button.setEnabled(True)
+        self.update_progress_bar.hide()
+        self.update_status_label.setText(f"Update preparation failed: {message}")
+        self._latest_delta_url = ""
+        self._latest_delta_checksum = ""
+        self.update_now_button.setText("Download Installer")
+        self.update_now_button.setEnabled(bool(self._latest_full_url))
 
     def _on_skip_update(self):
-        """Mark this version as skipped."""
-        new_version = self.latest_version_label.text()
-        if new_version and new_version != "—" and new_version != "Up to date":
-            self.config_manager.set_last_skipped_version(new_version)
-            self.update_now_button.setEnabled(False)
-            self.skip_button.setEnabled(False)
-            QMessageBox.information(self, "Update Skipped", f"You won't be asked about {new_version} again.")
+        if not self._available_update_version or self._update_busy:
+            return
+        self.config_manager.set_last_skipped_version(self._available_update_version)
+        if not self.config_manager.save():
+            self.update_status_label.setText("Could not save the skipped version.")
+            return
+        self.update_now_button.setEnabled(False)
+        self.skip_button.setEnabled(False)
+        self.update_status_label.setText(f"Version {self._available_update_version} will be skipped.")
+
+    def reject(self):
+        if self._update_busy or self._update_prepared:
+            return
+        super().reject()
+
+    def closeEvent(self, event):
+        if self._update_busy or self._update_prepared:
+            event.ignore()
+            return
+        super().closeEvent(event)
 
     def _update_ocr_label(self, value):
         self.ocr_value_label.setText(f"{value} ms")
@@ -1179,6 +1198,7 @@ class OptionsWindow(QDialog):
         # Updates
         current_version = self._get_current_app_version()
         self.current_version_label.setText(current_version)
+        self.check_updates_on_startup.setChecked(cfg.get_check_on_startup())
 
         # General
         self._refresh_capture_monitors(cfg.get_capture_monitor_id())
@@ -1315,6 +1335,8 @@ class OptionsWindow(QDialog):
     def _save_and_close(self):
         try:
             cfg = self.config_manager
+
+            cfg.set_check_on_startup(self.check_updates_on_startup.isChecked())
 
             # General
             cfg.set_capture_monitor_id(self.capture_monitor_combo.currentData() or "")

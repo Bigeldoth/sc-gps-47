@@ -1,132 +1,97 @@
-# End-to-end local release script: build -> upload to VPS -> create GitHub Release.
-#
-# Usage (from repo root):
-#   .\tools\release.ps1 -Version v0.8.4
-#   .\tools\release.ps1 -Version v0.8.4 -SkipBuild   # if dist\ is already fresh
-#
-# Prerequisites:
-#   * Python + project venv activated (requirements.txt installed)
-#   * Inno Setup 6 + Tesseract installed
-#   * VPS credentials in environment variables (or .env.local at repo root):
-#       VPS_HOST, VPS_USER, VPS_SSH_KEY (path to private key file)
-#       VPS_PUBLIC_URL
-#   * gh CLI authenticated (gh auth login)
-
+# Local release only. Versions must already be synchronized and committed.
+# Build -> validate provenance -> tag/draft -> atomically publish VPS -> publish draft.
+# Usage: .\tools\release.ps1 -Version vX.Y.Z [-SkipBuild]
 param(
     [Parameter(Mandatory)][string]$Version,
     [switch]$SkipBuild
 )
 
-$ErrorActionPreference = "Stop"
-$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$ErrorActionPreference = 'Stop'
+$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 Set-Location $RepoRoot
 
-# Load .env.local if present
-$EnvFile = Join-Path $RepoRoot ".env.local"
-if (Test-Path $EnvFile) {
-    Get-Content $EnvFile | Where-Object { $_ -match "^\s*[^#]" } | ForEach-Object {
-        $parts = $_ -split "=", 2
-        if ($parts.Length -eq 2) {
-            [System.Environment]::SetEnvironmentVariable($parts[0].Trim(), $parts[1].Trim(), "Process")
+if ($Version -notmatch '^v\d+\.\d+\.\d+$') { throw 'Version must match vX.Y.Z exactly' }
+& python tools/versioning.py release-preflight --version $Version
+if ($LASTEXITCODE -ne 0) { throw 'Release preflight failed; no build or publication performed' }
+$Commit = (git rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve source commit' }
+
+# A reused tag may never silently describe another checkout or installer.
+$RemoteTags = @(git ls-remote --tags origin "refs/tags/$Version" "refs/tags/$Version^{}")
+if ($LASTEXITCODE -ne 0) { throw 'Cannot verify the remote tag' }
+if ($RemoteTags.Count -gt 0) {
+    $Peeled = @($RemoteTags | Where-Object { $_ -match '\^\{\}$' })
+    $RemoteCommit = if ($Peeled.Count) { ($Peeled[0] -split '\s+')[0] } else { ($RemoteTags[0] -split '\s+')[0] }
+    if ($RemoteCommit -ne $Commit) { throw "$Version already refers to another commit on origin" }
+}
+
+& gh auth status
+if ($LASTEXITCODE -ne 0) { throw 'GitHub authentication is required before publishing' }
+$ExistingRelease = & gh release view $Version --json isDraft --jq '.isDraft' 2>$null
+if ($LASTEXITCODE -eq 0 -and $ExistingRelease -eq 'false') {
+    throw "$Version is already published; a published version cannot be overwritten"
+}
+
+$EnvFile = Join-Path $RepoRoot '.env.local'
+if (Test-Path -LiteralPath $EnvFile) {
+    Get-Content -LiteralPath $EnvFile | Where-Object { $_ -match '^\s*[^#]' } | ForEach-Object {
+        $Parts = $_ -split '=', 2
+        if ($Parts.Length -eq 2) {
+            [System.Environment]::SetEnvironmentVariable($Parts[0].Trim(), $Parts[1].Trim(), 'Process')
         }
     }
 }
-
-# Validate required env vars
-foreach ($var in @("VPS_HOST", "VPS_USER", "VPS_SSH_KEY", "VPS_PUBLIC_URL")) {
-    if (-not [System.Environment]::GetEnvironmentVariable($var)) {
-        throw "Missing environment variable: $var. Set it or add it to .env.local"
+foreach ($Variable in @('VPS_HOST', 'VPS_USER', 'VPS_SSH_KEY', 'VPS_PUBLIC_URL')) {
+    if (-not [System.Environment]::GetEnvironmentVariable($Variable)) {
+        throw "Missing environment variable: $Variable"
     }
 }
 
-# Validate version format
-if ($Version -notmatch "^v\d+\.\d+\.\d+") {
-    throw "Version must match vX.Y.Z (got: $Version)"
-}
-
-Write-Host ""
-Write-Host "==> SpaceDrive Release $Version" -ForegroundColor Cyan
-Write-Host ""
-
-# Bump version in config.ini and spaceDrive.iss before building
-$BareVersion = $Version.TrimStart("v")
-
-$ConfigFile = Join-Path $RepoRoot "config.ini"
-$ConfigContent = Get-Content $ConfigFile -Raw
-$ConfigContent = $ConfigContent -replace "(?m)^app_version\s*=.*$", "app_version = $Version"
-# Use UTF-8 WITHOUT BOM -- PowerShell 5.1 Set-Content -Encoding utf8 writes BOM,
-# which breaks Python's configparser. Use .NET directly instead.
-[System.IO.File]::WriteAllText($ConfigFile, $ConfigContent, [System.Text.UTF8Encoding]::new($false))
-Write-Host "==> Bumped config.ini -> app_version = $Version"
-
-$IssFile = Join-Path $RepoRoot "installer\spaceDrive.iss"
-$IssContent = Get-Content $IssFile -Raw
-$IssContent = $IssContent -replace '#define MyAppVersion "[^"]*"', "#define MyAppVersion `"$BareVersion`""
-[System.IO.File]::WriteAllText($IssFile, $IssContent, [System.Text.UTF8Encoding]::new($false))
-Write-Host "==> Bumped spaceDrive.iss -> MyAppVersion = $BareVersion"
-
-# Step 1: Build
 if (-not $SkipBuild) {
-    Write-Host "--- Step 1/3: Build installer ---" -ForegroundColor Yellow
-    & (Join-Path $PSScriptRoot "build_installer.ps1") -Version $Version
-    if ($LASTEXITCODE -ne 0) { throw "Build failed" }
-} else {
-    Write-Host "--- Step 1/3: Build skipped (-SkipBuild) ---" -ForegroundColor DarkGray
+    & (Join-Path $PSScriptRoot 'build_installer.ps1') -Version $Version
+    if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
 }
+& python tools/versioning.py verify-build --version $Version --release
+if ($LASTEXITCODE -ne 0) { throw 'Installer/bundle do not match this clean committed version; rebuild' }
+& python tools/versioning.py release-preflight --version $Version
+if ($LASTEXITCODE -ne 0) { throw 'Sources changed during the release preparation' }
+$InstallerPath = Join-Path $RepoRoot "dist\SpaceDrive-Setup-$Version.exe"
 
-# Locate the produced installer
-$Installer = Get-ChildItem (Join-Path $RepoRoot "dist") -Filter "SpaceDrive-Setup-*.exe" |
-    Sort-Object LastWriteTime -Descending | Select-Object -First 1
-if (-not $Installer) { throw "No installer found in dist\ - run without -SkipBuild" }
-$SizeMB = [math]::Round($Installer.Length / 1MB, 1)
-Write-Host "==> Installer: $($Installer.Name) ($SizeMB MB)"
-
-# Step 2: Upload to VPS
-Write-Host ""
-Write-Host "--- Step 2/3: Upload to VPS ---" -ForegroundColor Yellow
-
-# If VPS_SSH_KEY is a file path, read its content
-$KeyValue = [System.Environment]::GetEnvironmentVariable("VPS_SSH_KEY")
-if (Test-Path $KeyValue) {
-    $KeyContent = Get-Content $KeyValue -Raw
-    [System.Environment]::SetEnvironmentVariable("VPS_SSH_KEY", $KeyContent, "Process")
-}
-
-$DistDir = Join-Path $RepoRoot "dist\spaceDrive"
-& python (Join-Path $PSScriptRoot "upload_vps.py") $Installer.FullName --dist-dir $DistDir
-if ($LASTEXITCODE -ne 0) { throw "VPS upload failed" }
-
-# Step 3: Git tag + GitHub Release
-Write-Host ""
-Write-Host "--- Step 3/3: Git tag + GitHub Release ---" -ForegroundColor Yellow
-
-# Create tag locally if missing
 if (-not (git tag --list $Version)) {
-    git tag $Version
-    Write-Host "==> Tag $Version created locally"
+    git tag -a $Version $Commit -m "SpaceDrive GPS $Version"
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot create release tag' }
+}
+if ($RemoteTags.Count -eq 0) {
+    git push origin "refs/tags/$Version"
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot push release tag' }
 }
 
-# Push tag if missing on remote
-$remoteTag = git ls-remote --tags origin "refs/tags/$Version"
-if (-not $remoteTag) {
-    git push origin $Version
-    if ($LASTEXITCODE -ne 0) { throw "Failed to push tag $Version" }
-    Write-Host "==> Tag $Version pushed to origin"
-} else {
-    Write-Host "==> Tag $Version already on origin"
+$PublicUrl = [System.Environment]::GetEnvironmentVariable('VPS_PUBLIC_URL').TrimEnd('/')
+$InstallerName = [System.IO.Path]::GetFileName($InstallerPath)
+$DownloadUrl = "$PublicUrl/$InstallerName"
+$NotesPath = Join-Path ([System.IO.Path]::GetTempPath()) ("spacedrive-release-" + [guid]::NewGuid().ToString() + '.md')
+try {
+    $Notes = "## Download`n`n**[$InstallerName]($DownloadUrl)**`n`nSource commit: $Commit`n"
+    [System.IO.File]::WriteAllText($NotesPath, $Notes, [System.Text.UTF8Encoding]::new($false))
+    if ($ExistingRelease -ne 'true') {
+        gh release create $Version --verify-tag --draft --title "SpaceDrive GPS $Version" --notes-file $NotesPath
+        if ($LASTEXITCODE -ne 0) { throw 'Cannot create GitHub release draft; VPS unchanged' }
+    }
+
+    $KeyValue = [System.Environment]::GetEnvironmentVariable('VPS_SSH_KEY')
+    if ($KeyValue -notmatch '-----BEGIN ' -and (Test-Path -LiteralPath $KeyValue)) {
+        [System.Environment]::SetEnvironmentVariable('VPS_SSH_KEY', (Get-Content -LiteralPath $KeyValue -Raw), 'Process')
+    }
+    & python tools/upload_vps.py $InstallerPath --dist-dir (Join-Path $RepoRoot 'dist\spaceDrive')
+    if ($LASTEXITCODE -ne 0) {
+        throw 'VPS publication failed. The GitHub release remains a draft; inspect the error before retrying.'
+    }
+    gh release edit $Version --draft=false
+    if ($LASTEXITCODE -ne 0) {
+        throw 'VPS publication succeeded, but GitHub remains a draft. Re-run this release to finish publication.'
+    }
+} finally {
+    if (Test-Path -LiteralPath $NotesPath) { Remove-Item -LiteralPath $NotesPath }
 }
-
-# Create GitHub Release
-$PublicUrl = [System.Environment]::GetEnvironmentVariable("VPS_PUBLIC_URL").TrimEnd("/")
-$DownloadUrl = "$PublicUrl/$($Installer.Name)"
-$ReleaseNotes = "## Download`n`n**[$($Installer.Name)]($DownloadUrl)**`n`nHosted on VPS."
-
-gh release create $Version `
-    --title "SpaceDrive GPS $Version" `
-    --generate-notes `
-    --notes $ReleaseNotes
-if ($LASTEXITCODE -ne 0) { throw "Failed to create GitHub Release for $Version" }
-
-Write-Host ""
-Write-Host "==> Release $Version published!" -ForegroundColor Green
-Write-Host "    Download: $DownloadUrl"
+Write-Host "Release $Version published from $Commit" -ForegroundColor Green
+Write-Host "Download: $DownloadUrl"
