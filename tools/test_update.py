@@ -120,7 +120,9 @@ def run_native(manager, action):
     ], capture_output=True, text=True, timeout=45,
         creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     if result.returncode:
-        raise AssertionError(f'Native {action} failed: {result.stdout}\n{result.stderr}')
+        log = manager.data_path / 'logs/update-helper.log'
+        details = log.read_text(encoding='utf-8-sig') if log.exists() else 'No helper log was created.'
+        raise AssertionError(f'Native {action} failed: {result.stdout}\n{result.stderr}\n{details}')
 
 
 def run_mode(mode):

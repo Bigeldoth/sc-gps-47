@@ -368,6 +368,27 @@ def test_powershell_applies_and_rolls_back_real_temp_files(manager, tmp_path, mo
 
 
 @NATIVE
+def test_powershell_accepts_windows_short_installation_paths(manager, tmp_path, monkeypatch):
+    """tempfile can return RUNNER~1 paths on hosted Windows build agents."""
+    import ctypes
+    plan = stage_plan(manager, make_delta(tmp_path / 'delta.zip'), monkeypatch)
+    short_buffer = ctypes.create_unicode_buffer(32768)
+    length = ctypes.windll.kernel32.GetShortPathNameW(
+        str(manager.install_path), short_buffer, len(short_buffer))
+    assert length
+    if short_buffer.value == str(manager.install_path):
+        pytest.skip('8.3 path aliases are disabled on this volume')
+    plan['app_dir'] = short_buffer.value
+    result = run_helper(manager, plan)
+    assert result.returncode == 0, result.stderr
+    assert (manager.install_path / 'app.txt').read_text() == 'updated'
+    plan['action'] = 'rollback'
+    result = run_helper(manager, plan)
+    assert result.returncode == 0, result.stderr
+    assert not (manager.install_path / 'app.txt').exists()
+
+
+@NATIVE
 def test_powershell_rejects_changed_staged_payload_without_mutation(manager, tmp_path, monkeypatch):
     plan = stage_plan(manager, make_delta(tmp_path / 'delta.zip'), monkeypatch)
     (Path(plan['extract_dir']) / 'FILES/app.txt').write_text('tampered')

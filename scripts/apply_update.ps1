@@ -159,9 +159,15 @@ function Validate-Plan {
     }
     foreach ($field in $expected.Keys) {
         if ([IO.Path]::GetFullPath($p.$field) -ne $expected[$field]) { throw "Unexpected plan path: $field" }
+        Set-Field $p $field $expected[$field]
     }
     Assert-NoReparse $appRoot
     Assert-NoReparse $dataRoot
+    # .NET Framework expands existing 8.3 aliases such as RUNNER~1. Retain
+    # those canonical roots for subsequent comparisons and ancestor traversal.
+    Set-Field $p 'app_dir' $appRoot
+    Set-Field $p 'data_dir' $dataRoot
+    Set-Field $p 'transaction_dir' $transaction
     $names = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
     foreach ($file in @($p.files)) {
         $name = Assert-InstallName $file.path
@@ -248,12 +254,16 @@ function Apply-Transaction {
         }
         $entries.Add($entry)
         $parent = [IO.Path]::GetDirectoryName($original)
-        while ($parent -ne $script:Plan.app_dir) {
+        while ($parent -and $parent -ne $script:Plan.app_dir) {
+            if (-not $parent.StartsWith($script:Plan.app_dir + '\', [StringComparison]::OrdinalIgnoreCase)) {
+                throw 'Created directory escaped the application root'
+            }
             if (-not [IO.Directory]::Exists($parent)) {
                 $null = $createdDirs.Add($parent.Substring($script:Plan.app_dir.Length + 1).Replace('\', '/'))
             }
             $parent = [IO.Path]::GetDirectoryName($parent)
         }
+        if (-not $parent) { throw 'Application root was not reached while tracking directories' }
     }
     $journal = [PSCustomObject]@{ ready = $true; entries = @($entries.ToArray()); created_dirs = @($createdDirs | Sort-Object { $_.Split('/').Count }, { $_ }) }
     Write-JsonAtomic $script:Plan.journal_file $journal
@@ -271,6 +281,8 @@ function Apply-Transaction {
         if ((Installed-Version) -ne $script:Plan.target_version) { throw 'Installed version verification failed' }
         Save-State 'completed'
     } catch {
+        $applyFailure = $_
+        Write-Log ('Apply failure: ' + $applyFailure.Exception.Message + "`n" + $applyFailure.ScriptStackTrace)
         $applyError = $_.Exception.Message
         try { Save-State 'failed' $applyError } catch { Write-Log 'Could not persist failure; restoring files' }
         try { Rollback-Transaction }
@@ -313,14 +325,19 @@ try {
     $notificationMessage = 'The update operation has finished. You can now start SpaceDrive GPS again.'
     exit 0
 } catch {
-    $notificationMessage = 'The update could not be completed: ' + $_.Exception.Message + "`n`nStart SpaceDrive GPS for recovery options, or use the full installer."
+    $helperFailure = $_
+    $failureMessage = $helperFailure.Exception.Message
+    Write-Log ('Helper failure: ' + $failureMessage + "`n" + $helperFailure.ScriptStackTrace)
+    $notificationMessage = 'The update could not be completed: ' + $failureMessage + "`n`nStart SpaceDrive GPS for recovery options, or use the full installer."
     if ($canWriteMetadata) {
         try {
             $state = (ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($script:Plan.metadata_file))).state
-            if ($state -notin @('rolled_back', 'rollback_failed')) { Save-State 'failed' $_.Exception.Message }
+            if ($state -notin @('rolled_back', 'rollback_failed')) { Save-State 'failed' $failureMessage }
         } catch { Write-Log ('Could not persist failure: ' + $_.Exception.Message) }
     }
-    Write-Error $_.Exception.Message
+    [Console]::Error.WriteLine($helperFailure.ToString())
+    [Console]::Error.WriteLine($helperFailure.ScriptStackTrace)
+    [Console]::Error.WriteLine($helperFailure.InvocationInfo.PositionMessage)
     exit 1
 } finally {
     if ($updateLock) { $updateLock.Dispose() }
