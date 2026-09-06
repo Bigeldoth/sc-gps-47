@@ -39,7 +39,19 @@ SpaceDrive continuously reads the coordinates displayed by the game's debug HUD 
 - **Tesseract OEM3 fallback** on 2 binary thresholding passes (Otsu / adaptive) in parallel, used for zone names and metadata. Skipped entirely once NCC reconstructs coordinates.
 - **Strict 3-4 decimal regex**: rejects degraded readings that caused ~17 m errors on saved POIs.
 - **Post-OCR normalization**: fixes common artifacts (`Pos:_`, variants `lkm/Km/kn`, parasitic underscores).
-- **Capture region**: 600×150 px top right (first 3 HUD lines are enough).
+- **Capture region**: 600×60 px at the top right of the capture monitor.
+- **Capture display**: choose **Options → General → Star Citizen display**, then
+  save to switch the capture monitor without restarting. The default follows the
+  primary display. Explicit choices are remembered by display identity rather
+  than list order. Use **Refresh displays** after changing your display setup.
+  If the selected display is unavailable, capture pauses until it reconnects or
+  you choose another display. Use fullscreen or borderless mode so the HUD is at
+  the top right of the selected display; window detection is not automatic.
+- **Capture debug outline**: enable **Options → Debug → Show capture region** and save
+  to show the actual OCR capture bounds. Disabled by default. The cyan outline
+  stays outside the captured pixels, passes clicks through, and never takes focus.
+  Edges outside the desktop are clipped. It follows the overlay visibility shortcut
+  and is hidden in screenshot test mode. Save the option unchecked to remove it.
 
 ### Navigation
 - **User POIs** stored in `%LOCALAPPDATA%\SpaceDrive\data\user_poi.json` — 8 community categories (hidden, cave, circuit, tactical, industry, logistics, loot, racing) shared with the SpaceDrive Community Hub.
@@ -56,6 +68,9 @@ SpaceDrive continuously reads the coordinates displayed by the game's debug HUD 
 - `WindowTransparentForInput` → never captures game mouse click.
 - `WindowStaysOnTopHint` → stays visible over Star Citizen.
 - Coordinate color progresses linearly with elapsed time since last valid OCR (dedicated 150 ms timer, independent of capture cycle).
+- **Support on Tipeee** in the system-tray menu or the red button with the Tipeee
+  logo in **Options → General** opens
+  [Bigeldoth's support page](https://fr.tipeee.com/bigeldoth/) in your default browser.
 
 ---
 
@@ -102,14 +117,19 @@ See [`docs/BUILD.md`](docs/BUILD.md) for the full build + Sandbox-test workflow.
 
 ---
 
-## Automatic updates
+## Application updates
 
-SpaceDrive includes a **delta update system** — only the files that changed between releases are downloaded (~1–6 MB instead of the full 70 MB installer).
+Open **Options → Updates → Check for Updates** to check for a release. Optional startup checks are disabled by default; enabling them only notifies you when a newer, unskipped version is available.
 
-- Open *Options → Updates → Check for Updates* at any time.
-- If a new version is available, click **Update Now** to download, verify (SHA-256), and apply the delta.
-- If the app is installed in `C:\Program Files\`, a UAC prompt will appear to authorize the write — the app then closes, applies the update, and restarts automatically.
-- Rolling back: the previous files are backed up before any write; if the apply fails, the backup is restored automatically.
+- **Update Now** downloads and verifies a differential package for the exact installed version. Other versions use **Download Installer**. Existing releases need the full installer once to acquire the corrected updater.
+- SpaceDrive GPS prepares the update, requests administrator permission when needed, and closes safely. A separate Windows helper replaces files after the application exits.
+- **Wait for the completion confirmation, then reopen SpaceDrive GPS.** Starting the helper does not mean installation has completed.
+- Replacements, additions and deletions are backed up or journaled. An application failure triggers restoration; an interrupted operation offers verified recovery actions or the full installer on the next launch.
+- Preferences and personal POIs are preserved. Update logs are in `%LOCALAPPDATA%\SpaceDrive\logs\`; a source checkout is never patched in place.
+
+See [the update audit](docs/UPDATE_AUDIT.md) for compatibility, validation and release details.
+
+Releases follow [Semantic Versioning](https://semver.org/): compatible features increment MINOR, corrections alone increment PATCH, and incompatible changes increment MAJOR. See [the project versioning policy](docs/VERSIONING.md).
 
 ---
 

@@ -26,13 +26,16 @@ a = Analysis(
         ('assets\\icon.png', 'assets'),
         ('assets\\spacedrive.ico', 'assets'),
         ('assets\\padek-theme.qss', 'assets'),  # Dark theme stylesheet
+        ('assets\\tipeee.svg', 'assets'),  # Support button logo
         # Default config (user override goes in %LOCALAPPDATA%\SpaceDrive\)
         ('config.ini', '.'),
+        ('VERSION', '.'),
         # Project license shown in About + by the installer
         ('LICENSE.txt', '.'),
         # Sidecar provisioners + worker (Engine Manager calls these post-install)
         ('scripts\\paddle_worker.py', 'scripts'),
         ('scripts\\install_paddle.ps1', 'scripts'),
+        ('scripts\\apply_update.ps1', 'scripts'),
     ],
     hiddenimports=[
         'mss',
@@ -50,6 +53,9 @@ a = Analysis(
         # First-party — make sure PyInstaller bundles them even if it
         # can't follow every dynamic import chain.
         'app_paths',
+        'app_version',
+        'update_manager',
+        'update_transaction',
         'ocr',
         'capture',
         'navigation',

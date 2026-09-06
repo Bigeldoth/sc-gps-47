@@ -1,36 +1,30 @@
-"""Update manager for automatic delta updates.
-
-Orchestrates version checking, delta download, apply, and rollback.
-Users can check for updates on-demand from the Options dialog.
-"""
-import hashlib
+"""Checked downloads, isolated staging and recoverable application updates."""
+from __future__ import annotations
+from contextlib import contextmanager
+from datetime import datetime, timezone
 import json
 import logging
+import os
+from pathlib import Path
 import shutil
 import ssl
 import subprocess
 import sys
+import urllib.parse
 import urllib.request
-import urllib.error
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Optional, Tuple
-
-from app_paths import install_dir, user_data_dir
-from config_manager import ConfigManager
+import uuid
+from app_paths import bundle_dir, install_dir, user_data_dir
+from update_transaction import (UpdateError, apply_transaction, atomic_json, extract_delta,
+    normalize_version, rollback_transaction, safe_child, sha256_file, valid_checksum, validate_plan)
 
 logger = logging.getLogger(__name__)
-
-RELEASES_BASE_URL = "https://padek-interactive.tech/releases"
-LATEST_JSON_URL = f"{RELEASES_BASE_URL}/latest.json"
-UPDATES_DIR = user_data_dir() / "updates"
-DOWNLOADS_DIR = UPDATES_DIR / "downloads"
-STAGING_DIR = UPDATES_DIR / "staging"
-METADATA_FILE = STAGING_DIR / "metadata.json"
+RELEASES_BASE_URL = 'https://padek-interactive.tech/releases'
+LATEST_JSON_URL = RELEASES_BASE_URL + '/latest.json'
+UPDATE_PENDING = 'pending_exit'
+UpdateCheckError = UpdateError
 
 
-def _make_ssl_context() -> ssl.SSLContext:
-    """Returns an SSLContext that works inside a PyInstaller bundle."""
+def _make_ssl_context():
     try:
         import certifi
         return ssl.create_default_context(cafile=certifi.where())
@@ -38,495 +32,505 @@ def _make_ssl_context() -> ssl.SSLContext:
         return ssl.create_default_context()
 
 
-def _download_file(url: str, dest: Path, on_progress=None) -> Tuple[bool, str]:
-    """Streams a URL to dest with progress callback. Returns (success, message)."""
+def _release_url(value, suffix):
+    if not isinstance(value, str):
+        raise UpdateError('Missing release download URL')
+    parsed = urllib.parse.urlsplit(value)
+    decoded = urllib.parse.unquote(parsed.path)
+    if (parsed.scheme != 'https' or parsed.hostname != 'padek-interactive.tech'
+            or parsed.port not in (None, 443) or parsed.username or parsed.password
+            or parsed.query or parsed.fragment or not decoded.startswith('/releases/')
+            or not decoded.lower().endswith(suffix) or '\\' in decoded
+            or any(part in ('', '.', '..') for part in decoded.split('/')[1:])):
+        raise UpdateError('Release download URL is not trusted')
+    return value
+
+
+def _download_file(url, dest, on_progress=None):
+    """Commit complete downloads atomically and remove partial transfers."""
+    dest = Path(dest)
+    partial = dest.with_name(f'.{dest.name}.{uuid.uuid4().hex}.part')
     try:
         dest.parent.mkdir(parents=True, exist_ok=True)
-        last_pct = -1
-        with urllib.request.urlopen(url, timeout=60, context=_make_ssl_context()) as resp:
-            total = int(resp.headers.get("Content-Length", 0))
-            written = 0
-            with open(dest, "wb") as fh:
-                while True:
-                    chunk = resp.read(64 * 1024)
-                    if not chunk:
-                        break
-                    fh.write(chunk)
+        with urllib.request.urlopen(url, timeout=60, context=_make_ssl_context()) as response:
+            _release_url(response.geturl(), '.zip')
+            total = int(response.headers.get('Content-Length', 0))
+            written, last_percent = 0, -1
+            with partial.open('xb') as stream:
+                while chunk := response.read(64 * 1024):
+                    stream.write(chunk)
                     written += len(chunk)
-                    if on_progress is not None and total > 0:
-                        pct = int(written * 100 / total)
-                        if pct != last_pct and pct % 5 == 0:
-                            on_progress(pct, written, total)
-                            last_pct = pct
-    except Exception as exc:
-        return False, f"download failed: {exc}"
-    return True, f"downloaded {dest.name}"
+                    if on_progress is not None and total:
+                        percent = min(100, written * 100 // total)
+                        if percent != last_percent:
+                            on_progress(percent, written, total)
+                            last_percent = percent
+                stream.flush()
+                os.fsync(stream.fileno())
+            if total and total != written:
+                raise UpdateError('Incomplete delta download')
+            os.replace(partial, dest)
+        return True, f'Downloaded {dest.name}'
+    except Exception as error:
+        return False, f'Download failed: {error}'
+    finally:
+        partial.unlink(missing_ok=True)
 
 
-def _version_normalize(v: str) -> str:
-    """Strip 'v' prefix and normalize version string (e.g., 'v0.8.0' -> '0.8.0')."""
-    return v.lstrip("v")
+def _version_normalize(value):
+    return normalize_version(value).removeprefix('v')
 
 
-def _version_compare(v1: str, v2: str) -> int:
-    """Compare two version strings. Returns -1 (v1 < v2), 0 (equal), +1 (v1 > v2)."""
+def _version_compare(first, second):
+    from packaging.version import Version
+    first, second = Version(_version_normalize(first)), Version(_version_normalize(second))
+    return (first > second) - (first < second)
+
+
+def _version_gte(first, second):
+    return _version_compare(first, second) >= 0
+
+
+def _is_writable(path):
+    probe = Path(path) / f'.spacedrive-probe-{uuid.uuid4().hex}'
     try:
-        from packaging.version import Version
-        ver1 = Version(_version_normalize(v1))
-        ver2 = Version(_version_normalize(v2))
-        if ver1 < ver2:
-            return -1
-        elif ver1 > ver2:
-            return 1
-        return 0
-    except Exception as exc:
-        logger.warning(f"version compare failed: {exc}; falling back to string compare")
-        v1_norm = _version_normalize(v1)
-        v2_norm = _version_normalize(v2)
-        if v1_norm < v2_norm:
-            return -1
-        elif v1_norm > v2_norm:
-            return 1
-        return 0
-
-
-def _version_gte(v1: str, v2: str) -> bool:
-    """Returns True if v1 >= v2."""
-    return _version_compare(v1, v2) >= 0
-
-
-def _is_writable(path: Path) -> bool:
-    """Return True if we can write a temp file inside path without elevation."""
-    probe = path / ".spacedrive_write_probe"
-    try:
-        probe.write_bytes(b"")
-        probe.unlink()
+        with probe.open('xb'):
+            pass
         return True
     except OSError:
         return False
+    finally:
+        if probe.exists():
+            probe.unlink()
 
 
 class UpdateMetadata:
-    """Tracks update state (in-progress, completed, failed)."""
+    """Durable status from the process that actually applies the update."""
+    def __init__(self, data=None):
+        self.data = dict(data or {})
 
-    def __init__(self, data: dict = None):
-        self.data = data or {}
+    def _property(key, default=''):
+        return property(lambda self: self.data.get(key, default),
+                        lambda self, value: self.data.__setitem__(key, value))
 
-    @property
-    def state(self) -> str:
-        return self.data.get("state", "unknown")
-
-    @state.setter
-    def state(self, value: str):
-        self.data["state"] = value
-
-    @property
-    def current_version(self) -> str:
-        return self.data.get("current_version", "")
-
-    @current_version.setter
-    def current_version(self, value: str):
-        self.data["current_version"] = value
+    state = _property('state', 'unknown')
+    current_version = _property('current_version')
+    target_version = _property('target_version')
+    backup_path = _property('backup_path')
 
     @property
-    def target_version(self) -> str:
-        return self.data.get("target_version", "")
+    def errors(self):
+        return self.data.get('errors', [])
 
-    @target_version.setter
-    def target_version(self, value: str):
-        self.data["target_version"] = value
+    def add_error(self, error):
+        self.data.setdefault('errors', []).append(str(error))
 
-    @property
-    def backup_path(self) -> str:
-        return self.data.get("backup_path", "")
+    def to_dict(self):
+        self.data['updated_at'] = datetime.now(timezone.utc).isoformat()
+        return dict(self.data)
 
-    @backup_path.setter
-    def backup_path(self, value: str):
-        self.data["backup_path"] = value
-
-    @property
-    def errors(self) -> list:
-        return self.data.get("errors", [])
-
-    def add_error(self, error: str):
-        if "errors" not in self.data:
-            self.data["errors"] = []
-        self.data["errors"].append(error)
-
-    def to_dict(self) -> dict:
-        self.data["updated_at"] = datetime.now(timezone.utc).isoformat()
-        return self.data
+    def save(self, path):
+        atomic_json(Path(path), self.to_dict())
 
     @classmethod
-    def from_file(cls, path: Path) -> Optional["UpdateMetadata"]:
-        """Load metadata from JSON file, or None if not found."""
+    def from_file(cls, path):
+        path = Path(path)
         if not path.exists():
             return None
         try:
-            with open(path, "r") as f:
-                data = json.load(f)
+            data = json.loads(path.read_text(encoding='utf-8-sig'))
+            if not isinstance(data, dict) or not isinstance(data.get('state'), str):
+                raise ValueError('Invalid update metadata')
             return cls(data)
-        except Exception as exc:
-            logger.warning(f"failed to load metadata: {exc}")
-            return None
-
-    def save(self, path: Path):
-        """Persist metadata to JSON file."""
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w") as f:
-            json.dump(self.to_dict(), f, indent=2)
+        except Exception as error:
+            return cls({'state': 'failed', 'corrupt_metadata': True,
+                        'errors': [f'Cannot read update recovery metadata: {error}']})
 
 
 class UpdateManager:
-    """Orchestrates version checking, delta download, apply, and rollback."""
-
-    def __init__(self, config_manager: ConfigManager, current_version: str):
+    def __init__(self, config_manager, current_version, *, install_path=None, data_path=None):
         self.config = config_manager
-        self.current_version = current_version
-        self.updates_dir = UPDATES_DIR
-        self.downloads_dir = DOWNLOADS_DIR
-        self.staging_dir = STAGING_DIR
-        self.metadata_file = METADATA_FILE
+        self.current_version = 'unknown' if current_version == 'unknown' else normalize_version(current_version)
+        self.install_path = Path(install_path if install_path is not None else install_dir()).absolute()
+        self.data_path = Path(data_path if data_path is not None else user_data_dir()).absolute()
+        self._explicit_install_path = install_path is not None
+        self.updates_dir = self.data_path / 'updates'
+        self.downloads_dir = self.updates_dir / 'downloads'
+        self.staging_dir = self.updates_dir / 'staging'
+        self.metadata_file = self.staging_dir / 'metadata.json'
+        self._verified_archives = {}
+        self._last_manifest = None
 
-    def check_for_update(self) -> Tuple[Optional[str], Optional[dict]]:
-        """Fetch latest.json and compare with current version.
-
-        Returns (new_version, latest_json) if update available, else (None, None).
-        """
+    def _fetch_latest(self):
         try:
-            with urllib.request.urlopen(
-                LATEST_JSON_URL, timeout=10, context=_make_ssl_context()
-            ) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-        except Exception as exc:
-            logger.error(f"failed to fetch latest.json: {exc}")
-            return None, None
+            with urllib.request.urlopen(LATEST_JSON_URL, timeout=15, context=_make_ssl_context()) as response:
+                _release_url(response.geturl(), '.json')
+                raw = response.read(1024 * 1024 + 1)
+            if len(raw) > 1024 * 1024:
+                raise UpdateError('Release manifest is too large')
+            manifest = json.loads(raw.decode('utf-8-sig'))
+            if not isinstance(manifest, dict):
+                raise UpdateError('Invalid release manifest')
+            normalize_version(manifest.get('version'))
+            self.get_full_installer_url(manifest)
+            self._last_manifest = manifest
+            return manifest
+        except Exception as error:
+            raise UpdateError(f'Could not check for updates: {error}') from error
 
-        new_version = data.get("version")
-        if not new_version:
-            logger.warning("latest.json has no 'version' field")
-            return None, None
+    def check_for_update(self):
+        manifest = self._fetch_latest()
+        version = normalize_version(manifest['version'])
+        return (version, manifest) if self.current_version == 'unknown' or _version_compare(version, self.current_version) > 0 else (None, None)
 
-        if _version_compare(new_version, self.current_version) > 0:
-            logger.info(f"update available: {self.current_version} -> {new_version}")
-            return new_version, data
-        else:
-            logger.info(f"already up-to-date: {self.current_version}")
-            return None, None
+    def get_full_installer_url(self, manifest):
+        return _release_url(manifest.get('url'), '.exe')
 
-    def can_apply_delta(self, latest_json: dict) -> bool:
-        """Check if delta is available and compatible with current version."""
-        delta_info = latest_json.get("delta", {})
-        if not delta_info.get("available"):
-            return False
-        min_version = delta_info.get("min_version")
-        if not min_version:
-            return False
-        return _version_gte(self.current_version, min_version)
+    def get_delta_info(self, manifest):
+        """Use the new field; old applications see delta.available=false."""
+        try:
+            target = normalize_version(manifest['version'])
+            info = manifest.get('delta_v2', manifest.get('delta', {}))
+            if not isinstance(info, dict) or info.get('available') is not True:
+                return {}
+            source = normalize_version(info.get('from_version', info.get('min_version')))
+            if (source != self.current_version or _version_compare(target, source) <= 0
+                    or normalize_version(info.get('to_version', target)) != target
+                    or not valid_checksum(info.get('checksum'))):
+                return {}
+            _release_url(info.get('url'), '.zip')
+            return dict(info)
+        except (KeyError, TypeError, ValueError, UpdateError):
+            return {}
 
-    def download_delta(
-        self, url: str, target_version: str, on_progress=None
-    ) -> Optional[Path]:
-        """Download delta .zip to updates/downloads/. Returns path, or None on failure."""
-        filename = f"SpaceDrive-delta-{self.current_version}-to-{target_version}.zip"
-        dest = self.downloads_dir / filename
-        success, msg = _download_file(url, dest, on_progress=on_progress)
+    def can_apply_delta(self, manifest):
+        return bool(self.get_delta_info(manifest))
+
+    def set_update_manifest(self, manifest):
+        """Carry validated release metadata across the UI's download/apply workers."""
+        normalize_version(manifest.get('version'))
+        self.get_full_installer_url(manifest)
+        self._last_manifest = dict(manifest)
+
+    def get_recovery_installer_url(self, metadata=None):
+        metadata = metadata or UpdateMetadata.from_file(self.metadata_file)
+        if metadata and metadata.data.get('installer_url'):
+            return _release_url(metadata.data['installer_url'], '.exe')
+        return self.get_full_installer_url(self._last_manifest or self._fetch_latest())
+
+    def download_delta(self, url, target_version, on_progress=None):
+        target = normalize_version(target_version)
+        _release_url(url, '.zip')
+        if _version_compare(target, self.current_version) <= 0:
+            raise UpdateError('Delta target must be newer than the installed version')
+        destination = self.downloads_dir / f'SpaceDrive-delta-{self.current_version}-to-{target}.zip'
+        success, message = _download_file(url, destination, on_progress)
         if not success:
-            logger.error(f"delta download failed: {msg}")
+            logger.error(message)
             return None
-        logger.info(f"delta downloaded: {dest}")
-        return dest
+        return destination
 
-    def verify_delta(self, zip_path: Path, expected_checksum: str) -> bool:
-        """Verify zip integrity via SHA256."""
+    def verify_delta(self, archive, expected_checksum):
+        if not valid_checksum(expected_checksum):
+            return False
         try:
-            sha256_hash = hashlib.sha256()
-            with open(zip_path, "rb") as f:
-                while chunk := f.read(8192):
-                    sha256_hash.update(chunk)
-            computed = sha256_hash.hexdigest()
-            if computed != expected_checksum:
-                logger.error(
-                    f"checksum mismatch: expected {expected_checksum}, got {computed}"
-                )
+            archive = Path(archive).resolve()
+            if sha256_file(archive) != expected_checksum.lower():
                 return False
-            logger.info(f"delta verified: {zip_path.name}")
+            self._verified_archives[str(archive)] = expected_checksum.lower()
             return True
-        except Exception as exc:
-            logger.error(f"delta verification failed: {exc}")
+        except OSError:
             return False
 
-    def apply_delta(
-        self, target_version: str, zip_path: Path
-    ) -> Tuple[bool, str]:
-        """Extract delta, back up current files, apply changes.
+    def _read_plan(self, metadata=None):
+        metadata = metadata or UpdateMetadata.from_file(self.metadata_file)
+        if not metadata or metadata.data.get('corrupt_metadata'):
+            raise UpdateError('No valid update recovery metadata')
+        plan_path = safe_child(self.staging_dir, metadata.data.get('plan_path', ''))
+        if not valid_checksum(metadata.data.get('plan_sha256')) or sha256_file(plan_path) != metadata.data['plan_sha256']:
+            raise UpdateError('Update plan integrity check failed')
+        plan = json.loads(plan_path.read_text(encoding='utf-8-sig'))
+        validate_plan(plan)
+        if Path(plan['app_dir']) != self.install_path or Path(plan['data_dir']) != self.data_path:
+            raise UpdateError('Update plan belongs to another installation')
+        return plan
 
-        Returns (success, message). On failure, automatically rollback.
-        """
-        import zipfile
-
-        # Initialize metadata
-        metadata = UpdateMetadata()
-        metadata.state = "in_progress"
-        metadata.current_version = self.current_version
-        metadata.target_version = target_version
-        backup_dir_name = f"backup_v{self.current_version}"
-        metadata.backup_path = backup_dir_name
-        self.metadata_file.parent.mkdir(parents=True, exist_ok=True)
+    def _save_plan(self, plan, metadata):
+        path = Path(plan['transaction_dir']) / f'plan-{uuid.uuid4().hex}.json'
+        atomic_json(path, plan)
+        metadata.data['plan_path'] = path.relative_to(self.staging_dir).as_posix()
+        metadata.data['plan_sha256'] = sha256_file(path)
         metadata.save(self.metadata_file)
+        return path
 
-        try:
-            # Phase 1: Extract delta to staging
-            extract_dir = self.staging_dir / "extract"
-            if extract_dir.exists():
-                shutil.rmtree(extract_dir)
-            extract_dir.mkdir(parents=True, exist_ok=True)
+    @contextmanager
+    def _preparation_lock(self):
+        """Serialize checks, staging and launch across application instances.
 
-            with zipfile.ZipFile(zip_path, "r") as zf:
-                zf.extractall(extract_dir)
-            logger.info(f"delta extracted to {extract_dir}")
-
-            # Phase 2: Find FILES directory
-            files_dir = extract_dir / "FILES"
-            if not files_dir.exists():
-                raise ValueError(f"delta zip missing FILES/ directory")
-
-            # Phase 3: Verify checksums
-            checksum_file = extract_dir / "checksum.sha256"
-            if checksum_file.exists():
-                with open(checksum_file, "r") as f:
-                    checksums = {}
-                    for line in f:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        parts = line.split(None, 1)
-                        if len(parts) == 2:
-                            checksum, path = parts
-                            checksums[path] = checksum
-
-                for file_path in files_dir.rglob("*"):
-                    if not file_path.is_file():
-                        continue
-                    rel_path = str(file_path.relative_to(files_dir))
-                    if rel_path in checksums:
-                        sha256_hash = hashlib.sha256()
-                        with open(file_path, "rb") as f:
-                            while chunk := f.read(8192):
-                                sha256_hash.update(chunk)
-                        computed = sha256_hash.hexdigest()
-                        if computed != checksums[rel_path]:
-                            raise ValueError(f"checksum mismatch for {rel_path}")
-                logger.info("all delta files verified")
-
-            # Phase 4: Determine app install directory
-            app_dir = install_dir()
-            if not app_dir.exists():
-                raise ValueError(f"app install directory not found: {app_dir}")
-
-            # If the install dir is not writable (e.g. C:\Program Files), use UAC elevation.
-            if not _is_writable(app_dir):
-                logger.info(f"install dir not writable, requesting elevation: {app_dir}")
-                ok, elev_msg = self._apply_with_elevation(
-                    files_dir, app_dir,
-                    extract_dir / "DELETED.txt",
-                )
-                metadata.state = "completed" if ok else "failed"
-                metadata.save(self.metadata_file)
-                if ok:
-                    return True, "ELEVATION_REQUIRED"
-                return False, elev_msg
-
-            # Phase 5: Back up files that will be replaced
-            backup_dir = self.staging_dir / backup_dir_name
-            if backup_dir.exists():
-                shutil.rmtree(backup_dir)
-            backup_dir.mkdir(parents=True, exist_ok=True)
-
-            for file_path in files_dir.rglob("*"):
-                if not file_path.is_file():
-                    continue
-                rel_path = file_path.relative_to(files_dir)
-                original = app_dir / rel_path
-                if original.exists():
-                    backup_file = backup_dir / rel_path
-                    backup_file.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(original, backup_file)
-            logger.info(f"files backed up to {backup_dir}")
-
-            # Phase 6: Copy new files into app directory
-            for file_path in files_dir.rglob("*"):
-                if not file_path.is_file():
-                    continue
-                rel_path = file_path.relative_to(files_dir)
-                dest = app_dir / rel_path
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(file_path, dest)
-            logger.info("delta files applied")
-
-            # Phase 7: Handle deleted files
-            deleted_file = extract_dir / "DELETED.txt"
-            if deleted_file.exists():
-                with open(deleted_file, "r") as f:
-                    for line in f:
-                        line = line.strip()
-                        if line:
-                            to_delete = app_dir / line
-                            if to_delete.exists():
-                                to_delete.unlink()
-                                logger.info(f"deleted: {line}")
-
-            # Phase 8: Mark complete
-            metadata.state = "completed"
-            metadata.save(self.metadata_file)
-
-            # Phase 9: Clean up extraction
-            shutil.rmtree(extract_dir)
-            logger.info("delta apply succeeded")
-            return True, f"Update to {target_version} applied successfully"
-
-        except Exception as exc:
-            logger.error(f"delta apply failed: {exc}")
-            metadata.add_error(str(exc))
-            metadata.state = "failed"
-            metadata.save(self.metadata_file)
-            # Attempt rollback
-            rollback_ok, rollback_msg = self.rollback(self.current_version)
-            if rollback_ok:
-                return False, f"Delta apply failed ({exc}). Rolled back: {rollback_msg}"
-            else:
-                return False, f"Delta apply failed ({exc}). Rollback also failed: {rollback_msg}"
-
-    def _apply_with_elevation(
-        self, files_dir: Path, app_dir: Path, deleted_file: Path
-    ) -> Tuple[bool, str]:
-        """Write a PS1 apply script and launch it with UAC elevation.
-
-        Returns (True, '') if the elevated process was launched successfully,
-        (False, reason) if the user cancelled UAC or launch failed.
+        The helper owns a different lock, so it can start while the parent is
+        finishing preparation and still wait for that parent's normal shutdown.
         """
-        import sys  # belt-and-suspenders: also imported at module level
-        if sys.platform != "win32":
-            return False, "elevation only supported on Windows"
+        self.updates_dir.mkdir(parents=True, exist_ok=True)
+        path = safe_child(self.updates_dir, 'prepare.lock')
+        stream = path.open('a+b')
+        acquired = False
+        try:
+            try:
+                if sys.platform == 'win32':
+                    import msvcrt
+                    stream.seek(0)
+                    msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+            except OSError as error:
+                raise UpdateError('Another update operation is being prepared. Try again shortly.') from error
+            yield
+        finally:
+            if acquired:
+                if sys.platform == 'win32':
+                    import msvcrt
+                    stream.seek(0)
+                    msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(stream, fcntl.LOCK_UN)
+            stream.close()
 
+    def apply_delta(self, target_version, zip_path, *, expected_checksum=None):
+        try:
+            with self._preparation_lock():
+                return self._apply_delta_locked(target_version, zip_path, expected_checksum=expected_checksum)
+        except (UpdateError, OSError) as error:
+            return False, str(error)
+
+    def _apply_delta_locked(self, target_version, zip_path, *, expected_checksum=None):
+        if not getattr(sys, 'frozen', False) and not self._explicit_install_path:
+            return False, 'Use the packaged application or the full installer to apply updates.'
+        if self.is_update_running() or self.detect_incomplete_update():
+            return False, 'Resolve the previous update before starting another update.'
+        try:
+            target = normalize_version(target_version)
+            if _version_compare(target, self.current_version) <= 0:
+                raise UpdateError('Delta target must be newer than the installed version')
+            archive = Path(zip_path).resolve()
+            checksum = expected_checksum or self._verified_archives.get(str(archive))
+            if not checksum or not self.verify_delta(archive, checksum):
+                raise UpdateError('Delta archive must pass its release SHA256 check before applying')
+            transaction = self.staging_dir / uuid.uuid4().hex
+            files, deleted = extract_delta(archive, transaction / 'extract', self.current_version, target)
+            plan = {
+                'schema_version': 1, 'action': 'apply', 'current_version': self.current_version,
+                'target_version': target, 'app_dir': str(self.install_path), 'data_dir': str(self.data_path),
+                'transaction_dir': str(transaction), 'extract_dir': str(transaction / 'extract'),
+                'backup_dir': str(transaction / 'backup'), 'journal_file': str(transaction / 'journal.json'),
+                'metadata_file': str(self.metadata_file), 'files': files, 'deleted': deleted,
+                'archive_sha256': checksum, 'parent_pid': os.getpid(),
+                'parent_started_filetime': self._process_start_filetime(), 'wait_timeout_seconds': 180,
+                'notify_user': bool(getattr(sys, 'frozen', False)),
+            }
+            validate_plan(plan)
+            metadata = UpdateMetadata({'state': 'prepared', 'current_version': self.current_version,
+                'target_version': target, 'backup_path': str(transaction / 'backup'), 'errors': [],
+                'installer_url': self.get_full_installer_url(self._last_manifest) if self._last_manifest else ''})
+            self._save_plan(plan, metadata)
+            return self._execute_plan(plan, metadata)
+        except Exception as error:
+            logger.error('Update preparation failed: %s', error)
+            return False, str(error)
+
+    @staticmethod
+    def _process_start_filetime():
+        if sys.platform != 'win32':
+            return 0
         import ctypes
+        from ctypes import wintypes
+        created, exited, kernel, user = (wintypes.FILETIME() for _ in range(4))
+        api = ctypes.WinDLL('kernel32', use_last_error=True)
+        api.GetCurrentProcess.restype = wintypes.HANDLE
+        api.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
+        if not api.GetProcessTimes(api.GetCurrentProcess(), ctypes.byref(created), ctypes.byref(exited), ctypes.byref(kernel), ctypes.byref(user)):
+            raise UpdateError('Cannot identify the application process')
+        return (created.dwHighDateTime << 32) | created.dwLowDateTime
 
-        deleted_arg = str(deleted_file) if deleted_file.exists() else ""
-        app_exe = str(Path(sys.executable).resolve())
-        script_path = self.staging_dir / "apply_update.ps1"
+    def _launch_helper(self, plan_path, plan_sha256, transaction):
+        """A successfully started helper is pending, never completed."""
+        if sys.platform != 'win32':
+            raise UpdateError('Packaged updates currently require Windows')
+        source = bundle_dir() / 'scripts' / 'apply_update.ps1'
+        writable = _is_writable(self.install_path)
+        if writable:
+            helper = Path(transaction) / 'apply_update.ps1'
+            shutil.copy2(source, helper)
+        else:
+            # An elevated process must never execute a script from user-writable
+            # staging. PowerShell parses the protected installed script in memory.
+            try:
+                relative = source.absolute().relative_to(self.install_path).as_posix()
+                helper = safe_child(self.install_path, relative)
+            except ValueError as error:
+                raise UpdateError('Cannot locate a protected updater. Use the full installer.') from error
+            if _is_writable(helper.parent):
+                raise UpdateError('Updater script is not protected. Use the full installer.')
+        command = ['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+            '-WindowStyle', 'Hidden', '-File', str(helper), '-PlanPath', str(plan_path), '-PlanSha256', plan_sha256]
+        if writable:
+            process = subprocess.Popen(command, creationflags=subprocess.CREATE_NO_WINDOW,
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return process.pid
+        import ctypes
+        result = ctypes.windll.shell32.ShellExecuteW(None, 'runas', command[0],
+            subprocess.list2cmdline(command[1:]), str(transaction), 0)
+        if result <= 32:
+            raise UpdateError('Update elevation was cancelled or could not start')
+        return None
 
-        # ASCII-only PS1 — Unicode chars break cp1252 parsing
-        ps1 = (
-            "param(\n"
-            "    [string]$FilesDir,\n"
-            "    [string]$AppDir,\n"
-            "    [string]$AppExe,\n"
-            "    [string]$DeletedFile\n"
-            ")\n\n"
-            "$timeout = 15\n"
-            "$elapsed = 0\n"
-            "while ($elapsed -lt $timeout) {\n"
-            "    $running = Get-Process -Name 'spaceDrive' -ErrorAction SilentlyContinue\n"
-            "    if (-not $running) { break }\n"
-            "    Start-Sleep -Seconds 1\n"
-            "    $elapsed++\n"
-            "}\n\n"
-            "$filesDirFull = (Resolve-Path $FilesDir).Path.TrimEnd('\\')\n"
-            "Get-ChildItem -Path $filesDirFull -Recurse -File | ForEach-Object {\n"
-            "    $rel = $_.FullName.Substring($filesDirFull.Length + 1)\n"
-            "    $dest = Join-Path $AppDir $rel\n"
-            "    $destDir = Split-Path -Parent $dest\n"
-            "    if (-not (Test-Path $destDir)) {\n"
-            "        New-Item -ItemType Directory -Force -Path $destDir | Out-Null\n"
-            "    }\n"
-            "    Copy-Item -Force -Path $_.FullName -Destination $dest\n"
-            "}\n\n"
-            "if ($DeletedFile -and (Test-Path $DeletedFile)) {\n"
-            "    Get-Content $DeletedFile | Where-Object { $_.Trim() -ne '' } | ForEach-Object {\n"
-            "        $toDelete = Join-Path $AppDir $_.Trim()\n"
-            "        if (Test-Path $toDelete) {\n"
-            "            Remove-Item -Force $toDelete -ErrorAction SilentlyContinue\n"
-            "        }\n"
-            "    }\n"
-            "}\n\n"
-            "if (Test-Path $AppExe) {\n"
-            "    Start-Process -FilePath $AppExe\n"
-            "}\n"
-        )
-        script_path.write_text(ps1, encoding="utf-8")
-
-        args = (
-            f'-ExecutionPolicy Bypass -WindowStyle Hidden -File "{script_path}" '
-            f'-FilesDir "{files_dir}" '
-            f'-AppDir "{app_dir}" '
-            f'-AppExe "{app_exe}" '
-            f'-DeletedFile "{deleted_arg}"'
-        )
-        ret = ctypes.windll.shell32.ShellExecuteW(
-            None, "runas", "powershell.exe", args, None, 0
-        )
-        if ret <= 32:
-            logger.error(f"ShellExecuteW elevation failed: code {ret}")
-            return False, f"UAC elevation failed or was cancelled (code {ret})"
-        logger.info("elevated apply script launched")
-        return True, ""
-
-    def rollback(self, current_version: str) -> Tuple[bool, str]:
-        """Restore from backup if apply failed."""
-        backup_dir_name = f"backup_v{current_version}"
-        backup_dir = self.staging_dir / backup_dir_name
-        if not backup_dir.exists():
-            return False, "no backup found"
-
+    def _execute_plan(self, plan, metadata):
+        if self.is_update_running(metadata):
+            return False, 'An update helper is still running. Wait for its result before recovering.'
+        if getattr(sys, 'frozen', False):
+            metadata.state = 'pending'
+            metadata.data['launch_requested_at'] = datetime.now(timezone.utc).isoformat()
+            plan['parent_pid'] = os.getpid()
+            plan['parent_started_filetime'] = self._process_start_filetime()
+            path = self._save_plan(plan, metadata)
+            try:
+                self._launch_helper(path, metadata.data['plan_sha256'], plan['transaction_dir'])
+            except Exception as error:
+                metadata.state = 'failed'
+                metadata.add_error(error)
+                metadata.save(self.metadata_file)
+                return False, str(error)
+            return True, UPDATE_PENDING
+        if not self._explicit_install_path:
+            return False, 'Direct source-tree updates are disabled.'
         try:
-            app_dir = install_dir()
-            for backup_file in backup_dir.rglob("*"):
-                if not backup_file.is_file():
-                    continue
-                rel_path = backup_file.relative_to(backup_dir)
-                original = app_dir / rel_path
-                original.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(backup_file, original)
-            logger.info(f"rolled back to {current_version}")
-            # Mark metadata as rolled back
-            metadata = UpdateMetadata()
-            metadata.state = "rolled_back"
-            metadata.current_version = current_version
-            metadata.save(self.metadata_file)
-            return True, f"Rolled back to {current_version}"
-        except Exception as exc:
-            logger.error(f"rollback failed: {exc}")
-            return False, str(exc)
+            if plan['action'] == 'rollback':
+                rollback_transaction(plan)
+                return True, f'Rolled back to {plan["current_version"]}'
+            apply_transaction(plan)
+            return True, f'Update to {plan["target_version"]} applied successfully'
+        except Exception as error:
+            current = UpdateMetadata.from_file(self.metadata_file) or metadata
+            if current.state not in ('rolled_back', 'rollback_failed'):
+                current.state = 'failed'
+                current.add_error(error)
+                current.save(self.metadata_file)
+            return False, str(error)
 
-    def cleanup_old_deltas(self, keep_count: int = 3) -> None:
-        """Prune old delta downloads and staging dirs, keeping the most recent."""
-        if not self.downloads_dir.exists():
-            return
-        try:
-            deltas = sorted(
-                [f for f in self.downloads_dir.iterdir() if f.suffix == ".zip"],
-                key=lambda x: x.stat().st_mtime,
-                reverse=True,
-            )
-            for delta in deltas[keep_count:]:
-                delta.unlink()
-                logger.info(f"cleaned up old delta: {delta.name}")
-
-            # Clean staging directory
-            if self.staging_dir.exists():
-                staging_dirs = [
-                    d for d in self.staging_dir.iterdir()
-                    if d.is_dir() and d.name.startswith("backup_")
-                ]
-                for staging_dir in staging_dirs[keep_count:]:
-                    shutil.rmtree(staging_dir)
-                    logger.info(f"cleaned up old staging: {staging_dir.name}")
-        except Exception as exc:
-            logger.warning(f"cleanup failed: {exc}")
-
-    def detect_incomplete_update(self) -> Optional[UpdateMetadata]:
-        """Check if there's an incomplete update (in_progress state)."""
+    def detect_incomplete_update(self):
         metadata = UpdateMetadata.from_file(self.metadata_file)
-        if metadata and metadata.state == "in_progress":
+        if metadata and metadata.state in ('prepared', 'pending', 'in_progress', 'applying', 'rolling_back', 'failed', 'rollback_failed'):
             return metadata
         return None
+
+    detect_interrupted_update = detect_incomplete_update
+
+    def is_update_running(self, metadata=None):
+        """Probe the helper's exclusive lock before touching any recovery metadata."""
+        lock = self.updates_dir / 'apply.lock'
+        if lock.exists():
+            try:
+                with lock.open('a+b'):
+                    pass
+            except OSError:
+                return True
+        metadata = metadata or UpdateMetadata.from_file(self.metadata_file)
+        if metadata and metadata.state == 'pending' and metadata.data.get('launch_requested_at'):
+            try:
+                age = (datetime.now(timezone.utc) - datetime.fromisoformat(metadata.data['launch_requested_at'])).total_seconds()
+                # Cover the small interval between process creation and lock acquisition.
+                if age < 10:
+                    return True
+            except (TypeError, ValueError):
+                return True
+        return False
+
+    def can_resume_interrupted_update(self, metadata):
+        try:
+            if self.is_update_running(metadata):
+                return False
+            plan = self._read_plan(metadata)
+            return all(sha256_file(safe_child(Path(plan['extract_dir']) / 'FILES', item['path'])) == item['sha256'] for item in plan['files'])
+        except Exception:
+            return False
+
+    def can_rollback_interrupted_update(self, metadata):
+        try:
+            if self.is_update_running(metadata):
+                return False
+            plan = self._read_plan(metadata)
+            journal = json.loads(Path(plan['journal_file']).read_text(encoding='utf-8-sig'))
+            if not journal.get('ready'):
+                return False
+            expected = {item['path'] for item in plan['files']} | set(plan['deleted'])
+            if {item['path'] for item in journal['entries']} != expected:
+                return False
+            for item in journal['entries']:
+                if item['existed']:
+                    saved = safe_child(Path(plan['backup_dir']), item['path'])
+                    if not valid_checksum(item.get('sha256')) or sha256_file(saved) != item['sha256']:
+                        return False
+            return True
+        except Exception:
+            return False
+
+    def resume_interrupted_update(self):
+        try:
+            with self._preparation_lock():
+                return self._resume_interrupted_update_locked()
+        except (UpdateError, OSError) as error:
+            return False, str(error)
+
+    def _resume_interrupted_update_locked(self):
+        metadata = self.detect_incomplete_update()
+        if not metadata or not self.can_resume_interrupted_update(metadata):
+            return False, 'The staged update is unavailable or invalid. Use the full installer.'
+        plan = self._read_plan(metadata)
+        plan['action'] = 'apply'
+        metadata.data['result_acknowledged'] = False
+        return self._execute_plan(plan, metadata)
+
+    def rollback_interrupted_update(self):
+        try:
+            with self._preparation_lock():
+                return self._rollback_interrupted_update_locked()
+        except (UpdateError, OSError) as error:
+            return False, str(error)
+
+    def _rollback_interrupted_update_locked(self):
+        metadata = UpdateMetadata.from_file(self.metadata_file)
+        if not metadata or not self.can_rollback_interrupted_update(metadata):
+            return False, 'No verified backup is available. Use the full installer.'
+        plan = self._read_plan(metadata)
+        plan['action'] = 'rollback'
+        metadata.data['result_acknowledged'] = False
+        return self._execute_plan(plan, metadata)
+
+    def rollback(self, current_version):
+        normalize_version(current_version)
+        return self.rollback_interrupted_update()
+
+    def get_last_update_result(self):
+        metadata = UpdateMetadata.from_file(self.metadata_file)
+        if (metadata and metadata.state in ('completed', 'rolled_back', 'failed', 'rollback_failed')
+                and not metadata.data.get('result_acknowledged')):
+            return metadata
+        return None
+
+    def acknowledge_update_result(self):
+        metadata = UpdateMetadata.from_file(self.metadata_file)
+        if metadata:
+            metadata.data['result_acknowledged'] = True
+            metadata.save(self.metadata_file)
+
+    def cleanup_old_deltas(self, keep_count=3):
+        if not self.downloads_dir.exists():
+            return
+        keep_count = max(1, int(keep_count))
+        files = sorted((path for path in self.downloads_dir.glob('*.zip') if path.is_file() and not path.is_symlink()),
+            key=lambda path: path.stat().st_mtime, reverse=True)
+        for path in files[keep_count:]:
+            safe_child(self.downloads_dir, path.name).unlink()
+        # Keep journals/backups until an explicit recovery or maintenance action.

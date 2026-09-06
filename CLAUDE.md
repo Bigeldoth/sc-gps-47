@@ -169,8 +169,9 @@ If unsure, always ask before pushing to `main`. The cost of asking is low; the c
 5. Never merge or push to `main` directly
 
 ## Release workflow
-- Releases are **local**, not CI: `.\tools\release.ps1 -Version vX.Y.Z` chains build → SFTP upload to the VPS → git tag → GitHub Release.
-- Bump `MyAppVersion` in `installer/spaceDrive.iss` to match the tag before releasing.
+- Follow [the SemVer policy](docs/VERSIONING.md): incompatible changes require MAJOR, compatible new features require MINOR, and fixes alone require PATCH. Assess every change since the last published release, including features already on staging.
+- `VERSION` is authoritative. Run `python tools/versioning.py sync --version vX.Y.Z`, check the mirrors and commit before building. Build/release commands never silently increment versions.
+- Releases are **local**, not CI: `.\tools\release.ps1 -Version vX.Y.Z` validates the clean source/build, prepares the tag and draft, atomically publishes verified VPS artifacts, then publishes the GitHub draft.
 - The VPS hosts installers at `https://padek-interactive.tech/releases/` and a `latest.json` pointer; the 5 most recent versions are kept (older auto-pruned).
 - CI (`.github/workflows/build.yml`) only runs on PRs as a smoke-test build — no upload, no artifact (keeps the free-plan storage quota clean).
 - VPS credentials live in a gitignored `.env.local` at the repo root (see `docs/BUILD.md`).

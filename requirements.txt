@@ -4,7 +4,7 @@
 # Options → Manage engines… dialog or scripts/install_paddle.ps1.
 
 # Screen capture
-mss>=9.0.0
+mss>=10.2.0,<11
 
 # Numerical computation + image processing.
 # Versions are aligned with PaddleOCR 3.5's pins so that installing Paddle

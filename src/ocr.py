@@ -648,6 +648,13 @@ class OCRProcessor:
         # reused across the parallel Tesseract passes in _ocr_single_pass.
         self._frame_ncc_coords = None
 
+    def reset_capture_state(self):
+        """Discard frame caches when the capture source changes, keeping engines loaded."""
+        self._last_frame_hash = None
+        self._last_result = None
+        self._enhanced_image = None
+        self._frame_ncc_coords = None
+
     def _build_glyph_classifier(self, onnx_model_path, onnx_classes_path, onnx_threshold):
         """Builds the classification callable (classify_batch signature)."""
         if self.glyph_engine == "onnx":

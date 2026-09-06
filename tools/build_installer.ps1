@@ -25,22 +25,39 @@ $ErrorActionPreference = "Stop"
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $RepoRoot
 
+$VersionArgs = @()
+if ($Version) { $VersionArgs = @('--version', $Version) }
+& python tools/versioning.py check @VersionArgs
+if ($LASTEXITCODE -ne 0) { throw 'Version declarations are inconsistent' }
+$Version = (& python tools/versioning.py show).Trim()
+if ($LASTEXITCODE -ne 0) { throw 'Cannot read application version' }
+
 Write-Host "==> Repo root: $RepoRoot" -ForegroundColor Cyan
 
 if ($Clean) {
     foreach ($dir in @("dist", "build")) {
-        $path = Join-Path $RepoRoot $dir
-        if (Test-Path $path) {
+        $path = [System.IO.Path]::GetFullPath((Join-Path $RepoRoot $dir))
+        if (-not $path.StartsWith($RepoRoot + [System.IO.Path]::DirectorySeparatorChar)) {
+            throw 'Clean target must remain inside the repository'
+        }
+        if (Test-Path -LiteralPath $path) {
             Write-Host "==> Cleaning $path"
-            Remove-Item -Recurse -Force $path
+            Remove-Item -LiteralPath $path -Recurse -Force
         }
     }
 }
 
 if (-not $SkipPyInstaller) {
+    & python tools/versioning.py snapshot-build --version $Version
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot record build inputs' }
     Write-Host "==> Running PyInstaller (one-folder bundle)" -ForegroundColor Cyan
     & python -m PyInstaller --clean --noconfirm spaceDrive.spec
     if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed (exit $LASTEXITCODE)" }
+    & python tools/versioning.py record-bundle --version $Version
+    if ($LASTEXITCODE -ne 0) { throw 'Bundle provenance validation failed' }
+} else {
+    & python tools/versioning.py verify-bundle --version $Version
+    if ($LASTEXITCODE -ne 0) { throw 'Existing bundle is stale; rebuild without -SkipPyInstaller' }
 }
 
 $BundleDir = Join-Path $RepoRoot "dist\spaceDrive"
@@ -61,19 +78,20 @@ if (-not (Test-Path $Iscc)) {
 Write-Host "==> Inno Setup compiler: $Iscc"
 
 Write-Host "==> Compiling installer" -ForegroundColor Cyan
-$IssArgs = @(Join-Path $RepoRoot "installer\spaceDrive.iss")
-if ($Version -ne "") {
-    $bare = $Version.TrimStart("v")
-    $IssArgs += "/DMyAppVersion=$bare"
+$InstallerPath = Join-Path $RepoRoot "dist\SpaceDrive-Setup-$Version.exe"
+if (Test-Path -LiteralPath $InstallerPath) {
+    Remove-Item -LiteralPath $InstallerPath -Force
 }
+$IssArgs = @(Join-Path $RepoRoot "installer\spaceDrive.iss")
 & $Iscc @IssArgs
 if ($LASTEXITCODE -ne 0) { throw "Inno Setup compile failed (exit $LASTEXITCODE)" }
 
-$Installer = Get-ChildItem (Join-Path $RepoRoot "dist") -Filter "SpaceDrive-Setup-*.exe" |
-    Sort-Object LastWriteTime -Descending | Select-Object -First 1
-if (-not $Installer) {
+if (-not (Test-Path -LiteralPath $InstallerPath)) {
     throw "Installer .exe not produced - check the Inno Setup log above"
 }
+& python tools/versioning.py record-build --version $Version
+if ($LASTEXITCODE -ne 0) { throw 'Installer provenance validation failed' }
+$Installer = Get-Item -LiteralPath $InstallerPath
 Write-Host ""
 Write-Host "==> Installer ready: $($Installer.FullName)" -ForegroundColor Green
 Write-Host "    Size: $([math]::Round($Installer.Length / 1MB, 1)) MB"
