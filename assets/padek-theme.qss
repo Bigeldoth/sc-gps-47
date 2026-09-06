@@ -506,7 +506,7 @@ QMessageBox QLabel {
    Valeur statique initiale (état LIVE) :
 */
 QFrame#mfd_frame {
-    background-color: rgba(14, 18, 22, 235);
+    background-color: #0E1216;
     border: 1px solid #19C28A;
     border-radius: 6px;
 }

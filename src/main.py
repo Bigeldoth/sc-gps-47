@@ -1469,10 +1469,10 @@ class GPSOverlay(QMainWindow):
             if not text or text in ("Scanning...", "Scanning…"):
                 self.pos_label.setText("Scanning…")
 
-        # MFD border color
+        # Keep the panel opaque; setWindowOpacity controls overall transparency.
         self._mfd.setStyleSheet(f"""
             QFrame#mfd_frame {{
-                background-color: rgba(14, 18, 22, 235);
+                background-color: #0E1216;
                 border: 1px solid {border_color};
                 border-radius: 6px;
             }}
