@@ -23,7 +23,10 @@ def test_source_reset_forces_recognition_of_an_identical_frame():
         return {"x": len(calls), "y": 2.0, "z": 3.0, "ooc": "TestZone"}
 
     processor._parse_images_parallel = recognize
-    images = {"otsu": np.zeros((60, 600), dtype=np.uint8)}
+    hud = np.zeros((180, 600), dtype=np.uint8)
+    for start in (21, 60, 99):
+        hud[start:start + 24, 100:500] = 255
+    images = {"otsu": hud}
     assert processor.extract_data(images)["x"] == 1
     assert processor.extract_data(images)["x"] == 1
     assert len(calls) == 1

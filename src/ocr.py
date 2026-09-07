@@ -16,14 +16,12 @@ Pipeline (NCC-first since Phase E):
   8. Multi-pass consensus: if ≥2 passes converge within ±0.1 km, average;
      otherwise, best score
 
-HUD r_DisplayInfo 2 structure (3 Pos: lines):
-  Line 1: Zone: SolarSystem_XXXXX Pos: X Y Z  → absolute frame, rejected
-  Line 2: Root Pos: X Y Z                     → absolute frame, rejected
-  Line 3: {ZoneName} Pos: X Y Z               → relative frame, TARGET
-
-The 3rd line is always scanned without filtering on the zone name prefix:
-OOC_Hurston, GrimHex, StantonIV-9, etc. are all accepted.
-Only Root/SolarSystem are rejected (absolute frame ~14 M km).
+HUD navigation uses the third physical text row from the top, including
+CamDir when counting rows. Its zone name varies and need not contain OOC.
+All recognition engines receive the same isolated row, so coordinates from
+the interior/container row above cannot be paired with the navigation zone.
+Root/SolarSystem frames are still rejected. The legacy result key ``ooc``
+stores the selected row's zone for compatibility with saved POIs.
 
 Phase E architecture:
   - Segmentation: binary 'otsu' (good at locating bounding boxes even when
@@ -837,11 +835,46 @@ class OCRProcessor:
         # Quote the path to survive spaces ("Program Files", "ProgramData", …).
         return f'{self.tesseract_config} --tessdata-dir "{tessdata}"'
 
+    @classmethod
+    def _navigation_row_images(cls, images):
+        """Isolate HUD row three before any glyph or text engine reads coordinates.
+
+        Detect on the binary HUD, then map the same bounds to every pass,
+        including the native-resolution BGR image used by Paddle. Do not
+        fall back to a different row when the third row cannot be located.
+        """
+        binary = images.get('otsu')
+        if binary is None:
+            binary = images.get('adaptive')
+        bands = cls._find_text_rows(binary)
+        if len(bands) < 3:
+            return None
+        y0, y1 = bands[2]
+        # Mid-gap padding cannot include glyphs from adjacent HUD rows.
+        y0 = max(y0 - 4, (bands[1][1] + y0) // 2)
+        next_start = bands[3][0] if len(bands) > 3 else binary.shape[0]
+        y1 = min(y1 + 4, (y1 + next_start) // 2)
+        reference_height = binary.shape[0]
+        selected = {}
+        for name, source in images.items():
+            if source is None:
+                continue
+            height = source.shape[0]
+            start = y0 * height // reference_height
+            end = (y1 * height + reference_height - 1) // reference_height
+            selected[name] = source[start:end, :]
+        return selected
+
     def extract_data(self, images):
         logger.debug(
             f"OCR extraction from {len(images)} passes "
             f"(engine={self.engine}, mode={self.pipeline_mode})"
         )
+
+        images = self._navigation_row_images(images)
+        if images is None:
+            self.reset_capture_state()
+            return self._empty_data()
 
         # Separate the CLAHE-enhanced grayscale (used by NCC/ONNX for
         # classification) from the binary passes (used by Tesseract).
@@ -1064,8 +1097,8 @@ class OCRProcessor:
                             break
                     data["location"] = matched_name if matched_name else "Unknown"
             elif "Pos:" in line or "pos:" in line.lower():
-                if _is_meter_line(line):
-                    continue
+                # The physical navigation row was selected before recognition;
+                # it may use meters on every axis near its origin.
                 if _RE_POS_SYSTEM_FRAME.search(line):
                     continue
                 zone_match = _RE_ZONE_NAME.match(line)
@@ -1161,10 +1194,8 @@ class OCRProcessor:
                     logger.info(f"[{pass_name}] System detected: ID={system_id}, Name={data['location']}")
                     score += 10
             elif "Pos:" in line or "pos:" in line.lower():
-                # Reject meter lines (sub-zone HabPos, PlayerContainer...).
-                if _is_meter_line(line):
-                    logger.debug(f"[{pass_name}] Meter line ignored: {line[:80]}")
-                    continue
+                # This is already the isolated navigation row. Meter-only
+                # coordinates are valid here, including near the zone origin.
                 # Reject Root/SolarSystem (absolute frame ~14 M km).
                 if _RE_POS_SYSTEM_FRAME.search(line):
                     logger.debug(f"[{pass_name}] Root/SolarSystem line rejected: {line[:80]}")
@@ -1313,6 +1344,9 @@ class OCRProcessor:
         else:
             candidate = "Pos: " + reconstructed
         normalized = _normalize_ooc_line(candidate)
+
+        if _RE_POS_SYSTEM_FRAME.search(normalized):
+            return None
 
         # Strict match only: NCC + heuristic '.' must reconstruct the decimal
         # point correctly. If the strict regex fails, it is likely an absolute
