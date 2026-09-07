@@ -9,7 +9,7 @@
 
 > **Installer hosted on the project VPS** — see the [latest release](https://github.com/Bigeldoth/sc-gps-47/releases/latest) for the direct download link, or fetch the always-current pointer at [`/releases/latest.json`](https://padek-interactive.tech/releases/latest.json).
 
-SpaceDrive continuously reads the coordinates displayed by the game's debug HUD (`Zone:OOC_X Pos: X.XXXX km Y.XXXX km Z.XXXX km`) and provides an always-on-top overlay with distance, heading and data freshness indicator. No memory reading — 100% screenshot-based.
+SpaceDrive continuously reads coordinates from the third text line of the game's debug HUD (`Zone: <name> Pos: X Y Z`) and provides an always-on-top overlay with distance, heading and data freshness indicator. The zone name may vary; no `OOC` prefix is required. No memory reading — 100% screenshot-based.
 
 ---
 
@@ -43,6 +43,11 @@ SpaceDrive continuously reads the coordinates displayed by the game's debug HUD 
   resolution (600 px wide at 1920 px; 800 px wide at 2560 px). The region reaches
   the right edge so trailing HUD units remain visible. Height stays at 60 px
   from the top edge. Screenshot test mode uses the same geometry unless a custom crop is set.
+- **Navigation line**: OCR isolates the third physical text row from the top
+  (counting CamDir as the first row) before running any recognition engine.
+  Zone names are unrestricted; meters and kilometers are converted per axis.
+  If the third row cannot be located, no coordinates are returned. Root and
+  SolarSystem frames remain excluded. The cyan frame outlines the full capture.
 - **Capture display**: choose **Options → General → Star Citizen display**, then
   save to switch the capture monitor without restarting. The default follows the
   primary display. Explicit choices are remembered by display identity rather
@@ -210,8 +215,10 @@ Shortcuts are reconfigurable via `Shift+F2`.
 - `HotkeyListener` (pynput) on its own thread → Qt signals with mandatory `QueuedConnection`.
 
 **Coordinate frame:**
-- SC HUD displays **two types of Pos**: `Root/SolarSystem` (relative to system, but planets orbit → unstable for fixed POIs) and `OOC_X` (relative to planet-bound ObjectContainer, **stable**).
-- SpaceDrive uses **only OOC coordinates** for POIs and navigation.
+- SpaceDrive reads the **third HUD row's local coordinates** for POIs and
+  navigation. Its zone name no longer needs an `OOC_` prefix. The interior
+  container row above and the Root/SolarSystem rows below are not coordinate sources.
+- The saved POI field `ooc` remains the zone identifier for compatibility.
 
 ---
 
