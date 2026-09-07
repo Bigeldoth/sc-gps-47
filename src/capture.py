@@ -49,10 +49,11 @@ from sc_ocr.preprocess import isolate_channel, flatten_background
 
 logger = logging.getLogger(__name__)
 
-# Capture width at the historical 1920-pixel reference resolution.
+# Capture dimensions at the historical 1920x1080 reference resolution.
 CAPTURE_WIDTH = 600
 CAPTURE_REFERENCE_WIDTH = 1920
 CAPTURE_HEIGHT = 60
+CAPTURE_REFERENCE_HEIGHT = 1080
 
 # Canonical upscale factor applied to the HUD strip before OCR / classification.
 # ×3 brings the average HUD char height from ~16 px native to ~48 px — the
@@ -84,14 +85,15 @@ _isolate_channel_auto = isolate_channel
 
 
 def capture_region(width, height, *, left=0, top=0):
-    """Scale the HUD strip horizontally in physical pixels; keep its height fixed."""
+    """Scale both HUD strip dimensions in physical pixels, anchored top-right."""
     crop_width = min(width, max(1, CAPTURE_WIDTH * width // CAPTURE_REFERENCE_WIDTH))
+    crop_height = min(height, max(1, CAPTURE_HEIGHT * height // CAPTURE_REFERENCE_HEIGHT))
     return {
         # HUD units reach the right edge; an inset clips the trailing "km".
         'left': left + width - crop_width,
         'top': top,
         'width': crop_width,
-        'height': min(CAPTURE_HEIGHT, height),
+        'height': crop_height,
     }
 
 

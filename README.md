@@ -39,10 +39,11 @@ SpaceDrive continuously reads coordinates from the third text line of the game's
 - **Tesseract OEM3 fallback** on 2 binary thresholding passes (Otsu / adaptive) in parallel, used for zone names and metadata. Skipped entirely once NCC reconstructs coordinates.
 - **Strict 3-4 decimal regex**: rejects degraded readings that caused ~17 m errors on saved POIs.
 - **Post-OCR normalization**: fixes common artifacts (`Pos:_`, variants `lkm/Km/kn`, parasitic underscores).
-- **Capture region**: width scales with the capture monitor's horizontal
-  resolution (600 px wide at 1920 px; 800 px wide at 2560 px). The region reaches
-  the right edge so trailing HUD units remain visible. Height stays at 60 px
-  from the top edge. Screenshot test mode uses the same geometry unless a custom crop is set.
+- **Capture region**: width and height scale independently with the capture
+  monitor's resolution (600x60 px at 1920x1080; 800x80 px at 2560x1440;
+  1200x120 px at 3840x2160). The region starts at the top edge and reaches
+  the right edge so trailing HUD units remain visible. Screenshot test mode
+  uses the same geometry unless a custom crop is set.
 - **Navigation line**: OCR isolates the third physical text row from the top
   (counting CamDir as the first row) before running any recognition engine.
   Zone names are unrestricted; meters and kilometers are converted per axis.
