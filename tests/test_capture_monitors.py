@@ -94,11 +94,11 @@ def test_catalog_has_stable_identity_native_label_and_physical_coordinates(scree
 def test_primary_choice_uses_primary_flag_instead_of_mss_array_position(screens):
     source = ScreenCapture(settings())
     try:
-        assert source.screen_region == dict(left=1760, top=0, width=800, height=60)
+        assert source.screen_region == dict(left=1760, top=0, width=800, height=80)
         images, _, _ = source.capture()
         assert screens.grabs == [source.screen_region]
-        assert images['raw'].shape == (60, 800, 3)
-        assert images['otsu'].shape == (180, 2400)
+        assert images['raw'].shape == (80, 800, 3)
+        assert images['otsu'].shape == (240, 2400)
     finally:
         source.stop()
     assert all(instance.closed for instance in screens.instances)
@@ -169,23 +169,24 @@ def test_small_display_clamps_capture_to_its_own_bounds(screens):
     screens.displays = [display('small', left=-320, top=-40, width=320, height=40, primary=True)]
     source = ScreenCapture(settings())
     try:
-        assert source.screen_region == dict(left=-100, top=-40, width=100, height=40)
+        assert source.screen_region == dict(left=-100, top=-40, width=100, height=2)
     finally:
         source.stop()
 
 
-@pytest.mark.parametrize('resolution, crop_width', [
-    (1920, 600), (2560, 800), (3440, 1075), (3840, 1200),
-    (1, 1),
+@pytest.mark.parametrize('resolution, vertical_resolution, crop_width, crop_height', [
+    (1920, 1080, 600, 60), (2560, 1440, 800, 80),
+    (2560, 1600, 800, 88), (3440, 1440, 1075, 80),
+    (3840, 2160, 1200, 120), (1, 1, 1, 1),
 ])
-def test_horizontal_scaling_stays_inside_selected_display(screens, resolution, crop_width):
+def test_scaling_stays_inside_selected_display(screens, resolution, vertical_resolution, crop_width, crop_height):
     screens.displays = [display('game', left=-3840, top=1440,
-                                width=resolution, height=2160, primary=True)]
+                                width=resolution, height=vertical_resolution, primary=True)]
     source = ScreenCapture(settings())
     try:
         assert source.screen_region == dict(
             left=-3840 + resolution - crop_width,
-            top=1440, width=crop_width, height=60,
+            top=1440, width=crop_width, height=crop_height,
         )
         region = source.screen_region
         assert region['left'] + region['width'] == -3840 + resolution
@@ -193,15 +194,29 @@ def test_horizontal_scaling_stays_inside_selected_display(screens, resolution, c
         source.stop()
 
 
-def test_resolution_change_recomputes_width_and_offset(screens):
+def test_resolution_change_recomputes_both_dimensions_and_offset(screens):
     source = ScreenCapture(settings())
     try:
-        screens.displays[1]['width'] = 3840
+        screens.displays[1].update(width=3840, height=2160)
         assert source.refresh_region(force=True) is True
-        assert source.screen_region == dict(left=2640, top=0, width=1200, height=60)
+        assert source.screen_region == dict(left=2640, top=0, width=1200, height=120)
         images, _, _ = source.capture(refresh=False)
         assert screens.grabs[-1] == source.screen_region
-        assert images['raw'].shape == (60, 1200, 3)
+        assert images['raw'].shape == (120, 1200, 3)
+    finally:
+        source.stop()
+
+
+def test_height_only_resolution_change_refreshes_capture(screens):
+    source = ScreenCapture(settings())
+    try:
+        screens.displays[1]['height'] = 1600
+        assert source.refresh_region(force=True) is True
+        assert source.screen_region == dict(left=1760, top=0, width=800, height=88)
+        images, _, _ = source.capture(refresh=False)
+        assert screens.grabs[-1] == source.screen_region
+        assert images['raw'].shape == (88, 800, 3)
+        assert images['otsu'].shape == (264, 2400)
     finally:
         source.stop()
 
@@ -275,11 +290,11 @@ def test_screenshot_mode_never_initializes_mss_and_preserves_preprocessing(monke
     config['Debug'] = {'test_screenshot': 'fixture.png'}
     source = ScreenCapture(config)
     assert source.screen_region is None
-    assert source.source_identity == ('screenshot', 'fixture.png', 1760, 0, 800, 60)
+    assert source.source_identity == ('screenshot', 'fixture.png', 1760, 0, 800, 80)
     assert source.configure_monitor('monitor:primary') is False
     images, _, _ = source.capture()
-    assert images['raw'].shape == (60, 800, 3)
-    assert images['otsu'].shape == (180, 2400)
+    assert images['raw'].shape == (80, 800, 3)
+    assert images['otsu'].shape == (240, 2400)
     source.stop()
 
 

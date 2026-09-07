@@ -22,8 +22,13 @@ def hud_images():
     return {'otsu': binary, 'adaptive': binary.copy(), 'enhanced': enhanced, 'raw': raw}
 
 
-def test_selection_maps_one_row_to_binary_grayscale_and_native_bgr_without_mutation():
+@pytest.mark.parametrize('capture_height', [60, 80, 88, 120])
+def test_selection_maps_one_row_to_binary_grayscale_and_native_bgr_without_mutation(capture_height):
     images = hud_images()
+    for name, source in images.items():
+        scale = 1 if name == 'raw' else 3
+        padding = [(0, (capture_height - 60) * scale)] + [(0, 0)] * (source.ndim - 1)
+        images[name] = np.pad(source, padding)
     selected = OCRProcessor._navigation_row_images(images)
     assert selected['otsu'].shape == (32, 600)
     assert selected['raw'].shape == (12, 200, 3)
