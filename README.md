@@ -92,6 +92,24 @@ User data (POIs, log, optional sidecar venvs) lives in `%LOCALAPPDATA%\SpaceDriv
 
 Requirements: Windows 10 / 11 (x64), internet during installation, ~150 MB of disk.
 
+#### "Windows protected your PC" — what you will see
+
+The installer is not yet code-signed, so Windows SmartScreen shows an **unknown
+publisher** warning. Click **More info → Run anyway** to continue. This warning
+reflects the absence of a paid signing certificate, not a detection: SmartScreen
+tracks reputation per file hash, so every new release starts from zero.
+
+You do not have to take that on trust. Check the hash of what you downloaded:
+
+```powershell
+Get-FileHash .\SpaceDrive-Setup-vX.Y.Z.exe -Algorithm SHA256
+```
+
+and look it up on [VirusTotal](https://www.virustotal.com/gui/home/search) to see
+every engine's verdict on that exact file. See
+[`docs/CODE_SIGNING.md`](docs/CODE_SIGNING.md) for how release binaries are built
+and what will change once signing is in place.
+
 ### From source (developers)
 
 For contributors who want to run from a checkout instead of the installer.
