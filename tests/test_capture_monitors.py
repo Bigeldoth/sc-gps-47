@@ -94,11 +94,11 @@ def test_catalog_has_stable_identity_native_label_and_physical_coordinates(scree
 def test_primary_choice_uses_primary_flag_instead_of_mss_array_position(screens):
     source = ScreenCapture(settings())
     try:
-        assert source.screen_region == dict(left=1960, top=0, width=600, height=60)
+        assert source.screen_region == dict(left=1760, top=0, width=800, height=60)
         images, _, _ = source.capture()
         assert screens.grabs == [source.screen_region]
-        assert images['raw'].shape == (60, 600, 3)
-        assert images['otsu'].shape == (180, 1800)
+        assert images['raw'].shape == (60, 800, 3)
+        assert images['otsu'].shape == (180, 2400)
     finally:
         source.stop()
     assert all(instance.closed for instance in screens.instances)
@@ -169,7 +169,39 @@ def test_small_display_clamps_capture_to_its_own_bounds(screens):
     screens.displays = [display('small', left=-320, top=-40, width=320, height=40, primary=True)]
     source = ScreenCapture(settings())
     try:
-        assert source.screen_region == dict(left=-320, top=-40, width=320, height=40)
+        assert source.screen_region == dict(left=-100, top=-40, width=100, height=40)
+    finally:
+        source.stop()
+
+
+@pytest.mark.parametrize('resolution, crop_width', [
+    (1920, 600), (2560, 800), (3440, 1075), (3840, 1200),
+    (1, 1),
+])
+def test_horizontal_scaling_stays_inside_selected_display(screens, resolution, crop_width):
+    screens.displays = [display('game', left=-3840, top=1440,
+                                width=resolution, height=2160, primary=True)]
+    source = ScreenCapture(settings())
+    try:
+        assert source.screen_region == dict(
+            left=-3840 + resolution - crop_width,
+            top=1440, width=crop_width, height=60,
+        )
+        region = source.screen_region
+        assert region['left'] + region['width'] == -3840 + resolution
+    finally:
+        source.stop()
+
+
+def test_resolution_change_recomputes_width_and_offset(screens):
+    source = ScreenCapture(settings())
+    try:
+        screens.displays[1]['width'] = 3840
+        assert source.refresh_region(force=True) is True
+        assert source.screen_region == dict(left=2640, top=0, width=1200, height=60)
+        images, _, _ = source.capture(refresh=False)
+        assert screens.grabs[-1] == source.screen_region
+        assert images['raw'].shape == (60, 1200, 3)
     finally:
         source.stop()
 
@@ -238,16 +270,16 @@ def test_screenshot_mode_never_initializes_mss_and_preserves_preprocessing(monke
         raise AssertionError('Image mode must not enumerate or capture displays')
 
     monkeypatch.setattr(capture.mss, 'mss', reject_mss)
-    monkeypatch.setattr(capture.cv2, 'imread', lambda _: np.zeros((120, 800, 3), dtype=np.uint8))
+    monkeypatch.setattr(capture.cv2, 'imread', lambda _: np.zeros((1440, 2560, 3), dtype=np.uint8))
     config = settings('monitor:absent')
     config['Debug'] = {'test_screenshot': 'fixture.png'}
     source = ScreenCapture(config)
     assert source.screen_region is None
-    assert source.source_identity == ('screenshot', 'fixture.png', 200, 0, 600, 60)
+    assert source.source_identity == ('screenshot', 'fixture.png', 1760, 0, 800, 60)
     assert source.configure_monitor('monitor:primary') is False
     images, _, _ = source.capture()
-    assert images['raw'].shape == (60, 600, 3)
-    assert images['otsu'].shape == (180, 1800)
+    assert images['raw'].shape == (60, 800, 3)
+    assert images['otsu'].shape == (180, 2400)
     source.stop()
 
 
