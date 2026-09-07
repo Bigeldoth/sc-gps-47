@@ -39,7 +39,10 @@ SpaceDrive continuously reads the coordinates displayed by the game's debug HUD 
 - **Tesseract OEM3 fallback** on 2 binary thresholding passes (Otsu / adaptive) in parallel, used for zone names and metadata. Skipped entirely once NCC reconstructs coordinates.
 - **Strict 3-4 decimal regex**: rejects degraded readings that caused ~17 m errors on saved POIs.
 - **Post-OCR normalization**: fixes common artifacts (`Pos:_`, variants `lkm/Km/kn`, parasitic underscores).
-- **Capture region**: 600×60 px at the top right of the capture monitor.
+- **Capture region**: width scales with the capture monitor's horizontal
+  resolution (600 px wide at 1920 px; 800 px wide at 2560 px). The region reaches
+  the right edge so trailing HUD units remain visible. Height stays at 60 px
+  from the top edge. Screenshot test mode uses the same geometry unless a custom crop is set.
 - **Capture display**: choose **Options → General → Star Citizen display**, then
   save to switch the capture monitor without restarting. The default follows the
   primary display. Explicit choices are remembered by display identity rather

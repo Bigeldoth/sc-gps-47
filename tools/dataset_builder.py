@@ -31,7 +31,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from capture import CAPTURE_WIDTH, CAPTURE_HEIGHT, UPSCALE_FACTOR  # noqa: E402
+from capture import CAPTURE_WIDTH, CAPTURE_HEIGHT, UPSCALE_FACTOR, capture_region  # noqa: E402
 from sc_ocr.classify import classify_single_glyph, normalize_glyph  # noqa: E402
 from sc_ocr.preprocess import isolate_channel, otsu_threshold  # noqa: E402
 from sc_ocr.segment import find_glyph_regions  # noqa: E402
@@ -128,12 +128,10 @@ def frame_iter_screen(interval_ms: int) -> Iterator[tuple[int, np.ndarray]]:
     import mss
     sct = mss.mss()
     monitor = sct.monitors[1]
-    region = {
-        "top": monitor["top"],
-        "left": monitor["left"] + monitor["width"] - CAPTURE_WIDTH,
-        "width": CAPTURE_WIDTH,
-        "height": CAPTURE_HEIGHT,
-    }
+    region = capture_region(
+        monitor["width"], monitor["height"],
+        left=monitor["left"], top=monitor["top"],
+    )
     idx = 0
     while True:
         raw = sct.grab(region)
