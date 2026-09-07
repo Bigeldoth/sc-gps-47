@@ -49,7 +49,10 @@ from sc_ocr.preprocess import isolate_channel, flatten_background
 
 logger = logging.getLogger(__name__)
 
+# Horizontal dimensions at the historical 1920-pixel reference resolution.
 CAPTURE_WIDTH = 600
+CAPTURE_REFERENCE_WIDTH = 1920
+CAPTURE_RIGHT_MARGIN = 10
 CAPTURE_HEIGHT = 60
 
 # Canonical upscale factor applied to the HUD strip before OCR / classification.
@@ -79,6 +82,19 @@ _BG_FLATTEN_KERNEL_PX = 3 * UPSCALE_FACTOR
 # Backward-compat alias for external callers (e.g. tools/dataset_builder.py
 # pinned to the previous private name).
 _isolate_channel_auto = isolate_channel
+
+
+def capture_region(width, height, *, left=0, top=0):
+    """Scale the HUD strip horizontally in physical pixels; keep its height fixed."""
+    crop_width = min(width, max(1, CAPTURE_WIDTH * width // CAPTURE_REFERENCE_WIDTH))
+    right_margin = min(width - crop_width,
+                       CAPTURE_RIGHT_MARGIN * width // CAPTURE_REFERENCE_WIDTH)
+    return {
+        'left': left + width - crop_width - right_margin,
+        'top': top,
+        'width': crop_width,
+        'height': min(CAPTURE_HEIGHT, height),
+    }
 
 
 class CaptureMonitorUnavailable(RuntimeError):
@@ -118,12 +134,7 @@ class ScreenCapture:
             if self._test_img is None:
                 raise FileNotFoundError(f"Screenshot not found: {self._test_screenshot}")
             h, w = self._test_img.shape[:2]
-            self._region = {
-                "top": 0,
-                "left": max(0, w - CAPTURE_WIDTH),
-                "width": min(CAPTURE_WIDTH, w),
-                "height": min(CAPTURE_HEIGHT, h),
-            }
+            self._region = capture_region(w, h)
             custom_left = config.getint('Debug', 'test_region_left', fallback=-1)
             custom_top = config.getint('Debug', 'test_region_top', fallback=-1)
             custom_w = config.getint('Debug', 'test_region_width', fallback=-1)
@@ -191,12 +202,10 @@ class ScreenCapture:
                 if monitor is None:
                     self._clear_display('Primary display unavailable')
                     return previous != self._source_identity
-            width = min(CAPTURE_WIDTH, monitor['width'])
-            height = min(CAPTURE_HEIGHT, monitor['height'])
-            region = {
-                'left': monitor['left'] + monitor['width'] - width,
-                'top': monitor['top'], 'width': width, 'height': height,
-            }
+            region = capture_region(
+                monitor['width'], monitor['height'],
+                left=monitor['left'], top=monitor['top'],
+            )
             identity = (
                 'monitor', self.monitor_id, monitor['id'],
                 *(monitor[key] for key in ('left', 'top', 'width', 'height')),
